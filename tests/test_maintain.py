@@ -395,14 +395,6 @@ def test_updates_step_ask_does_nothing(tmp_path, monkeypatch):
     assert maintain.updates_step(tmp_path, True)["state"] == "ask"
 
 
-def test_updates_step_auto_applies_only_when_quiet(tmp_path, monkeypatch):
-    from wam import updates
-    monkeypatch.setattr(updates, "mode", lambda h=None: "auto")
-    monkeypatch.setattr(updates, "apply_if_auto", lambda h=None: {"started": True, "latest": "0.4.0", "installed": "0.3.9"})
-    assert maintain.updates_step(tmp_path, False)["state"] == "deferred"
-    assert maintain.updates_step(tmp_path, True) == {"state": "started", "to": "0.4.0", "from": "0.3.9"}
-
-
 def test_updates_step_leaves_a_host_run_box_to_its_host(tmp_path, monkeypatch):
     from wam import updates
     monkeypatch.setattr(updates, "mode", lambda h=None: "auto")

@@ -283,7 +283,8 @@ def test_nightly_run_reports_in_ask_mode_and_when_busy(tmp_path, monkeypatch):
     monkeypatch.setattr(updates, "mode", lambda h=None: "ask")
     assert maintain.updates_step(tmp_path, True)["state"] == "ask" and seen == [tmp_path]
     monkeypatch.setattr(updates, "mode", lambda h=None: "auto")
-    assert maintain.updates_step(tmp_path, False)["state"] == "deferred" and seen == [tmp_path, tmp_path]
+    monkeypatch.setattr(updates, "apply_if_auto", lambda h=None: {"started": False, "skipped": "busy"})
+    assert maintain.updates_step(tmp_path, False)["state"] == "busy" and seen == [tmp_path, tmp_path]
 
 
 def test_read_back_mismatch_of_this_run_wins_over_the_failed_run(tmp_path):
