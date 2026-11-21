@@ -35,7 +35,7 @@ from . import filesystem as datafs
 from . import EXT, agents as agentlib, bundle, crypto, fmt, keys as keylib
 from .appdata import AppDataError
 from .box import (DEFER_DB_MARK, MAIN_AGENT, Agent, Box, HermesError, RuntipiError, SpaceError, human, log,
-                  need_space, need_spaces, skip_home_entry)
+                  main_agent_warning, need_space, need_spaces, skip_home_entry)
 
 MARGIN = 256 << 20
 
@@ -304,6 +304,12 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
     for msg in leftover_copies:
         log("warning: " + msg)
     agent_urns = {a.urn for a in agents if a.urn}
+    # a box whose main agent is the host Hermes without alongside.json: never leave it out silently (#885)
+    warnings = []
+    left_out = box.main_agent_left_out(agents)
+    if left_out:
+        warnings.append(main_agent_warning(left_out))
+        log("warning: " + warnings[-1])
     files_root = box.files_root()
     files_size = bundle.tree_size(files_root, _files_skip) if include_files else {"count": 0, "bytes": 0}
     home_size = bundle.tree_size(box.home, skip_home_entry)
@@ -423,6 +429,7 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
             "wizard_os": home_size,
             "active": {"agents": {r["id"]: r["active"] for r in agent_rows}, "schedule": schedule_on(box)},
             "estimate_bytes": est,
+            **({"warnings": warnings} if warnings else {}),
         }
 
         # 3) the file: encrypted straight into <out>.part
@@ -504,7 +511,7 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
            "agents": [a["id"] for a in manifest["agents"]], "apps": [a["id"] for a in manifest["apps"]],
            "files": manifest["files"], "changed_while_reading": bw.changed[:20], "skipped_links": bw.skipped[:20],
            "skipped_in_apps": app_skipped[:50], "skipped_in_apps_count": len(app_skipped),
-           "apps_without_data": apps_without_data, "skipped_app_copies": leftover_copies}
+           "apps_without_data": apps_without_data, "skipped_app_copies": leftover_copies, "warnings": warnings}
     if bw.changed:
         log(f"note: {len(bw.changed)} files changed while being read (their new size was cut/padded)")
     if bw.skipped:

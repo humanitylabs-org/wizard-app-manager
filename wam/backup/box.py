@@ -302,6 +302,33 @@ class Box:
                 return a
         return None
 
+    def main_agent_left_out(self, agents: list[Agent]) -> str | None:
+        """The host Hermes home a backup of `agents` leaves out although it is this box's main agent (#885): no
+        main agent among them (no `hermes-agent` app, no alongside.json) while the host has a Hermes home. A box
+        that predates alongside mode runs its Wizard on the host Hermes that way, and its backup must say so."""
+        if any(a.main for a in agents) or alongside.load(self.home):
+            return None
+        return host_main_agent_home(self.env)
+
+
+MAIN_AGENT_LEFT_OUT = "main agent not in backup: "
+
+
+def host_main_agent_home(env) -> str | None:
+    """The host's own Hermes home (HERMES_HOME, else ~/.hermes) when it holds a Hermes (config.yaml), else None."""
+    home = Path(env.get("HERMES_HOME") or Path(env.get("HOME") or Path.home()) / ".hermes").expanduser()
+    try:
+        return str(home) if (home / "config.yaml").is_file() else None
+    except OSError:
+        return None
+
+
+def main_agent_warning(path: str) -> str:
+    """The one warning a backup without the main agent carries (status, Backup app, `wam doctor`)."""
+    return (f"{MAIN_AGENT_LEFT_OUT}{path} (this box's main agent is the host Hermes there, but no alongside.json "
+            "selects it, so backups leave it out; `wam alongside` makes it the box's main agent and the next "
+            "backup includes it)")
+
 
 def read_agent_json(d: Path) -> dict | None:
     try:
