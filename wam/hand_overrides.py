@@ -235,10 +235,36 @@ def _files(root: Path) -> dict[str, int]:
     return out
 
 
-def _no_root_lock(src: Path):
-    def ignore(folder, names):
-        return ["ledger.lock"] if Path(folder) == src and "ledger.lock" in names else []
-    return ignore
+def _writable(dest: Path) -> bool:
+    """dest (made if missing) can take new files from this user."""
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    return os.access(dest, os.W_OK | os.X_OK)
+
+
+def _open_as_root(runtipi_root, dest: Path) -> None:
+    """mkdir + a+rwx on Second Hand's ledger folder inside the runtipi container (what Runtipi's app-data walk does
+    on every install/update). Only that one folder, never through a link."""
+    from .app_rename import _ok, _sh, app_data_dir
+    rel = Path(dest).relative_to(Path(runtipi_root) / "app-data")
+    inner = app_data_dir().rstrip("/") + "/" + rel.as_posix()
+    _ok(_sh('[ ! -L "$1" ] || exit 3; mkdir -p "$1" && [ ! -L "$1" ] && chmod 0777 "$1"', inner),
+        f"open {inner}")
+
+
+def _copy_into(src: Path, dest: Path) -> None:
+    """Copy src's contents into the existing dest without touching dest itself (it can be root's: copytree's
+    copystat on it fails, seen on a real box), links kept as links. ledger.lock is not copied (see the caller)."""
+    for child in src.iterdir():
+        if child.name == "ledger.lock":
+            continue
+        target = dest / child.name
+        if child.is_dir() and not child.is_symlink():
+            shutil.copytree(child, target, symlinks=True)
+        else:
+            shutil.copy2(child, target, follow_symlinks=False)
 
 
 def _app_uid(runtipi_root, store: str) -> int:
@@ -252,7 +278,11 @@ def _open_up(root: Path) -> None:
     """What Runtipi's own app-data walk does on install/update (a+rwx folders, a+rw files), for a copy the app's
     user (another uid) must write. Never follows links."""
     for dirpath, dirs, files in os.walk(root):
-        os.chmod(dirpath, 0o777)
+        if Path(dirpath) == root:   # the top folder can be root's (777 by then): not ours to change
+            with contextlib.suppress(PermissionError):
+                os.chmod(dirpath, 0o777)
+        else:
+            os.chmod(dirpath, 0o777)
         for f in files:
             p = Path(dirpath) / f
             if not p.is_symlink():
@@ -295,11 +325,11 @@ def second_hand(runtipi_root, store: str, rt=None, *, dry_run: bool = False, sta
         return {**base, "skipped": "the mounted host folder is missing or already a link; left as it is"}
     if (dest / "ledger.json").exists() or (dest.is_dir() and any(dest.iterdir())):
         return {**base, "skipped": "Second Hand's own ledger folder is not empty; left as it is (move it by hand)"}
+    if not os.access(src.parent, os.W_OK | os.X_OK):
+        return {**base, "skipped": "no write access to the host ledger's folder; left as it is"}
     probe = dest
     while not probe.exists():
         probe = probe.parent
-    if not os.access(probe, os.W_OK | os.X_OK) or not os.access(src.parent, os.W_OK | os.X_OK):
-        return {**base, "skipped": "no write access to the ledger folders; left as it is"}
     if (src / "ledger.lock").exists() and os.stat(src / "ledger.lock").st_dev != os.stat(probe).st_dev:
         # the lock file is hard-linked into the new folder (one lock for the app and the host scripts across the
         # switch); that needs one filesystem
@@ -310,6 +340,16 @@ def second_hand(runtipi_root, store: str, rt=None, *, dry_run: bool = False, sta
         return {**base, "skipped": f"Second Hand is {was or 'not readable'}; tried again on the next update"}
     if dry_run:
         return {**base, "would": "move the host ledger into Second Hand's own data folder"}
+    made_dest = not dest.exists()
+    if not _writable(dest):
+        # The hand mount made Docker create the folder as root (755; Runtipi's own walk later makes it 777 but
+        # keeps root as owner), and wam runs as the owner: open it the way Runtipi does, as root in its container.
+        try:
+            _open_as_root(runtipi_root, dest)
+        except Exception as e:  # noqa: BLE001
+            return {**base, "skipped": f"Second Hand's data folder is not writable ({str(e)[:120]}); left as it is"}
+        if not _writable(dest):
+            return {**base, "skipped": "Second Hand's data folder is not writable; left as it is"}
     stamp = stamp or _stamp()
     if was == "running":
         try:
@@ -320,14 +360,12 @@ def second_hand(runtipi_root, store: str, rt=None, *, dry_run: bool = False, sta
         except Exception as e:  # noqa: BLE001 - it did not stop: change nothing, and leave it running
             return {**base, "error": f"could not stop it first ({str(e)[:160]})", "start": _start(rt, urn)}
     aside = src.with_name(f"{src.name}.moved-to-second-hand-{stamp}")
-    made_dest = not dest.exists()
     done: list[str] = []
     kept = None
     try:
         with _ledger_lock(src):
-            dest.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(src, dest, symlinks=True, dirs_exist_ok=True, ignore=_no_root_lock(src))
-            done.append("copied")
+            done.append("copied")   # from here on, a failure removes what was copied
+            _copy_into(src, dest)
             if (src / "ledger.lock").exists():
                 # the SAME lock inode in both places (Codex P1): a host script already waiting on the old path's
                 # lock excludes the app's later saves, which lock dest/ledger.lock
@@ -352,12 +390,12 @@ def second_hand(runtipi_root, store: str, rt=None, *, dry_run: bool = False, sta
             os.unlink(src)
         if "renamed" in done:
             os.rename(aside, src)
-        if "copied" in done or dest.exists():
+        if "copied" in done:   # dest was empty before: everything in it is this run's copy
+            for child in dest.iterdir():
+                shutil.rmtree(child) if child.is_dir() and not child.is_symlink() else child.unlink()
             if made_dest:
-                shutil.rmtree(dest, ignore_errors=True)
-            else:
-                for child in dest.iterdir():
-                    shutil.rmtree(child) if child.is_dir() and not child.is_symlink() else child.unlink()
+                with contextlib.suppress(OSError):
+                    dest.rmdir()
         if was == "running":
             _start(rt, urn)
         return {**base, "error": f"{type(e).__name__}: {e}"[:300], "rolled_back": True}
