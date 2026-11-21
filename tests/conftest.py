@@ -35,6 +35,10 @@ def _no_real_host_dashboard(tmp_path, monkeypatch):
     monkeypatch.setattr(feature_switches, "_listener_proof_file", lambda port: None)
     monkeypatch.delenv(feature_switches.SERVICE_ORIGIN_ENV, raising=False)
     monkeypatch.delenv(feature_switches.OWNER_PROOF_ENV, raising=False)
+    # Signed releases (#565): off unless a test turns it on; no cached signature result crosses tests.
+    from wam import release_sig
+    monkeypatch.delenv(release_sig.ENV, raising=False)
+    release_sig._cache.clear()
     # The owner listener asks Tailscale for this node's own addresses; tests are a box at 100.64.0.1.
     monkeypatch.setattr(store_install, "own_ips", lambda: {"100.64.0.1", "fd7a:115c:a1e0::1"}, raising=False)
     # App networks: never create, connect or remove a real Docker network from a unit test (tests that need

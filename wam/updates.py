@@ -93,7 +93,8 @@ def _save(home: Path | None, **changes) -> None:
     """Write updates.json, keeping the other saved choice (mode and channel are independent)."""
     h = _home(home)
     h.mkdir(parents=True, exist_ok=True)
-    s = {k: v for k, v in _settings(h).items() if (k == "mode" and v in MODES) or (k == "channel" and v in CHANNELS)}
+    s = {k: v for k, v in _settings(h).items() if (k == "mode" and v in MODES) or (k == "channel" and v in CHANNELS)
+         or (k == "verify_releases" and v in ("off", "warn", "enforce"))}   # release_sig.SETTING (#565)
     s.update(changes)
     tmp = h / "updates.json.tmp"
     tmp.write_text(json.dumps(s) + "\n")
@@ -576,7 +577,16 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
             "waiting_for": _waiting_for(home, imp),
             # "Update when they finish": the waiting request, and whether its 6 hours are up (ask the owner again).
             "when_idle": when_idle(home) if waits else None,
-            "hermes": hermes_update.status(home, base)}
+            "hermes": hermes_update.status(home, base),
+            # Signed releases (#565): only with WIZARD_VERIFY_RELEASES / verify_releases on; off adds nothing.
+            **({"signature": sig} if (sig := _signature_status(home, want, base)) else {})}
+
+
+def _signature_status(home: Path | None, want: str | None, base: str | None) -> dict | None:
+    from . import release_sig
+    if not release_sig.on(home):
+        return None
+    return release_sig.status(home, want if want and VERSION.fullmatch(want) else None, base)
 
 
 def host_backup_stops_box() -> bool:
@@ -634,7 +644,8 @@ def _run_env(home: Path | None, base: str | None) -> dict:
     """What a detached `wam updates` run needs to check the same box and release feed as this one."""
     return {k: v for k, v in (("WIZARD_OS_HOME", str(home) if home else os.environ.get("WIZARD_OS_HOME")),
                               ("WIZARD_RELEASE_BASE", base or os.environ.get("WIZARD_RELEASE_BASE")),
-                              ("PATH", os.environ.get("PATH"))) if v}
+                              ("PATH", os.environ.get("PATH")),
+                              ("WIZARD_VERIFY_RELEASES", os.environ.get("WIZARD_VERIFY_RELEASES"))) if v}
 
 
 def request_when_idle(home: Path | None, target: str, runner=subprocess.run, base: str | None = None) -> dict:
@@ -806,6 +817,20 @@ def set_mode(new: str, home: Path | None = None, unit_dir: Path | None = None, s
     return {"mode": new, "chosen": True}
 
 
+def set_verify(new: str, home: Path | None = None) -> dict:
+    """Save the release-signature check (#565): off (default) | warn. WIZARD_VERIFY_RELEASES still wins."""
+    from . import release_sig
+    if new not in release_sig.MODES:
+        raise ValueError(f"verify_releases must be one of {', '.join(release_sig.MODES)}")
+    _save(home, **{release_sig.SETTING: new})
+    out = {"verify_releases": new, "mode": release_sig.mode(home)}
+    if os.environ.get(release_sig.ENV) is not None:
+        out["note"] = f"{release_sig.ENV} is set in this environment and wins"
+    elif new == "enforce" and not release_sig.ENFORCE_AVAILABLE:
+        out["note"] = "enforce is not available yet; warning only"
+    return out
+
+
 def set_channel(new: str, home: Path | None = None) -> dict:
     """Save the owner's channel: stable (tested releases, the default) or latest (every release, for testers).
     Leaves the mode alone; Automatic then installs that channel's releases (#458)."""
@@ -860,13 +885,24 @@ def _apply(home, base, runner, force, target, anyway, when_idle) -> dict:
         if when_idle and pin:
             return {**st, "started": False, **request_when_idle(home, pin, runner, base)}
         return {**st, "started": False, "waiting": True}
+    from . import release_sig
+    sig = release_sig.before_update(home, pin, base) if pin else None   # None while the switch is off (#565)
+    if sig and (why := release_sig.refuses(sig)):
+        return {**st, "started": False, "error": f"not updating: {why}", "signature": release_sig.summary(sig)}
     (_home(home) / WHEN_IDLE).unlink(missing_ok=True)
     if pin and not st["unpinned"] and retry is None and _quick(home, pin, base):
         return {**st, **_start_quick(home, pin, base, runner, auto=bool(target))}
     env = f"WIZARD_RELEASE={pin} " if pin else ""
     if target:  # Automatic never inherits an operator's coordinated Hermes opt-in
         env = 'WIZARD_HERMES_PROMOTION= ' + env
-    r = runner(["bash", "-c", installer_script(env)], capture_output=True, text=True,
+    if sig is None:
+        script = installer_script(env)
+    else:   # downloaded and hashed here; warn: a mismatch is logged and recorded, the update carries on
+        script, sig = release_sig.checked_installer(home, sig, env)
+        st = {**st, "signature": release_sig.summary(sig)}
+        if script is None:
+            return {**st, "started": False, "error": f"not updating: {sig.get('installer_error') or 'installer refused'}"}
+    r = runner(["bash", "-c", script], capture_output=True, text=True,
                timeout=600)
     ok = r.returncode == 0
     if ok and not target:
