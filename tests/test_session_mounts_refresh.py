@@ -142,3 +142,20 @@ def test_an_agent_service_update_puts_the_timer_in_place(box, tmp_path, monkeypa
     with pytest.raises(SystemExit, match="stop here"):
         cli._app_update(c, "wizard-agent-service")
     assert not (units / "wizard-session-mounts.timer").exists()
+
+
+def test_a_flag_first_agent_service_update_puts_the_timer_in_place_too(box, tmp_path, monkeypatch):
+    """`wam app update --no-backup wizard-agent-service` (switch wizard/graceful-restart off) goes straight to
+    runtipi-cli and skips app_update(): it must set the timer up as well (Codex P2 on the first version)."""
+    c, hh, ovr, restarts = box
+    units = tmp_path / "_systemd_user"
+    for f in units.glob("wizard-session-mounts.*"):
+        f.unlink()
+    for name in ("backfill_owner_login", "keep_trusted_hosts"):
+        monkeypatch.setattr(cli, name, lambda *a, **k: False)
+    from wam import inbox_tokens
+    monkeypatch.setattr(inbox_tokens, "before_start", lambda *a, **k: None)
+    cli._backfill_owner_logins(c.runtipi_root, ["notifications"])
+    assert not (units / "wizard-session-mounts.timer").exists()     # another app: nothing
+    cli._backfill_owner_logins(c.runtipi_root, ["wizard-agent-service"])
+    assert (units / "wizard-session-mounts.timer").is_file()

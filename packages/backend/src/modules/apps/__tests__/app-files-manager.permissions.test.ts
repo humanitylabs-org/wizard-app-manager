@@ -91,9 +91,9 @@ describe('setAppDataDirPermissions', () => {
       cwd: gateway,
     });
     try {
-      // What an earlier update left behind: the folder and one socket opened to everyone.
+      // What an earlier update left behind: the folder opened to everyone (the sockets are made 0600 by their service).
       await fs.chmod(gateway, 0o777);
-      await fs.chmod(path.join(gateway, 'gateway.sock'), 0o777);
+      await fs.chmod(path.join(gateway, 'gateway.sock'), 0o600);
       await fs.chmod(path.join(gateway, 'ingress.sock'), 0o600);
       await fs.mkdir(path.join(app(), 'data/wizard-os/agents/daily/home'), { recursive: true });
 

@@ -2695,12 +2695,7 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
         role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]
         alongside.write_shell_override(c.runtipi_root, store, app, c.home, role)
         if role != "shell":
-            # wizard-messenger#352: a box switched to alongside mode before the remount timer existed (#577) never got
-            # it, so a stale state.db-wal/-shm mount needed a hand-made restart script. Every Agent Service update
-            # now puts the timer in place (or takes it away when session files are not shared). Never raises.
-            out = session_mounts_timer(c, alongside.load(c.home) or {})
-            if out.startswith("error"):
-                print(f"note: {session_mounts.UNIT}.timer not set up ({out[:160]})", file=sys.stderr)
+            _session_timer_on_update(c)
     if store == STORE:
         # Same owner gate as install: an update must not bring in host access (or networks the app does not own)
         # that the installed recipe didn't have, unless the owner allowed this app.
@@ -2790,6 +2785,22 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
     return out
 
 
+def _session_timer_on_update(c) -> None:
+    """wizard-messenger#352: a box switched to alongside mode before the remount timer existed (#577) never got it, so
+    a stale state.db-wal/-shm mount needed a hand-made restart script. Every update of the side that reads Hermes's
+    state.db (the Agent Service or the old bundle) puts the timer in place, or takes it away when session files are not
+    shared, the same rule `wam alongside` uses. Never fails the update."""
+    try:
+        st = alongside.load(c.home)
+        if not st:
+            return
+        out = session_mounts_timer(c, st)
+    except Exception as e:  # noqa: BLE001 - never fail the update for it
+        out = f"error: {str(e)[:160]}"
+    if out.startswith("error"):
+        print(f"note: {session_mounts.UNIT}.timer not set up ({out[:160]})", file=sys.stderr)
+
+
 def _backfill_owner_logins(runtipi_root: Path, targets: list[str]) -> None:
     """backfill_owner_login for each named store app, or every installed store app when none is named (--all)."""
     from types import SimpleNamespace
@@ -2811,6 +2822,8 @@ def _backfill_owner_logins(runtipi_root: Path, targets: list[str]) -> None:
             print(f"note: trusted hosts not kept for {app} ({str(e)[:120]})", file=sys.stderr)
         from . import inbox_tokens   # #804
         inbox_tokens.before_start(c, app, prefer="store")
+    if any(app in (alongside.LEGACY_BUNDLE, "wizard-agent-service") for app in ids):
+        _session_timer_on_update(c)   # wizard-messenger#352: the flag-first/bulk forms skip app_update()
 
 
 def _graceful_passthrough(argv: list[str]) -> int | None:

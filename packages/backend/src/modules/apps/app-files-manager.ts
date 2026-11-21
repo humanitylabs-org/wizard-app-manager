@@ -30,8 +30,9 @@ const AGENT_GATEWAY = /^data\/wizard-os\/agents\/[^/]+\/gateway$/;
 export const isPrivateAppDataDir = (relativePath: string) => PRIVATE_APP_DATA_DIRS.includes(relativePath) || AGENT_GATEWAY.test(relativePath);
 
 /**
- * Folder exactly 0700, its regular files and sockets exactly 0600 (what the gateway requires); owners unchanged,
- * links and anything else left alone. Never opens anything to group or others.
+ * Folder exactly 0700, its regular files exactly 0600 (what the gateway requires); owners unchanged, links and
+ * anything else left alone. Never opens anything to group or others. Sockets are left as their service made them
+ * (0600): the walk can't open them, so it never widened them, and a chmod by path could follow a link swapped in.
  */
 async function tightenPrivateDir(dir: string) {
   const NOFOLLOW = fsp.constants.O_RDONLY | fsp.constants.O_NOFOLLOW | fsp.constants.O_NONBLOCK;
@@ -50,12 +51,6 @@ async function tightenPrivateDir(dir: string) {
   await tighten(dir, 0o700, 'dir');
   for (const e of await fsp.readdir(dir, { withFileTypes: true })) {
     if (e.isFile()) await tighten(path.join(dir, e.name), 0o600, 'file');
-    else if (e.isSocket()) {
-      // A socket can't be opened, and chmod never follows it (only links are followed, and lstat said socket).
-      const p = path.join(dir, e.name);
-      const s = await fsp.lstat(p).catch(() => null);
-      if (s?.isSocket() && (s.mode & 0o777) !== 0o600) await fsp.chmod(p, 0o600).catch(() => {});
-    }
   }
 }
 
