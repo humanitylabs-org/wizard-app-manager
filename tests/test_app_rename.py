@@ -697,7 +697,7 @@ def _host_data(c, app_id="cinequeue"):
 
 
 def test_a_move_that_can_not_see_the_old_data_changes_nothing(box, monkeypatch):
-    """money -> finances on oscar-main: the data sat at /app-data, the move looked in /data/app-data, copied 0 files,
+    """money -> finances on a real box: the data sat at /app-data, the move looked in /data/app-data, copied 0 files,
     called it done and uninstalled Money, and Runtipi's uninstall deleted the real data."""
     c, rt, fs, installs = box
     _host_data(c)
