@@ -685,8 +685,59 @@ def _put_back(box: Box, urn: str, archive: Path, parts=APP_ROOTS, rewrite=(), *,
         raise RestoreError(str(e)) from None
 
 
+class InstallFailed(RestoreError):
+    """One app Runtipi could not install. The restore reports it and goes on with everything else (#890)."""
+
+
+# Runtipi creates an app's row before its install job runs and deletes it when the job fails (install-app.handler):
+# `missing` after the row was seen is a failed install; a row never seen after this many polls (2 s apart) is too.
+INSTALL_MISSING_POLLS = 15
+
+
+def _install_status(box: Box, urn: str) -> str:
+    """Runtipi's status for urn: `missing` only when Runtipi says it has no such app (not on an API hiccup)."""
+    try:
+        return ((box.rt.app(urn) or {}).get("app") or {}).get("status") or "missing"
+    except RuntipiError as e:
+        return "missing" if "-> 404" in str(e) else "unknown"
+
+
+def _wait_installed(box: Box, urn: str, timeout: float = 1800) -> str:
+    """Wait for an install to end: running/stopped, or `missing` once Runtipi dropped the app (a failed install
+    used to be waited on for the whole 30 minutes and then stopped the restore part way, #890)."""
+    deadline = time.monotonic() + timeout
+    seen, misses, st = False, 0, "unknown"
+    while True:
+        st = _install_status(box, urn)
+        if st in ("running", "stopped"):
+            return st
+        if st == "missing":
+            misses += 1
+            if seen or misses >= INSTALL_MISSING_POLLS:
+                return st
+        elif st != "unknown":
+            seen, misses = True, 0
+        if time.monotonic() > deadline:
+            return st
+        box.sleep(2)
+
+
+def _runtipi_reason(box: Box, app_id: str) -> str:
+    """The last error lines Runtipi logged for this app (its compose or pull error), or ''."""
+    try:
+        from .. import update_strand
+        lines = []
+        for d in update_strand.log_dirs(box.runtipi_root):
+            lines += [x.strip() for x in update_strand.log_text(d).splitlines()
+                      if app_id in x and any(w in x.lower() for w in ("error", "fail", "denied", "not found"))]
+        return " | ".join(x[-240:] for x in lines[-2:])[-500:]
+    except Exception:  # noqa: BLE001 -- the reason is a hint; the failure is reported either way
+        return ""
+
+
 def _install_app(box: Box, r: _Restore, rec: dict) -> str:
-    """Install a bundled app that this box doesn't have, from the bundled package at the same version."""
+    """Install a bundled app that this box doesn't have, from the bundled package at the same version.
+    Raises InstallFailed when Runtipi could not install it."""
     urn, app_id, store = rec["urn"], rec["id"], rec["store"]
     stage = r.root / "stage" / "apps" / app_id
     pkg = stage / "package"
@@ -710,12 +761,28 @@ def _install_app(box: Box, r: _Restore, rec: dict) -> str:
         # the bundle's user-config/ goes in first: Runtipi's install starts the app with its compose override (an
         # extra agent's home mount, say); without it the first start creates folders at the package's defaults
         _put_back(box, urn, arch, ("user-config",), _path_rewrite(box, r.journal["manifest"]))
-    box.rt.install(urn, meta.get("form") or {})
-    r.step(kind="app_installed", urn=urn, **info)
-    st = box.wait_status(urn, {"running", "stopped"}, timeout=1800)
+    try:
+        box.rt.install(urn, meta.get("form") or {})
+    except RuntipiError as e:
+        raise InstallFailed(f"installing {app_id} failed: {e}") from None
+    st = _wait_installed(box, urn)
     if st not in ("running", "stopped"):
-        raise RestoreError(f"installing {app_id} did not finish (status {st})")
+        why = _runtipi_reason(box, app_id)
+        src = "" if (repo_pkg / "config.json").is_file() else " (this box has no package for it)"
+        raise InstallFailed(f"installing {app_id} did not finish (status {st}){src}" + (f": {why}" if why else ""))
+    r.step(kind="app_installed", urn=urn, **info)
     return st
+
+
+def _install_failed(r: _Restore, p: dict, rec: dict, e: Exception) -> None:
+    """Report one app Runtipi could not install and go on (#890): its data is not put back, an agent's home is."""
+    msg = str(e)
+    log(f"warning: {msg}; going on with the rest")
+    r.journal.setdefault("install_failed", {})[rec["urn"]] = msg
+    p.setdefault("not_installed", []).append({"id": rec["id"], "name": rec.get("name") or rec["id"], "message": msg,
+                                              "agent": rec.get("data") == "agent"})
+    r.step(kind="app_install_failed", urn=rec["urn"], message=msg[:500])
+    r.save()
 
 
 def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
@@ -811,10 +878,15 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
         if k not in existing:
             _prepare_agent_folder(r, k, a)
     late_refused: set[str] = set()
-    for a in apps:
+    # agent apps last: their compose can name what other apps bring (the Claude app's shared login volume)
+    for a in sorted(apps, key=lambda x: x.get("data") == "agent"):
         if a["urn"] not in installed:
             log(f"app {a['id']}: installing this box's release")
-            _install_app(box, r, a)
+            try:
+                _install_app(box, r, a)
+            except InstallFailed as e:
+                _install_failed(r, p, a, e)
+                continue
             # what Runtipi actually installed (the App Index's release can differ from any store copy seen before)
             v = _version_check(box, a, True, stage)
             if v["verdict"] == "refuse":
@@ -832,7 +904,7 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
             elif v["verdict"] == "warn":
                 p["warnings"].append(v["message"])
     for a in data_apps:
-        if a["urn"] in late_refused:
+        if a["urn"] in late_refused or a["urn"] in r.journal.get("install_failed", {}):
             continue
         arch = stage / "apps" / a["id"] / "data.tar.gz"
         if arch.is_file():
@@ -902,8 +974,12 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
     else:
         notes += _regenerate(box)
     health = {dest["id"]: box.app_status(dest["urn"]) for _, dest in mappings}
+    failed = r.journal.get("install_failed", {})
     for a in apps:
         if a["urn"] in late_refused:
+            continue
+        if a["urn"] in failed:
+            health[a["id"]] = "not installed"
             continue
         want_running = a.get("status") == "running"
         st = box.app_status(a["urn"])
@@ -921,6 +997,10 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
             st = box.wait_status(a["urn"], {"stopped"}, timeout=300)
         health[a["id"]] = st
     for k, a in targets.items():
+        if a.runtime == "container" and a.urn in failed:
+            notes.append(f"agent {k}: its home is restored; its app {a.urn.split(':')[0]} is not installed, so it "
+                         "is not started (start it again from the Agents app)")
+            continue
         try:
             _start_agent(box, a)
         except (RuntipiError, HermesError) as e:
@@ -929,7 +1009,8 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
     datafs.rmtree(r.froot / "stage", ignore_errors=True)
     kept = sorted(n for n in PER_MACHINE if (box.home / n).exists())
     refused = list(p.get("refused") or [])
-    receipt = {"ok": not refused, "partial": bool(refused), "stamp": r.stamp, "file": r.journal.get("file"), "restored_at": int(time.time()),
+    not_installed = list(p.get("not_installed") or [])
+    receipt = {"ok": not refused and not not_installed, "partial": bool(refused or not_installed), "stamp": r.stamp, "file": r.journal.get("file"), "restored_at": int(time.time()),
                "manifest": summary(m), "plan": p, "apps": health, "agents": agent_reports,
                "installed_by_restore": [s["urn"] for s in r.journal["steps"] if s["kind"] == "app_installed"],
                "kept_identity": kept, "active_at_export": m.get("active") or {},
@@ -937,9 +1018,12 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
                "activate": "wam backup activate --old-is-off",
                "refused": [{"id": x["id"], "name": x["name"], "message": x["message"], "backup": x["backup"],
                             "here": x["here"]} for x in refused],
-               "not_restored": [x["message"] for x in refused]}
-    if refused:
-        receipt["error"] = "partly restored: " + " ".join(x["message"] for x in refused)
+               "not_installed": not_installed,
+               "not_restored": [x["message"] for x in refused] + [
+                   x["message"] + ("; its agent's home is restored" if x.get("agent") else "; its data is not put back")
+                   for x in not_installed]}
+    if refused or not_installed:
+        receipt["error"] = "partly restored: " + " ".join(receipt["not_restored"])
     r.journal["receipt"] = receipt
     r.journal["status"] = "restored"
     r.save()
@@ -1052,7 +1136,13 @@ def _import_agent(box: Box, r: _Restore, k: str, a: Agent, existing: dict, insta
         rec = next((x for x in r.journal["manifest"].get("apps", []) if x["urn"] == a.urn), None)
         if not rec:
             raise RestoreError(f"agent {k}: its app {a.urn} is neither on this box nor in the backup")
-        _install_app(box, r, rec)
+        if a.urn not in r.journal.get("install_failed", {}):
+            try:
+                _install_app(box, r, rec)
+            except InstallFailed as e:
+                _install_failed(r, r.journal["plan"], rec, e)
+    if a.urn and a.urn in r.journal.get("install_failed", {}):
+        rep["app_not_installed"] = r.journal["install_failed"][a.urn]
     if a.runtime == "container" and box.app_status(a.urn) in LIVE:
         box.rt.stop(a.urn)
         st = box.wait_status(a.urn, {"stopped"}, timeout=300)

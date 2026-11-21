@@ -137,6 +137,13 @@ refused.
    uninstalled if it came in older. The result then has `"partial": true`, `refused[]` and `not_restored[]`
    (e.g. "Files not restored: your backup is from Files 2.64.0, newer than this box's 2.63.23. Update this box, then
    restore again."), and `wam backup import` exits 3.
+   **One app that will not install** (wizard-app-manager#890): Runtipi deletes an app's row when its install job
+   fails, so `missing` after the install call ends the wait at once (it used to wait 30 minutes and then stop the
+   whole restore part way). That app is listed in `not_installed[]` and `not_restored[]` with Runtipi's last error
+   line for it, its data is not put back, and everything else goes on (exit 3). An agent app that fails still gets
+   its agent's home imported (chats, memory, paused jobs); only its container is missing until the Agents app starts
+   it again. Agent apps install after the other apps, since their compose can use what another app brings (the
+   Claude app's shared login volume).
 4. **Set aside** (undo snapshot): stop the affected apps and agents and move their current data aside
    (`rename`, same filesystem, exact and instant) into `restores/<stamp>/before/`, with a digest of everything
    moved. Record which apps were installed before. App data belongs to the app containers (root), so each app the
