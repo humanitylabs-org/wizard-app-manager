@@ -541,8 +541,10 @@ class HermesRunner:
         except OSError:
             pass
         docs = []
+        # last: the store copy (a restore placed the bundled package there; Runtipi could not install it, #890)
         for f in (rt / "apps" / store / app_id / "docker-compose.generated.yml", rt / "apps" / store / app_id /
-                  "docker-compose.yml", rt / "user-config" / store / app_id / "docker-compose.yml"):
+                  "docker-compose.yml", rt / "user-config" / store / app_id / "docker-compose.yml",
+                  rt / "repos" / store / "apps" / app_id / "docker-compose.yml"):
             try:
                 import yaml
                 d = yaml.safe_load(f.read_text()) or {}
