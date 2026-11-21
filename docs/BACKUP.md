@@ -142,7 +142,10 @@ refused.
    whole restore part way). That app is listed in `not_installed[]` and `not_restored[]` with Runtipi's last error
    line for it, its data is not put back, and everything else goes on (exit 3). An agent app that fails still gets
    its agent's home imported (chats, memory, paused jobs); only its container is missing until the Agents app starts
-   it again. Agent apps install after the other apps, since their compose can use what another app brings (the
+   it again. If its Hermes can't run here either (the same failed image pull), its checked archive is kept at
+   `restores/<stamp>/not-imported/<agent>/hermes-backup.zip` and listed in `not_imported[]`, and the restore still
+   finishes. What the failed install left (its containers, installed copy, generated app-data) is removed once
+   Runtipi confirms it has no such app. Agent apps install after the other apps, since their compose can use what another app brings (the
    Claude app's shared login volume).
 4. **Set aside** (undo snapshot): stop the affected apps and agents and move their current data aside
    (`rename`, same filesystem, exact and instant) into `restores/<stamp>/before/`, with a digest of everything

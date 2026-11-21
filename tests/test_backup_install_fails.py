@@ -21,8 +21,9 @@ from wam.backup.box import box_digest  # noqa: E402
 AGENT = "agent-research:wizardapps"
 
 
-def _fail_install(monkeypatch, urn, *, seen=False):
-    """Runtipi takes the install, then its job fails and the row goes (seen=True: one `installing` poll first)."""
+def _fail_install(monkeypatch, urn, *, seen=False, leftovers=False):
+    """Runtipi takes the install, then its job fails and the row goes (seen=True: one `installing` poll first;
+    leftovers=True: the job got far enough to copy the package, write app-data and create a container)."""
     real = FakeRuntipi.install
     polls = {"n": 0}
 
@@ -30,6 +31,14 @@ def _fail_install(monkeypatch, urn, *, seen=False):
         if u != urn:
             return real(self, u, form)
         self.calls.append(("install", u))
+        if leftovers:
+            app_id, store = u.split(":")
+            _w(self.root / "apps" / store / app_id / "config.json", "{}")
+            _w(self.root / "app-data" / store / app_id / "app.env", "APP_ID=" + app_id + "\n")
+            st = json.loads(self.docker_state.read_text())
+            st[f"{app_id}_{store}"] = {"id": "c-left", "name": f"{app_id}_{store}-engine-1", "image": "x",
+                                       "home": "/nowhere", "orphan": True}
+            self.docker_state.write_text(json.dumps(st))
         if seen:
             self.apps[u] = {"status": "installing", "version": 1, "config": {}}
         return {}
@@ -138,3 +147,47 @@ def test_a_runtipi_api_hiccup_is_not_read_as_a_failed_install(tmp_path):
             pass
 
     assert restore._wait_installed(B(), "x:wizardapps") == "running"
+
+
+def test_a_failed_install_leaves_no_containers_or_folders_behind(realbox, monkeypatch):
+    """Codex P2 on PR #901: Runtipi's failed job only drops its row; the restore removes the rest."""
+    new = realbox["new"]
+    out = _export(realbox)
+    _fail_install(monkeypatch, AGENT, leftovers=True)
+    code, rec = _cli(new.box(), "import", str(out), "--yes", "--key-file", str(realbox["keyfile"]))
+    assert code == 3 and rec["not_installed"][0]["id"] == "agent-research", rec
+    assert "agent-research_wizardapps" not in json.loads(new.docker_state.read_text())
+    assert not (new.runtipi / "apps/wizardapps/agent-research").exists()
+    assert not (new.runtipi / "app-data/wizardapps/agent-research").exists()
+    # the agent's home (in the Agent Service's data) is untouched and imported
+    assert (new.runtipi / SVC / "wizard-os/agents/research/home/state.db").is_file()
+
+
+def test_an_agent_whose_hermes_cannot_run_keeps_its_archive_and_the_restore_finishes(realbox, monkeypatch):
+    """Codex P1 on PR #901: a failed pull means the agent's Hermes image is not here either, so `hermes import`
+    in its container fails too. The restore keeps the checked archive and goes on instead of stopping part way."""
+    from wam.backup.box import HermesError, HermesRunner
+
+    new = realbox["new"]
+    out = _export(realbox)
+    _fail_install(monkeypatch, AGENT)
+    real = HermesRunner.import_zip
+
+    def import_zip(self, agent, zip_path):
+        if agent.urn == AGENT:
+            raise HermesError("docker run: pull access denied for ghcr.io/example/hermes-agent")
+        return real(self, agent, zip_path)
+
+    monkeypatch.setattr(HermesRunner, "import_zip", import_zip)
+    code, rec = _cli(new.box(), "import", str(out), "--yes", "--key-file", str(realbox["keyfile"]))
+    assert code == 3, rec
+    [kept] = rec["not_imported"]
+    assert kept["agent"] == "research" and "pull access denied" in kept["message"]
+    assert Path(kept["archive"]).is_file()                       # nothing of the agent is lost
+    assert rec["agents"]["research"]["archive_kept"] == kept["archive"]
+    assert any("kept, not imported" in x for x in rec["not_restored"])
+    nd = new.runtipi / "app-data/wizardapps/notes-app/data"      # the rest is restored and started
+    assert (nd / "notes.db").read_text() == "old notes database"
+    assert rec["apps"]["notes-app"] == "running"
+    code, res = _cli(new.box(), "undo")
+    assert code == 0 and res["digest_match"], res

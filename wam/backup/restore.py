@@ -39,7 +39,7 @@ from . import filesystem as datafs
 from .. import slots
 from . import agents as agentlib, bundle, fmt, versions
 from .appdata import ROOTS as APP_ROOTS, AppDataError
-from .box import (MAIN_AGENT, PER_MACHINE, RESTORE_DIR, STORE, Agent, Box, HermesError, RuntipiError, SpaceError,
+from .box import (MAIN_AGENT, MAIN_APP, PER_MACHINE, RESTORE_DIR, STORE, Agent, Box, HermesError, RuntipiError, SpaceError,
                   box_digest, digest_differences, human, log, need_space, need_spaces, root_runtime_digest_path, skip_home_entry)
 
 MARGIN = 256 << 20
@@ -761,17 +761,38 @@ def _install_app(box: Box, r: _Restore, rec: dict) -> str:
         # the bundle's user-config/ goes in first: Runtipi's install starts the app with its compose override (an
         # extra agent's home mount, say); without it the first start creates folders at the package's defaults
         _put_back(box, urn, arch, ("user-config",), _path_rewrite(box, r.journal["manifest"]))
+    rt = box.runtipi_root
+    fresh = not any((rt / part / store / app_id).exists() for part in ("app-data", "apps"))
     try:
         box.rt.install(urn, meta.get("form") or {})
     except RuntipiError as e:
-        raise InstallFailed(f"installing {app_id} failed: {e}") from None
+        raise InstallFailed(f"installing {app_id} failed: {e}" + _clean_failed_install(box, urn, fresh)) from None
     st = _wait_installed(box, urn)
     if st not in ("running", "stopped"):
         why = _runtipi_reason(box, app_id)
         src = "" if (repo_pkg / "config.json").is_file() else " (this box has no package for it)"
-        raise InstallFailed(f"installing {app_id} did not finish (status {st}){src}" + (f": {why}" if why else ""))
+        tidy = _clean_failed_install(box, urn, fresh) if st == "missing" else ""
+        raise InstallFailed(f"installing {app_id} did not finish (status {st}){src}" + (f": {why}" if why else "")
+                            + tidy)
     r.step(kind="app_installed", urn=urn, **info)
     return st
+
+
+def _clean_failed_install(box: Box, urn: str, fresh: bool) -> str:
+    """Remove what a failed install left behind (its containers, installed copy and generated app-data), so nothing
+    untracked keeps running and a later install starts clean (#890). Only when Runtipi confirms it has no such app
+    (a successful installed-list read) and the restore's install made those folders; the package and user-config
+    the restore placed stay for undo. Returns a note for the report ('' when all went)."""
+    app_id, store = urn.split(":")
+    if app_id == MAIN_APP or not fresh:
+        return "; its leftovers were kept (this box had that app's folders before the restore)" if not fresh else ""
+    try:
+        if urn in box.installed():
+            return "; Runtipi still lists it, so nothing was removed"
+        box.appdata.remove_missing_app(store, app_id)
+        return ""
+    except (RuntipiError, AppDataError, OSError) as e:
+        return f"; cleaning up after it failed: {e}"
 
 
 def _install_failed(r: _Restore, p: dict, rec: dict, e: Exception) -> None:
@@ -998,7 +1019,7 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
         health[a["id"]] = st
     for k, a in targets.items():
         if a.runtime == "container" and a.urn in failed:
-            notes.append(f"agent {k}: its home is restored; its app {a.urn.split(':')[0]} is not installed, so it "
+            notes.append(f"agent {k}: its home is {'kept, not imported' if agent_reports.get(k, {}).get('not_imported') else 'restored'}; its app {a.urn.split(':')[0]} is not installed, so it "
                          "is not started (start it again from the Agents app)")
             continue
         try:
@@ -1010,7 +1031,10 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
     kept = sorted(n for n in PER_MACHINE if (box.home / n).exists())
     refused = list(p.get("refused") or [])
     not_installed = list(p.get("not_installed") or [])
-    receipt = {"ok": not refused and not not_installed, "partial": bool(refused or not_installed), "stamp": r.stamp, "file": r.journal.get("file"), "restored_at": int(time.time()),
+    not_imported = list(p.get("not_imported") or [])
+    unimported = {x.get("app") for x in not_imported}
+    receipt = {"ok": not refused and not not_installed and not not_imported,
+               "partial": bool(refused or not_installed or not_imported), "stamp": r.stamp, "file": r.journal.get("file"), "restored_at": int(time.time()),
                "manifest": summary(m), "plan": p, "apps": health, "agents": agent_reports,
                "installed_by_restore": [s["urn"] for s in r.journal["steps"] if s["kind"] == "app_installed"],
                "kept_identity": kept, "active_at_export": m.get("active") or {},
@@ -1020,9 +1044,12 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
                             "here": x["here"]} for x in refused],
                "not_installed": not_installed,
                "not_restored": [x["message"] for x in refused] + [
-                   x["message"] + ("; its agent's home is restored" if x.get("agent") else "; its data is not put back")
-                   for x in not_installed]}
-    if refused or not_installed:
+                   x["message"] + ("; its data is not put back" if not x.get("agent") else
+                                   "; its agent's home is kept, not imported" if x["id"] in unimported else
+                                   "; its agent's home is restored")
+                   for x in not_installed] + [x["message"] for x in not_imported],
+               "not_imported": not_imported}
+    if refused or not_installed or not_imported:
         receipt["error"] = "partly restored: " + " ".join(receipt["not_restored"])
     r.journal["receipt"] = receipt
     r.journal["status"] = "restored"
@@ -1156,14 +1183,47 @@ def _import_agent(box: Box, r: _Restore, k: str, a: Agent, existing: dict, insta
     rep["archive"] = agentlib.check_and_filter(zip_in, filtered)
     zip_in.unlink()
     log(f"agent {k}: hermes import")
-    box.runner.import_zip(a, filtered)
+    try:
+        box.runner.import_zip(a, filtered)
+    except (HermesError, OSError) as e:
+        if not rep.get("app_not_installed"):
+            raise
+        # its app did not install, so its Hermes image may not be on this box either (a failed pull): keep the
+        # archive instead of stopping the whole restore part way (#890)
+        return _agent_not_imported(r, k, filtered, rep, e)
     filtered.unlink(missing_ok=True)      # the archive is deleted after import
     if wiring.get("present"):
         rep["replaced_env_keys"] = agentlib.env_merge(a.home, env_lines)
-    out = box.runner.python(a, agentlib.POST_IMPORT, json.dumps(wiring))
+    try:
+        out = box.runner.python(a, agentlib.POST_IMPORT, json.dumps(wiring))
+    except (HermesError, OSError) as e:
+        if not rep.get("app_not_installed"):
+            raise
+        rep["post_import_error"] = str(e)[:500]
+        r.journal["plan"].setdefault("warnings", []).append(
+            f"agent {k}: its home is restored, but this box's Wizard settings were not applied to it yet ({e})"[:600])
+        r.step(kind="agent_imported", agent=k)
+        return rep
     rep.update(agentlib.last_json_line(out))
     rep["wiring_kept"] = bool(wiring.get("present"))
     r.step(kind="agent_imported", agent=k)
+    return rep
+
+
+def _agent_not_imported(r: _Restore, k: str, archive: Path, rep: dict, e: Exception) -> dict:
+    """An agent whose app did not install and whose Hermes could not run here: keep its checked archive in the
+    restore folder and report it, so the rest of the restore finishes and nothing of the agent is lost (#890)."""
+    kept = r.root / "not-imported" / k / "hermes-backup.zip"
+    kept.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    shutil.move(str(archive), str(kept))
+    msg = (f"agent {k}: its home was not imported, because its app is not installed and its Hermes could not run "
+           f"here ({str(e)[:300]}); the checked archive is kept at {kept}")
+    log(f"warning: {msg}")
+    rep.update({"not_imported": msg, "archive_kept": str(kept)})
+    r.journal["plan"].setdefault("not_imported", []).append({"agent": k, "app": rep.get("app"), "message": msg,
+                                                            "archive": str(kept)})
+    r.step(kind="agent_not_imported", agent=k, archive=str(kept))
+    r.save()
     return rep
 
 
