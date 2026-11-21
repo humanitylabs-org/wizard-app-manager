@@ -176,3 +176,12 @@ def test_verify_and_import_plan_say_what_the_backup_left_out(tmp_path):
     manifest = json.loads(_contents(out, key)["manifest.json"])
     p = restore.plan(fb.box(), manifest, probe=False)
     assert p["warnings"][0] == "this backup: " + res["warnings"][0]
+
+
+def test_the_plain_run_and_export_lines_print_the_warning():
+    w = MAIN_AGENT_LEFT_OUT + "/home/x/.hermes (…)"
+    assert ("\nwarning: " + w) in bcli._human("run", {"short_id": "abc", "warnings": [w]})
+    assert "warning:" not in bcli._human("run", {"short_id": "abc", "warnings": []})
+    exp = {"file": "/x.wizardbackup", "size": "1 KB", "agents": [], "apps": [], "files": {"count": 0, "bytes": 0,
+           "included": True}, "key_ids": ["k"], "slots": [], "warnings": [w]}
+    assert bcli._human("export", exp).endswith("\nwarning: " + w)

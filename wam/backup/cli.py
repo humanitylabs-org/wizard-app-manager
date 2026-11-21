@@ -141,7 +141,8 @@ def _human(cmd: str, res: dict) -> str:
         return (f"wrote {res['file']} ({res['size']}): {len(res['agents'])} agents, {len(res['apps'])} apps, "
                 f"{f['count']} files ({human(f['bytes'])})" + ("" if f["included"] else " [files left out]")
                 + f"\nopens with recovery key {', '.join(res['key_ids']) or '-'}"
-                + (" or the passphrase" if "passphrase" in res["slots"] else ""))
+                + (" or the passphrase" if "passphrase" in res["slots"] else "")
+                + "".join(f"\nwarning: {w}" for w in res.get("warnings") or []))
     if cmd == "verify":
         m = res["manifest"]
         return (f"OK: {res['entries']} entries checked ({human(res['content_bytes'])}), made "
@@ -157,7 +158,7 @@ def _human(cmd: str, res: dict) -> str:
     if cmd == "run":
         return (f"snapshot {res.get('short_id')}: {human(res.get('data_added') or 0)} new of "
                 f"{human(res.get('capture_bytes') or 0)}; repository {human(res.get('repository_bytes') or 0)}; "
-                f"restic check passed")
+                f"restic check passed" + "".join(f"\nwarning: {w}" for w in res.get("warnings") or []))
     if cmd == "snapshots":
         return "\n".join(f"{s['short_id']}  {s['time'][:19]}  {s['host']}  {human(s.get('capture_bytes') or 0)}"
                          for s in res["snapshots"]) or "no snapshots"
