@@ -1519,6 +1519,16 @@ def cli_install_links(c: Config, res: dict, publish=None) -> dict:
     return {**res, "links": "refreshed"}
 
 
+def hand_overrides_step(c: Config, rt: Runtipi, dry_run: bool = False) -> list[dict]:
+    """Retire box overrides written by hand (wam/hand_overrides.py, wizard-os#805). Never fails the caller."""
+    from . import hand_overrides
+    try:
+        return hand_overrides.retire(c.runtipi_root, STORE, rt, c.home, dry_run=dry_run)
+    except Exception as e:  # noqa: BLE001 - an installer run never stops on this step
+        print(f"WARNING: hand-written overrides not checked: {e}", file=sys.stderr)
+        return []
+
+
 def bootstrap(c: Config) -> dict:
     """Fill every empty parking spot with its default app. Spots that already hold any provider are left alone."""
     release_pins.load()
@@ -1541,6 +1551,7 @@ def bootstrap(c: Config) -> dict:
             del failed[app_id]
         except (SystemExit, RuntimeError, RuntipiError, index.IndexError_) as e:
             failed[app_id] = str(e)[:200]
+    hand = hand_overrides_step(c, rt)   # before the release moves apps: they start without the hand edits (#805)
     updated = release_updates(c, rt, failed)
     relink_fresh_agent(c, rt)
     if mode and mode.get("notice") == "pending":   # Notifications may have been installed just now
@@ -1548,6 +1559,8 @@ def bootstrap(c: Config) -> dict:
     net = network_step(c, rt)   # every installer run (fresh or upgrade) converts/repairs the app networks
     reg = write_registry(c, rt)
     out = {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg), "networks": _net_brief(net)}
+    if hand:
+        out["hand_overrides"] = hand
     if mode:
         out["connection_mode"] = mode
     return out
@@ -3011,6 +3024,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("bootstrap")
     rc = sub.add_parser("recover", help="start the shell / Agent Service and recorded-running apps whose containers are missing")
     rc.add_argument("--running", action="append", default=[], help="app URN recorded running before this rerun")
+    ho = sub.add_parser("hand-overrides", help="retire box overrides written by hand (also runs on every installer run)")
+    ho.add_argument("--dry-run", action="store_true")
     ss = sub.add_parser("shell-split", help="move this box from the wizard-shell bundle to the split Agent Service + shell")
     ss.add_argument("--rollback", action="store_true"); ss.add_argument("--force", action="store_true")
     a = sub.add_parser("apps"); a.add_argument("--json", action="store_true")
@@ -3264,6 +3279,8 @@ def main(argv: list[str] | None = None) -> int:
                              indent=2))
         elif args.cmd == "recover":
             print(json.dumps(recover(c, args.running), indent=2))
+        elif args.cmd == "hand-overrides":
+            print(json.dumps(hand_overrides_step(c, c.runtipi(), dry_run=args.dry_run), indent=2))
         elif args.cmd == "shell-split":
             print(json.dumps(shell_split(c, rollback=args.rollback, force=args.force), indent=2))
         elif args.cmd == "apps":
