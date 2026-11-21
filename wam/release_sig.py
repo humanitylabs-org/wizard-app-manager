@@ -251,11 +251,23 @@ def before_update(home: Path | None, version: str, base: str | None = None, keys
     return rec
 
 
-def download(url: str, attempts: int = 4, timeout: float = 60) -> bytes | None:
-    """The installer's bytes (retried like `curl --retry 4`), or None."""
+def download(url: str, attempts: int = 4, timeout: float = 120) -> bytes | None:
+    """The installer's bytes, fetched with curl exactly as the unchecked path does (`curl -fsSL --retry 4`; the
+    installer host refuses Python's default User-Agent with 403), or None when that fails."""
+    curl = shutil.which("curl")
+    if curl:
+        with tempfile.TemporaryDirectory(prefix="wam-installer-") as d:
+            out = Path(d) / "os.sh"
+            try:
+                r = subprocess.run([curl, "-fsSL", "--retry", str(attempts), "--retry-delay", "2", "-o", str(out), url],
+                                   capture_output=True, timeout=timeout)
+            except (OSError, subprocess.SubprocessError):
+                return None
+            return out.read_bytes() if r.returncode == 0 and out.is_file() else None
+    req = urllib.request.Request(url, headers={"User-Agent": "curl/8"})   # no curl: same request, same agent string
     for i in range(attempts):
         try:
-            with urllib.request.urlopen(url, timeout=timeout) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.read(16 * 1024 * 1024)
         except (OSError, ValueError):
             if i + 1 < attempts:

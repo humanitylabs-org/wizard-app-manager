@@ -323,3 +323,18 @@ def test_a_detached_quick_update_keeps_an_environment_only_switch(tmp_path, monk
     assert "WIZARD_VERIFY_RELEASES" not in updates._run_env(tmp_path, None)         # off: main's environment
     monkeypatch.setenv(release_sig.ENV, "warn")
     assert updates._run_env(tmp_path, None)["WIZARD_VERIFY_RELEASES"] == "warn"
+
+
+def test_the_installer_is_fetched_with_curl_like_the_unchecked_path(tmp_path, monkeypatch):
+    """Tester on #907: aiwizards.com answers Python's default User-Agent with 403, so wam fetches with curl."""
+    seen = []
+    real = subprocess.run
+    def run(cmd, **kw):
+        seen.append(cmd)
+        return real(cmd, **kw)
+    monkeypatch.setattr(release_sig.subprocess, "run", run)
+    f, _ = _installer(tmp_path)
+    assert release_sig.download(f.as_uri()) == f.read_bytes()
+    assert seen and seen[0][0].endswith("curl") and seen[0][1:6] == ["-fsSL", "--retry", "4", "--retry-delay", "2"]
+    monkeypatch.setattr(release_sig.shutil, "which", lambda name: None)          # no curl: urllib, curl's agent
+    assert release_sig.download(f.as_uri(), attempts=1) == f.read_bytes()
