@@ -81,6 +81,13 @@ def test_a_real_rollback_is_left_alone(box):
                                       sleep=lambda s: None, containers=lambda urn: ["running"])
 
 
+def test_a_record_that_caught_up_meanwhile_is_read_again(box):
+    box.rt.row["version"] = 135   # Runtipi wrote the target after app_update's last read (Codex P2)
+    res = au.settle_record(box.c, box.rt, f"messenger:{STORE}", "messenger", dict(STALE), BEFORE,
+                           retry=lambda: pytest.fail("the record is already right"))
+    assert res["version"] == 135 and not res.get("stale_record")
+
+
 def test_no_retry_while_runtipi_still_says_updating(box):
     box.rt.row["status"] = "updating"   # a job still running: never start a second update on top of it
     res = {"error": "the update did not finish in time", "status": None}

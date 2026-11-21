@@ -583,7 +583,16 @@ def settle_record(c, rt, urn: str, app_id: str, res: dict, before: dict, *, retr
         recorded = int(row.get("version") if row.get("version") is not None else res.get("version") or 0)
     except Exception:  # noqa: BLE001 - unreadable: verify reports what it sees
         return res
-    if recorded >= int(before.get("to") or 0) or row.get("status") not in ("running", "stopped"):
+    if recorded >= int(before.get("to") or 0):
+        try:
+            behind = int(res.get("version") or 0) < recorded
+        except (TypeError, ValueError):
+            behind = True
+        if row.get("version") is not None and behind:   # the record caught up after app_update read it (Codex P2)
+            return {**res, "version": row["version"],
+                    **({"status": row["status"]} if row.get("status") in ("running", "stopped") else {})}
+        return res
+    if row.get("status") not in ("running", "stopped"):
         return res
     installed, _ = _recipe_version(Path(c.runtipi_root) / "apps" / cli.STORE / app_id)
     if installed is None or installed < before["to"]:
