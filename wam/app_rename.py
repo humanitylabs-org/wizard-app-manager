@@ -101,6 +101,40 @@ def rt_move(src: str, dst: str) -> None:
     _ok(_sh('[ ! -e "$2" ] || { echo "$2 already exists"; exit 1; }; mv "$1" "$2"', src, dst), f"move {src} -> {dst}")
 
 
+def _mount_destination() -> str | None:
+    """Where the runtipi container mounts Runtipi's app-data, from its own mounts (`docker inspect`), or None."""
+    from .agent_link import _docker
+    try:
+        p = subprocess.run(_docker() + ["inspect", RUNTIPI_CONTAINER, "--format", "{{json .Mounts}}"],
+                           capture_output=True, timeout=30)
+        mounts = json.loads(p.stdout or b"null") if p.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    dests = sorted({str(m.get("Destination") or "").rstrip("/") for m in mounts or [] if isinstance(m, dict)})
+    hits = [d for d in dests if d.rsplit("/", 1)[-1] == "app-data"]
+    return min(hits, key=len) if hits else None
+
+
+_APP_DATA: list[str] = []
+
+
+def app_data_dir() -> str:
+    """Runtipi's app-data folder inside the runtipi container (#869). Runtipi 4 mounts it on its own at `/app-data`
+    (`${RUNTIPI_APP_DATA_PATH}/app-data:/app-data`), not under `/data` like state/ or user-config/: read the
+    container's mounts, else look for the folder. Raises when neither is there, so a move never copies from a
+    folder that does not exist and calls it done."""
+    if _APP_DATA:
+        return _APP_DATA[0]
+    found = _mount_destination()
+    if not found:
+        p = _sh('for d in /app-data /data/app-data; do [ -d "$d" ] && { echo "$d"; exit 0; }; done; exit 3')
+        found = p.stdout.decode().strip() if p.returncode == 0 else None
+    if not found:
+        raise RenameError("cannot find Runtipi's app-data folder inside the runtipi container")
+    _APP_DATA.append(found)
+    return found
+
+
 def rt_tree_summary(path: str) -> dict:
     """{files, bytes} of a tree (for the copy check)."""
     p = _sh('[ -d "$1" ] || { echo "0 0"; exit 0; }; '
@@ -340,10 +374,34 @@ def _agent_state_files(c) -> dict:
 
 
 def _under_runtipi(c, path: Path) -> str | None:
+    """The path inside the runtipi container of a host file under the Runtipi root: app-data/... is Runtipi's own
+    app-data mount (#869), every other root folder sits under /data."""
+    from . import packaging
+    for base, inner in ((packaging.app_data_root(Path(c.runtipi_root)), None),
+                        (Path(c.runtipi_root), "/data")):
+        try:
+            rel = Path(path).relative_to(base)
+        except ValueError:
+            continue
+        inner = inner or app_data_dir()
+        return inner + ("/" + rel.as_posix() if rel.parts else "")
+    return None
+
+
+def _host_data(c, app_id: str) -> bool:
+    """Whether the host's app-data folder of `app_id` exists with something in it (an unreadable one counts as data):
+    the check that a move which copied nothing really had nothing to copy (#869)."""
+    from . import cli, packaging
+    d = packaging.app_data_root(Path(c.runtipi_root)) / cli.STORE / app_id
     try:
-        return "/data/" + str(Path(path).relative_to(Path(c.runtipi_root)))
-    except ValueError:
-        return None
+        if not d.is_dir():
+            return False
+    except OSError:
+        return True
+    try:
+        return any(True for _ in d.iterdir())
+    except OSError:
+        return True
 
 
 def _fread(c, path: Path) -> bytes | None:
@@ -522,7 +580,7 @@ class RenameError(RuntimeError):
 
 
 def _paths(store: str, app_id: str) -> dict:
-    return {"data": f"/data/app-data/{store}/{app_id}", "user": f"/data/user-config/{store}/{app_id}"}
+    return {"data": f"{app_data_dir()}/{store}/{app_id}", "user": f"/data/user-config/{store}/{app_id}"}
 
 
 def _new_record(c, old: str, new: str, repo: str | None = None) -> dict:
@@ -700,11 +758,17 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
     old_view = _view_path(_wizard_md(c, old))
     if old not in renamed_from(w):
         return {"error": f"{new} does not declare renamed_from: [{old}] in its wizard.md; refusing to move {old}'s data"}
-    po, pn = _paths(store, old), _paths(store, new)
+    try:
+        po, pn = _paths(store, old), _paths(store, new)
+    except RenameError as e:
+        return {"error": f"{e}; nothing was changed"}
+    if _host_data(c, old) and not rt_nonempty_dir(po["data"]):
+        return {"error": f"{old}'s data is on this box but not at {po['data']} inside the runtipi container; "
+                         "refusing to move it (nothing was changed)"}
     if rt_nonempty_dir(pn["data"]) or rt_exists(pn["user"]):
         return {"error": f"{new} already has data or settings on this box ({pn['data']}); nothing was changed"}
     wos = Path(c.home)   # <wizard-os home>
-    router = f"/data/app-data/{store}/wizard-connection-router/data/routes.json"
+    router = f"{app_data_dir()}/{store}/wizard-connection-router/data/routes.json"
     plan = {"from": old, "to": new, "name": w.get("name") or info.get("name") or new, "status": old_status,
             "port": old_port, "data": po["data"], "settings": sorted(k for k in saved if k.isupper())}
     if dry_run:
@@ -777,6 +841,9 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
         after = rt_tree_summary(pn["data"])
         if after != before:
             raise RenameError(f"the data copy is incomplete ({after} of {before})")
+        if not before["files"] and _host_data(c, old):
+            raise RenameError(f"no files of {old}'s data were found to copy ({po['data']}), but its folder on this "
+                              "box is not empty")
         log(f"data copied ({before['files']} files, {before['bytes']} bytes)")
         if rt_exists(po["user"]):
             rt_copy_tree(po["user"], pn["user"])
@@ -881,6 +948,9 @@ def _retire(c, rt, old: str, new: str, result: dict, log, bdir: Path) -> dict:
             keep = keep if n == 1 else f"{keep}.{n}"
             rt_move(po["data"], keep)
             result["old_data"] = keep
+        if not result.get("old_data") and _host_data(c, old):
+            # Runtipi's uninstall deletes app-data/<store>/<old>: never let it go unless it was kept above (#869)
+            raise RenameError(f"its data was not kept as {keep}")
         st, err = None, None
         for wait in UNINSTALL_WAITS:
             try:
@@ -923,6 +993,15 @@ def _finish(c, rt, old: str, new: str, *, dry_run: bool) -> dict:
     installed and stopped. Its data was already copied (the move's own record says so), so only the old app goes."""
     bdir = _move_dirs(c, old, new)[0]
     name = _installed_wizard_md(c, new).get("name") or new
+    from . import cli
+    try:
+        po, pn = _paths(cli.STORE, old), _paths(cli.STORE, new)
+    except RenameError as e:
+        return {"from": old, "to": new, "error": f"{e}; nothing was changed"}
+    if (rt_nonempty_dir(po["data"]) or _host_data(c, old)) and not rt_nonempty_dir(pn["data"]):
+        # an earlier move installed the new app without copying the old data (#869): never retire the old app then
+        return {"from": old, "to": new, "error": f"{new} has none of {old}'s data ({pn['data']} is empty); "
+                                                 f"{old} is kept as it is (nothing was changed)"}
     if dry_run:
         return {"dry_run": True, "from": old, "to": new, "name": name, "finish": True, "backup": str(bdir)}
     steps: list[str] = []

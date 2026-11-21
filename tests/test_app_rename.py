@@ -228,8 +228,8 @@ def box(tmp_path, monkeypatch):
     (recipe / "wizard.md").write_text("---\nid: movies\nname: Movies\nrenamed_from: [cinequeue]\n---\n")
     (recipe / "docker-compose.yml").write_text("services:\n  movies:\n    image: x\n")
     fs = FakeFS({
-        "/data/app-data/wizardapps/cinequeue/data/movies.json": b'{"movies": [1, 2, 3]}',
-        "/data/app-data/wizardapps/cinequeue/wizard/grants.json": b"{}",
+        "/app-data/wizardapps/cinequeue/data/movies.json": b'{"movies": [1, 2, 3]}',
+        "/app-data/wizardapps/cinequeue/wizard/grants.json": b"{}",
         "/data/user-config/wizardapps/cinequeue/docker-compose.yml": b"services:\n  cinequeue:\n    network_mode: host\n",
         "/data/state/wizard-grants.json": json.dumps({"grants": [{"from": "cinequeue", "to": "notes"}], "denied": []}).encode(),
     })
@@ -238,6 +238,7 @@ def box(tmp_path, monkeypatch):
                  ("rt_tree_summary", fs.summary)):
         monkeypatch.setattr(ar, n, f)
     monkeypatch.setattr(ar, "_sh", lambda *a, **k: None)
+    monkeypatch.setattr(ar, "app_data_dir", lambda: "/app-data")   # Runtipi 4 mounts app-data there (#869)
     rt = FakeRT({"cinequeue": {"status": "running", "port": 9234, "version": 8,
                                "config": {"CINEQUEUE_WATCH_REGION": "TH", "openPort": False}}})
     c.runtipi = lambda: rt
@@ -245,7 +246,7 @@ def box(tmp_path, monkeypatch):
 
     def install(c_, app_id, given, _record=None, _form_base=None, **k):
         installs.append((app_id, given, _form_base))
-        assert fs.exists("/data/app-data/wizardapps/movies/data/movies.json")   # data is there before first start
+        assert fs.exists("/app-data/wizardapps/movies/data/movies.json")   # data is there before first start
         rt.apps[app_id] = {"status": "running", "port": _form_base.get("port"), "config": _form_base}
         return {"status": "running"}
 
@@ -275,9 +276,9 @@ def test_migrate_moves_everything_then_retires_the_old_app(box):
     assert installs[0][2]["port"] == 9234 and installs[0][2]["CINEQUEUE_WATCH_REGION"] == "TH"
     assert installs[0][1] == {"CINEQUEUE_WATCH_REGION": "TH"}
     assert rt.apps["movies"]["status"] == "running" and "cinequeue" not in rt.apps
-    assert fs.read("/data/app-data/wizardapps/movies/data/movies.json") == b'{"movies": [1, 2, 3]}'
+    assert fs.read("/app-data/wizardapps/movies/data/movies.json") == b'{"movies": [1, 2, 3]}'
     # the old data is kept, renamed, never deleted
-    assert res["old_data"].startswith("/data/app-data/wizardapps/cinequeue.old-")
+    assert res["old_data"].startswith("/app-data/wizardapps/cinequeue.old-")
     assert fs.read(res["old_data"] + "/data/movies.json") == b'{"movies": [1, 2, 3]}'
     assert json.loads(fs.read("/data/state/wizard-grants.json"))["grants"][0]["from"] == "movies"
     assert b"\n  movies:\n" in fs.read("/data/user-config/wizardapps/movies/docker-compose.yml")
@@ -298,7 +299,7 @@ def test_migrate_rolls_back_when_the_new_app_does_not_answer(box, monkeypatch):
     assert "movies" not in rt.apps and rt.apps["cinequeue"]["status"] == "running" and rt.apps["cinequeue"]["port"] == 9234
     assert fs.read("/data/state/wizard-grants.json") == grants_before
     assert (c.home / "routes.json").read_text() == routes_before
-    assert fs.read("/data/app-data/wizardapps/cinequeue/data/movies.json") == b'{"movies": [1, 2, 3]}'
+    assert fs.read("/app-data/wizardapps/cinequeue/data/movies.json") == b'{"movies": [1, 2, 3]}'
     assert not (c.secrets / "movies.json").exists() and (c.secrets / "cinequeue.json").is_file()
 
 
@@ -311,7 +312,7 @@ def test_migrate_refuses_without_renamed_from(box):
 
 def test_migrate_refuses_when_new_id_has_data(box):
     c, rt, fs, installs = box
-    fs.write("/data/app-data/wizardapps/movies/data/x", b"1")
+    fs.write("/app-data/wizardapps/movies/data/x", b"1")
     res = ar.migrate(c, "cinequeue", "movies")
     assert "already has data" in res["error"] and not installs
 
@@ -567,7 +568,7 @@ def _leave_old_installed(box, monkeypatch):
     res = ar.migrate(c, "cinequeue", "movies", settle=0, probe_seconds=0)
     assert res.get("renamed") is True and "was not removed" in res["warning"], res
     assert rt.apps["cinequeue"]["status"] == "stopped" and rt.apps["movies"]["status"] == "running"
-    assert fs.read("/data/app-data/wizardapps/cinequeue/data/movies.json")   # its data is back in place
+    assert fs.read("/app-data/wizardapps/cinequeue/data/movies.json")   # its data is back in place
     installed = c.runtipi_root / "apps" / "wizardapps" / "movies"
     installed.mkdir(parents=True)
     (installed / "wizard.md").write_text("---\nid: movies\nname: Movies\nrenamed_from: [cinequeue]\n---\n")
@@ -606,7 +607,7 @@ def test_a_half_done_move_is_due_and_finished(box, monkeypatch):
     assert "cinequeue" not in rt.apps and rt.apps["movies"]["status"] == "running" and len(installs) == n
     # the old data is kept under a dated name, the new app's copy is untouched
     assert fs.read(res["old_data"] + "/data/movies.json") == b'{"movies": [1, 2, 3]}'
-    assert fs.read("/data/app-data/wizardapps/movies/data/movies.json") == b'{"movies": [1, 2, 3]}'
+    assert fs.read("/app-data/wizardapps/movies/data/movies.json") == b'{"movies": [1, 2, 3]}'
     assert ar.due(c, rt, fetch=lambda repo: recs[repo]) == []
 
 
@@ -655,3 +656,85 @@ def test_wam_app_update_moves_a_renamed_app(tmp_path, monkeypatch):
     assert passed == []
     assert cli.main(["app", "update", "--no-backup", "telegram", "notes"]) == 0
     assert passed == [["app", "update", "--no-backup", "notes"]]
+
+
+# ---------------------------------------------------------------- where Runtipi keeps app-data (#869)
+
+def test_app_data_dir_comes_from_the_runtipi_container_mounts(monkeypatch):
+    import subprocess
+    from wam import agent_link
+    monkeypatch.setattr(ar, "_APP_DATA", [])
+    monkeypatch.setattr(agent_link, "_docker", lambda: ["docker"])
+    mounts = [{"Source": "/home/oscar/runtipi/state", "Destination": "/data/state"},
+              {"Source": "/home/oscar/runtipi/app-data", "Destination": "/app-data"}]
+    seen = []
+
+    def run(argv, **k):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, json.dumps(mounts).encode(), b"")
+    monkeypatch.setattr(ar.subprocess, "run", run)
+    assert ar.app_data_dir() == "/app-data"
+    assert ar._paths("wizardapps", "money")["data"] == "/app-data/wizardapps/money"
+    assert seen[0][:3] == ["docker", "inspect", "runtipi"] and len(seen) == 1   # asked once, then remembered
+
+
+def test_app_data_dir_falls_back_to_the_folder_it_finds_and_refuses_when_none(monkeypatch):
+    import subprocess
+    monkeypatch.setattr(ar, "_APP_DATA", [])
+    monkeypatch.setattr(ar, "_mount_destination", lambda: None)
+    monkeypatch.setattr(ar, "_sh", lambda *a, **k: subprocess.CompletedProcess(a, 0, b"/app-data\n", b""))
+    assert ar.app_data_dir() == "/app-data"
+    monkeypatch.setattr(ar, "_APP_DATA", [])
+    monkeypatch.setattr(ar, "_sh", lambda *a, **k: subprocess.CompletedProcess(a, 3, b"", b""))
+    with pytest.raises(ar.RenameError):
+        ar.app_data_dir()
+
+
+def _host_data(c, app_id="cinequeue"):
+    d = c.runtipi_root / "app-data" / "wizardapps" / app_id / "data"
+    d.mkdir(parents=True)
+    (d / "finances.db").write_bytes(b"rows")
+
+
+def test_a_move_that_can_not_see_the_old_data_changes_nothing(box, monkeypatch):
+    """money -> finances on oscar-main: the data sat at /app-data, the move looked in /data/app-data, copied 0 files,
+    called it done and uninstalled Money, and Runtipi's uninstall deleted the real data."""
+    c, rt, fs, installs = box
+    _host_data(c)
+    monkeypatch.setattr(ar, "app_data_dir", lambda: "/data/app-data")   # a folder the container does not have
+    calls = list(rt.calls)
+    res = ar.migrate(c, "cinequeue", "movies", settle=0, probe_seconds=0)
+    assert "refusing to move it" in res["error"] and not res.get("renamed"), res
+    assert not installs and rt.apps["cinequeue"]["status"] == "running" and rt.calls == calls
+    assert not (c.home / "renames").exists()
+
+
+def test_the_old_app_is_never_uninstalled_when_its_data_was_not_kept(box, monkeypatch):
+    c, rt, fs, installs = box
+    _host_data(c)
+    rt.apps["movies"] = {"status": "running"}
+    rt.apps["cinequeue"]["status"] = "stopped"
+    for k in [k for k in fs.files if k.startswith("/app-data/wizardapps/cinequeue/")]:
+        del fs.files[k]   # the container shows no data folder, the host has one
+    bdir = c.home / "renames" / "x"
+    bdir.mkdir(parents=True)
+    res = ar._retire(c, rt, "cinequeue", "movies", {"renamed": True}, lambda s: None, bdir)
+    assert "was not removed" in res["warning"] and "not kept" in res["warning"], res
+    assert "cinequeue" in rt.apps and ("uninstall", "cinequeue:wizardapps") not in rt.calls
+
+
+def test_a_half_done_move_without_the_data_is_not_finished(box, monkeypatch):
+    c, rt, fs, installs = _leave_old_installed(box, monkeypatch)
+    for k in [k for k in fs.files if k.startswith("/app-data/wizardapps/movies/")]:
+        del fs.files[k]   # an earlier move installed the new app without any of the old data
+    res = ar.migrate(c, "cinequeue", settle=0, probe_seconds=0)
+    assert "none of cinequeue's data" in res["error"] and not res.get("renamed"), res
+    assert rt.apps["cinequeue"]["status"] == "stopped" and fs.read("/app-data/wizardapps/cinequeue/data/movies.json")
+
+
+def test_agent_files_under_app_data_go_through_the_app_data_mount(box):
+    c, rt, fs, installs = box
+    f = c.runtipi_root / "app-data" / "wizardapps" / "wizard-agent-service" / "data" / "wizard-os" / "agents" / "a.json"
+    assert ar._under_runtipi(c, f) == "/app-data/wizardapps/wizard-agent-service/data/wizard-os/agents/a.json"
+    assert ar._under_runtipi(c, c.runtipi_root / "state" / "x.json") == "/data/state/x.json"
+    assert ar._under_runtipi(c, c.home / "routes.json") is None
