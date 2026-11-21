@@ -213,6 +213,9 @@ class FakeFS:
         for k in [k for k in self.files if k.startswith(src + "/")]:
             del self.files[k]
 
+    def listing(self, p):
+        return {k[len(p) + 1:] for k in self.files if k.startswith(p + "/")}
+
     def summary(self, p):
         ks = [k for k in self.files if k.startswith(p + "/")]
         return {"files": len(ks), "bytes": sum(len(self.files[k]) for k in ks)}
@@ -235,7 +238,7 @@ def box(tmp_path, monkeypatch):
     })
     for n, f in (("rt_read", fs.read), ("rt_write", fs.write), ("rt_exists", fs.exists),
                  ("rt_nonempty_dir", fs.nonempty), ("rt_copy_tree", fs.copy), ("rt_move", fs.move),
-                 ("rt_tree_summary", fs.summary)):
+                 ("rt_tree_summary", fs.summary), ("rt_files", fs.listing)):
         monkeypatch.setattr(ar, n, f)
     monkeypatch.setattr(ar, "_sh", lambda *a, **k: None)
     monkeypatch.setattr(ar, "app_data_dir", lambda: "/app-data")   # Runtipi 4 mounts app-data there (#869)
@@ -727,8 +730,9 @@ def test_a_half_done_move_without_the_data_is_not_finished(box, monkeypatch):
     c, rt, fs, installs = _leave_old_installed(box, monkeypatch)
     for k in [k for k in fs.files if k.startswith("/app-data/wizardapps/movies/")]:
         del fs.files[k]   # an earlier move installed the new app without any of the old data
+    fs.write("/app-data/wizardapps/movies/app.env", b"APP_PORT=9234\n")   # Runtipi's install writes this anyway
     res = ar.migrate(c, "cinequeue", settle=0, probe_seconds=0)
-    assert "none of cinequeue's data" in res["error"] and not res.get("renamed"), res
+    assert "does not have all of cinequeue's data" in res["error"] and not res.get("renamed"), res
     assert rt.apps["cinequeue"]["status"] == "stopped" and fs.read("/app-data/wizardapps/cinequeue/data/movies.json")
 
 

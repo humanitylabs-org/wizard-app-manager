@@ -135,6 +135,12 @@ def app_data_dir() -> str:
     return found
 
 
+def rt_files(path: str) -> set[str]:
+    """The relative paths of the files in a tree (empty when it does not exist)."""
+    p = _sh('[ -d "$1" ] || exit 0; cd "$1" && find . -type f', path)
+    return {x[2:] if x.startswith("./") else x for x in _ok(p, f"list {path}").stdout.decode().splitlines() if x}
+
+
 def rt_tree_summary(path: str) -> dict:
     """{files, bytes} of a tree (for the copy check)."""
     p = _sh('[ -d "$1" ] || { echo "0 0"; exit 0; }; '
@@ -998,9 +1004,11 @@ def _finish(c, rt, old: str, new: str, *, dry_run: bool) -> dict:
         po, pn = _paths(cli.STORE, old), _paths(cli.STORE, new)
     except RenameError as e:
         return {"from": old, "to": new, "error": f"{e}; nothing was changed"}
-    if (rt_nonempty_dir(po["data"]) or _host_data(c, old)) and not rt_nonempty_dir(pn["data"]):
-        # an earlier move installed the new app without copying the old data (#869): never retire the old app then
-        return {"from": old, "to": new, "error": f"{new} has none of {old}'s data ({pn['data']} is empty); "
+    # An earlier move may have installed the new app without copying the old data (#869); Runtipi's install writes
+    # app.env into the new folder anyway, so only every old file being there proves the copy. Never retire it then.
+    have = rt_files(po["data"])
+    if (not have and _host_data(c, old)) or not have <= rt_files(pn["data"]):
+        return {"from": old, "to": new, "error": f"{new} does not have all of {old}'s data ({pn['data']}); "
                                                  f"{old} is kept as it is (nothing was changed)"}
     if dry_run:
         return {"dry_run": True, "from": old, "to": new, "name": name, "finish": True, "backup": str(bdir)}
