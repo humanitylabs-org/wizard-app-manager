@@ -470,6 +470,16 @@ class HermesRunner:
 
     def __init__(self, box: Box) -> None:
         self.box = box
+        # agent id -> the image to run its one-off Hermes in, when its own app's image is not on this box (a
+        # restore whose agent app Runtipi could not install, #890)
+        self.image_for: dict[str, str] = {}
+
+    def has_image(self, image: str) -> bool:
+        try:
+            self._run([*docker(self.box.child_env), "image", "inspect", image], timeout=60)
+            return True
+        except HermesError:
+            return False
 
     def _run(self, argv: list[str], *, env=None, stdin: str | None = None, timeout: int = 3600) -> str:
         try:
@@ -506,6 +516,8 @@ class HermesRunner:
         """The agent app's Hermes image: from its container when there is one, else from its installed compose file
         (Runtipi's stop is `compose down`, so a stopped app has no container). A container found under the bare
         restricted-agent project name only counts when it mounts this agent's own home at /opt/data."""
+        if agent.id in getattr(self, "image_for", {}):
+            return self.image_for[agent.id]
         any_ids = False
         for n, project in enumerate(self.compose_projects(agent)):
             ids = self._run([*docker(self.box.child_env), "ps", "-aq", "--filter",

@@ -6,6 +6,7 @@ the install call means it failed. The restore now reports that one app (with Run
 has one), goes on with everything else, and still imports the agent's home, so no chat or memory is lost.
 """
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -21,8 +22,9 @@ from wam.backup.box import box_digest  # noqa: E402
 AGENT = "agent-research:wizardapps"
 
 
-def _fail_install(monkeypatch, urn, *, seen=False):
-    """Runtipi takes the install, then its job fails and the row goes (seen=True: one `installing` poll first)."""
+def _fail_install(monkeypatch, urn, *, seen=False, late=False):
+    """Runtipi takes the install, then its job fails and the row goes (seen=True: one `installing` poll first;
+    late=True: the job got as far as copying the package and writing app-data before `compose up` failed)."""
     real = FakeRuntipi.install
     polls = {"n": 0}
 
@@ -30,6 +32,10 @@ def _fail_install(monkeypatch, urn, *, seen=False):
         if u != urn:
             return real(self, u, form)
         self.calls.append(("install", u))
+        if late:
+            app_id, store = u.split(":")
+            shutil.copytree(self.root / "repos" / store / "apps" / app_id, self.root / "apps" / store / app_id)
+            _w(self.root / "app-data" / store / app_id / "app.env", "APP_ID=x\n")
         if seen:
             self.apps[u] = {"status": "installing", "version": 1, "config": {}}
         return {}
@@ -138,3 +144,52 @@ def test_a_runtipi_api_hiccup_is_not_read_as_a_failed_install(tmp_path):
             pass
 
     assert restore._wait_installed(B(), "x:wizardapps") == "running"
+
+
+def test_what_a_late_failed_install_left_is_cleaned_but_its_package_stays(realbox, monkeypatch):
+    new = realbox["new"]
+    out = _export(realbox)
+    _fail_install(monkeypatch, AGENT, late=True)
+    code, rec = _cli(new.box(), "import", str(out), "--yes", "--key-file", str(realbox["keyfile"]))
+    assert code == 3, rec
+    rt = new.runtipi
+    assert not (rt / "apps/wizardapps/agent-research").exists()
+    assert not (rt / "app-data/wizardapps/agent-research").exists()
+    assert (rt / "repos/wizardapps/apps/agent-research/config.json").is_file()   # the Agents app can install it again
+    assert (rt / SVC / "wizard-os/agents/research/home/state.db").is_file()
+
+
+def _own_image(old, tag):
+    comp = old.runtipi / "apps/wizardapps/agent-research/docker-compose.yml"
+    comp.write_text(comp.read_text().replace("hermes-agent:${APP_IMAGE_TAG:-test}", f"hermes-agent:{tag}"))
+
+
+def test_agent_home_is_imported_with_this_boxs_hermes_when_its_own_image_is_missing(realbox, monkeypatch):
+    """The image pull failed (that is why Runtipi could not install the app): `hermes import` runs in the main
+    agent's image instead of stopping the restore part way."""
+    old, new = realbox["old"], realbox["new"]
+    gone = "ghcr.io/example/hermes-agent:philosopher"
+    _own_image(old, "philosopher")
+    out = _export(realbox)
+    new.env["FAKE_MISSING_IMAGES"] = gone
+    _fail_install(monkeypatch, AGENT)
+    code, rec = _cli(new.box(), "import", str(out), "--yes", "--key-file", str(realbox["keyfile"]))
+    assert code == 3, rec
+    rhome = new.runtipi / SVC / "wizard-os/agents/research/home"
+    assert [j["state"] for j in json.loads((rhome / "cron/jobs.json").read_text())["jobs"]] == ["paused"]
+    runs = [c["argv"] for c in new.tool_calls() if c["tool"] == "docker" and c["argv"][0] == "run"]
+    assert not any(gone in r for r in runs)
+
+
+def test_an_agent_home_that_cannot_be_imported_is_reported_not_a_stop(realbox, monkeypatch):
+    old, new = realbox["old"], realbox["new"]
+    _own_image(old, "philosopher")
+    out = _export(realbox)
+    new.env["FAKE_MISSING_IMAGES"] = "ghcr.io/example/hermes-agent:philosopher,ghcr.io/example/hermes-agent:test"
+    _fail_install(monkeypatch, AGENT)
+    code, rec = _cli(new.box(), "import", str(out), "--yes", "--key-file", str(realbox["keyfile"]))
+    assert code == 3, rec
+    assert rec["agents"]["research"]["imported"] is False
+    assert any("agent research: its home could not be imported" in x for x in rec["not_restored"])
+    assert not any("its agent's home is restored" in x for x in rec["not_restored"])
+    assert (new.runtipi / "app-data/wizardapps/notes-app/data/notes.db").read_text() == "old notes database"

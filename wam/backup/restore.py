@@ -774,8 +774,10 @@ def _install_app(box: Box, r: _Restore, rec: dict) -> str:
     return st
 
 
-def _install_failed(r: _Restore, p: dict, rec: dict, e: Exception) -> None:
-    """Report one app Runtipi could not install and go on (#890): its data is not put back, an agent's home is."""
+def _install_failed(box: Box, r: _Restore, p: dict, rec: dict, e: Exception) -> None:
+    """Report one app Runtipi could not install and go on (#890): its data is not put back, an agent's home is.
+    What Runtipi's failed job left (containers, apps/ and app-data/ folders) is cleaned like undo cleans an orphan;
+    the placed package and the bundle's user-config stay, so the Agents app or the Store can install it again."""
     msg = str(e)
     log(f"warning: {msg}; going on with the rest")
     r.journal.setdefault("install_failed", {})[rec["urn"]] = msg
@@ -783,6 +785,39 @@ def _install_failed(r: _Restore, p: dict, rec: dict, e: Exception) -> None:
                                               "agent": rec.get("data") == "agent"})
     r.step(kind="app_install_failed", urn=rec["urn"], message=msg[:500])
     r.save()
+    try:
+        gone = rec["urn"] not in box.installed()     # a successful list, not app_status's error fallback
+    except (RuntipiError, OSError) as err:
+        p["warnings"].append(f"{rec['id']}: cannot confirm Runtipi dropped it; left as it is: {err}")
+        return
+    data = box.runtipi_root / "app-data" / rec["store"] / rec["id"]
+    homes = [Path(x["home"]) for x in (r.journal.get("agents") or {}).values() if x.get("home")]
+    if not gone or any(h == data or data in h.parents for h in homes):
+        return
+    try:
+        box.appdata.remove_missing_app(rec["store"], rec["id"])
+    except AppDataError as err:
+        p["warnings"].append(f"{rec['id']}: could not clean what its failed install left: {err}")
+
+
+def _import_image(box: Box, a: Agent, existing: dict) -> str | None:
+    """An image this box has to run the one-off `hermes import` in for an agent whose app is not installed: its
+    own app's image when present, else this box's main agent's (the same stock Hermes)."""
+    runner = box.runner
+    if not hasattr(runner, "has_image"):
+        return None
+    cands = [a]
+    main = existing.get(MAIN_AGENT)
+    if main is not None and main.runtime == "container" and main.id != a.id:
+        cands.append(main)
+    for c in cands:
+        try:
+            img = runner.image(c)
+        except HermesError:
+            continue
+        if img and runner.has_image(img):
+            return img
+    return None
 
 
 def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
@@ -885,7 +920,7 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
             try:
                 _install_app(box, r, a)
             except InstallFailed as e:
-                _install_failed(r, p, a, e)
+                _install_failed(box, r, p, a, e)
                 continue
             # what Runtipi actually installed (the App Index's release can differ from any store copy seen before)
             v = _version_check(box, a, True, stage)
@@ -1020,8 +1055,9 @@ def _apply(box: Box, r: _Restore, p: dict, current_agents: list[Agent]) -> None:
                             "here": x["here"]} for x in refused],
                "not_installed": not_installed,
                "not_restored": [x["message"] for x in refused] + [
-                   x["message"] + ("; its agent's home is restored" if x.get("agent") else "; its data is not put back")
-                   for x in not_installed]}
+                   x["message"] + ("; its agent's home is restored" if x.get("agent") and x["id"] not in
+                                   {g["app"] for g in p.get("agents_not_imported") or []} else "; its data is not put back")
+                   for x in not_installed] + [g["message"] for g in p.get("agents_not_imported") or []]}
     if refused or not_installed:
         receipt["error"] = "partly restored: " + " ".join(receipt["not_restored"])
     r.journal["receipt"] = receipt
@@ -1140,9 +1176,13 @@ def _import_agent(box: Box, r: _Restore, k: str, a: Agent, existing: dict, insta
             try:
                 _install_app(box, r, rec)
             except InstallFailed as e:
-                _install_failed(r, r.journal["plan"], rec, e)
-    if a.urn and a.urn in r.journal.get("install_failed", {}):
+                _install_failed(box, r, r.journal["plan"], rec, e)
+    no_app = bool(a.urn and a.urn in r.journal.get("install_failed", {}))
+    if no_app:
         rep["app_not_installed"] = r.journal["install_failed"][a.urn]
+        img = _import_image(box, a, existing)
+        if img:
+            box.runner.image_for[k] = img
     if a.runtime == "container" and box.app_status(a.urn) in LIVE:
         box.rt.stop(a.urn)
         st = box.wait_status(a.urn, {"stopped"}, timeout=300)
@@ -1156,11 +1196,24 @@ def _import_agent(box: Box, r: _Restore, k: str, a: Agent, existing: dict, insta
     rep["archive"] = agentlib.check_and_filter(zip_in, filtered)
     zip_in.unlink()
     log(f"agent {k}: hermes import")
-    box.runner.import_zip(a, filtered)
-    filtered.unlink(missing_ok=True)      # the archive is deleted after import
-    if wiring.get("present"):
-        rep["replaced_env_keys"] = agentlib.env_merge(a.home, env_lines)
-    out = box.runner.python(a, agentlib.POST_IMPORT, json.dumps(wiring))
+    try:
+        box.runner.import_zip(a, filtered)
+        filtered.unlink(missing_ok=True)      # the archive is deleted after import
+        if wiring.get("present"):
+            rep["replaced_env_keys"] = agentlib.env_merge(a.home, env_lines)
+        out = box.runner.python(a, agentlib.POST_IMPORT, json.dumps(wiring))
+    except HermesError as e:
+        if not no_app:
+            raise
+        # its app is not installed and no Hermes image to import with is on this box: report it, go on (#890)
+        filtered.unlink(missing_ok=True)
+        msg = f"agent {k}: its home could not be imported without its app ({e})"
+        log("warning: " + msg)
+        r.journal["plan"].setdefault("agents_not_imported", []).append({"id": k, "app": rep["app"],
+                                                                        "message": msg[:500]})
+        rep["imported"] = False
+        r.step(kind="agent_not_imported", agent=k)
+        return rep
     rep.update(agentlib.last_json_line(out))
     rep["wiring_kept"] = bool(wiring.get("present"))
     r.step(kind="agent_imported", agent=k)

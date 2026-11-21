@@ -173,6 +173,8 @@ elif a[0] == "rm":
     Path(os.environ["FAKE_DOCKER_STATE"]).write_text(json.dumps(state))
 elif a[0] == "inspect" and "--format" in a:          # the App Manager's own image (appdata.AppData.image)
     print(os.environ.get("FAKE_HELPER_IMAGE", "example/wam:helper"))
+elif a[0] == "image" and a[1] == "inspect":
+    sys.exit(1 if a[2] in os.environ.get("FAKE_MISSING_IMAGES", "").split(",") else 0)
 elif a[0] == "volume" and a[1] == "inspect":
     sys.exit(0 if (Path(os.environ["FAKE_VOLUMES"]) / a[2]).is_dir() else 1)
 elif a[0] == "inspect":
