@@ -528,7 +528,7 @@ def test_oversized_github_answers_are_refused(box, monkeypatch):
     assert gs.start()[1]["state"] == "error"
 
 
-# ---------------------------------------------------------------- feature switch archimedes/github-signin
+# ---------------------------------------------------------------- feature switch wizard/github-signin
 
 def test_switch_off_by_default_start_is_409_and_makes_no_request(box, monkeypatch):
     monkeypatch.setattr(gs, "switch_on", lambda: False)
@@ -549,7 +549,7 @@ def test_switch_uses_the_box_feature_switch_and_is_off_when_unreadable(monkeypat
     from wam import feature_switches
     seen = []
     monkeypatch.setattr(feature_switches, "is_on", lambda tid, *a, **k: seen.append(tid) or False)
-    assert gs.switch_on() is False and seen == ["archimedes/github-signin"]
+    assert gs.switch_on() is False and seen == ["wizard/github-signin"]
     monkeypatch.undo()
     monkeypatch.setenv("WIZARD_OS_HOME", "/nonexistent-wizard-home")
     assert gs.switch_on() is False
@@ -573,3 +573,10 @@ def test_signout_during_a_slow_start_wins_and_no_flow_begins(box, monkeypatch):
     code, st = gs.start()
     assert code == 200 and st["state"] == "signed_out"
     assert gs._flow is None and gs.status()["state"] == "signed_out" and box.n_polls == 0
+
+
+def test_switch_id_is_one_the_shell_catalog_can_list():
+    # #515: `archimedes/github-signin` could never be turned on. set_switch only accepts ids the wizard-ux catalog
+    # lists, and that catalog only lists team authors (wizard/, miguel/). The id is listed there as a box switch.
+    from wam import feature_switches
+    assert gs.SWITCH == "wizard/github-signin" and feature_switches.ID.fullmatch(gs.SWITCH)

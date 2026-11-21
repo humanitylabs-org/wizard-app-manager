@@ -40,7 +40,7 @@ from pathlib import Path
 from . import private, registry
 
 STATES = ("signed_out", "pending", "signed_in", "expired", "denied", "error", "not_configured", "switched_off")
-SWITCH = "archimedes/github-signin"   # feature switch (Settings > Try new features / Tracker): off by default
+SWITCH = "wizard/github-signin"   # feature switch (listed in wizard-ux web/tweaks/catalog.json): off by default
 SCOPE = "repo read:packages"
 GITHUB_URL = "https://github.com"          # device flow endpoints (tests point these at a local server)
 API_URL = "https://api.github.com"         # GET /user for the username
@@ -85,7 +85,7 @@ def log(msg: str) -> None:
 # ---------------------------------------------------------------- config and files
 
 def switch_on() -> bool:
-    """Whether the owner turned on the `archimedes/github-signin` feature switch. Off: no new sign-in can start
+    """Whether the owner turned on the `wizard/github-signin` feature switch. Off: no new sign-in can start
     (status `switched_off`); an existing login still reads as signed in and Sign out still works."""
     from . import feature_switches
     return feature_switches.is_on(SWITCH)

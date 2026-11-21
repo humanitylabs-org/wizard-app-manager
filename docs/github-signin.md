@@ -4,9 +4,9 @@ A friend invited to a private GitHub repository can sign in to GitHub from Apps 
 
 Code: `wam/github_signin.py`; routes in `StoreHandler` (`wam/cli.py`); tests: `tests/test_github_signin.py`.
 
-## Feature switch: `archimedes/github-signin` (off by default)
+## Feature switch: `wizard/github-signin` (off by default)
 
-Sign-in is a tester feature: no new sign-in can start until the owner turns on `archimedes/github-signin` (Settings › Try new features, or the WizardOS Tracker's Try it; For testers channel only; `wam/feature_switches.is_on`). While it is off, `GET _github` reports `switched_off` when nobody is signed in, and `POST _github/start` answers `409` + `switched_off` without calling GitHub. A token that is already there (environment, `gh`, or a saved `github-token`) still reads as `signed_in`, and Sign out still removes a saved one.
+Sign-in is a tester feature: no new sign-in can start until the owner turns on `wizard/github-signin` (Settings › Try new features, or the WizardOS Tracker's Try it; For testers channel only; `wam/feature_switches.is_on`). While it is off, `GET _github` reports `switched_off` when nobody is signed in, and `POST _github/start` answers `409` + `switched_off` without calling GitHub. A token that is already there (environment, `gh`, or a saved `github-token`) still reads as `signed_in`, and Sign out still removes a saved one.
 
 ## Setup: a GitHub OAuth App (one time, by the WizardOS org owner)
 
