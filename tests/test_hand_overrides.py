@@ -268,3 +268,66 @@ def test_second_hand_is_only_moved_at_rest(tmp_path, status):
     (out,) = ho.retire(root, STORE, rt)
     assert "next update" in out["skipped"] and rt.calls == []
     assert ledger.is_dir() and not ledger.is_symlink() and _asides(p) == []
+
+
+def _own(root):
+    return root / "app-data" / STORE / "second-hand" / "data" / "private" / "ledger"
+
+
+def test_a_root_owned_ledger_folder_is_filled_without_touching_the_folder_itself(tmp_path, monkeypatch):
+    """Real box: the hand mount made Docker create data/private/ledger as root (777 after Runtipi's walk); wam
+    can add files in it but can't chmod/utime it, which made copytree(dirs_exist_ok=True) fail."""
+    import shutil
+    root, ledger, p = _box(tmp_path, SECOND.replace("/ledger\n", "/data/private/ledger\n")
+                           .replace("LEDGER_DIR: /ledger", "LEDGER_DIR: /data/private/ledger"))
+    own = _own(root)
+    own.mkdir(parents=True)
+    real = shutil.copystat
+
+    def copystat(src, dst, **k):
+        if Path(dst) == own:
+            raise PermissionError(1, "Operation not permitted", str(dst))
+        return real(src, dst, **k)
+    monkeypatch.setattr(shutil, "copystat", copystat)
+    real_chmod = ho.os.chmod
+
+    def chmod(path, mode, **k):
+        if Path(path) == own:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_chmod(path, mode, **k)
+    monkeypatch.setattr(ho.os, "chmod", chmod)
+    monkeypatch.setattr(ho, "_app_uid", lambda *a: -1)   # wam's uid differs from the app's: the copy is opened up
+    (out,) = ho.retire(root, STORE, FakeRt())
+    assert out.get("moved") is True, out
+    assert (own / "ledger.json").is_file() and ledger.is_symlink()
+
+
+def test_a_ledger_folder_wam_cannot_write_is_opened_as_root_first(tmp_path, monkeypatch):
+    root, ledger, p = _box(tmp_path, SECOND)
+    own = _own(root)
+    own.mkdir(parents=True)
+    own.chmod(0o555)
+    opened = []
+
+    def open_as_root(runtipi_root, dest):
+        opened.append(dest)
+        dest.chmod(0o777)
+    monkeypatch.setattr(ho, "_open_as_root", open_as_root)
+    (out,) = ho.retire(root, STORE, FakeRt())
+    assert opened == [own] and out.get("moved") is True, out
+
+
+def test_a_ledger_folder_that_stays_closed_is_skipped_untouched(tmp_path, monkeypatch):
+    root, ledger, p = _box(tmp_path, SECOND)
+    own = _own(root)
+    own.mkdir(parents=True)
+    own.chmod(0o555)
+
+    def no_docker(runtipi_root, dest):
+        raise RuntimeError("no runtipi container")
+    monkeypatch.setattr(ho, "_open_as_root", no_docker)
+    rt = FakeRt()
+    (out,) = ho.retire(root, STORE, rt)
+    own.chmod(0o755)
+    assert "not writable" in out["skipped"] and rt.calls == []
+    assert ledger.is_dir() and not ledger.is_symlink() and _asides(p) == []
