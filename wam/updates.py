@@ -363,26 +363,9 @@ def by_host() -> bool:
 
 
 # Updates wait only for work they would stop (impact × running work: status `impact`, `waiting_for`, `when_idle`;
-# Update now answers `waiting`; Automatic skips while it would stop something). New, so off by default
-# (AGENTS.md): on a Linux box only with this feature switch on (Settings › Try new features, For testers only).
-# A host-run box (Wizard for Mac, HOST_UPDATES) always has it: its host decides from `waiting_for` before it stops
-# the box for its disk copy, and the marker itself is that rollout's control. Switch off: exactly the old behaviour
-# (Update now starts, Automatic skips only while a chat run is active, no impact probing).
-WAITS_SWITCH = "wizard/os-update-waits"
-# updates.status() reads the switch on every Settings poll: a slow or stopped Agent Service must not hold that up, so
-# the read gets a short timeout (unreadable = off, the old behaviour).
-WAITS_SWITCH_TIMEOUT = 2
-
-
-def waits_for_work(home: Path | None = None) -> bool:
-    """Whether updates on this box wait for running work (WAITS_SWITCH). Never raises; an unreadable switch is off."""
-    if by_host():
-        return True
-    try:
-        from . import feature_switches
-        return feature_switches.is_on(WAITS_SWITCH, home, timeout=WAITS_SWITCH_TIMEOUT) is True
-    except Exception:  # noqa: BLE001 - a switch that can't be read never changes how updates behave
-        return False
+# Update now answers `waiting`; Automatic skips while it would stop something). On for every box since #696 (the
+# `wizard/os-update-waits` switch is gone). A host-run box (Wizard for Mac, HOST_UPDATES) decides from `waiting_for`
+# before it stops the box for its disk copy.
 
 
 HOST_REQUEST = "host-update-request.json"
@@ -567,16 +550,15 @@ def status(home: Path | None = None, base: str | None = None, fresh: bool = Fals
             "host_update": host_update(home),
             # Update swaps only the shell image (about 2 minutes), or this run is doing that now.
             "quick": quick,
-            # Updates wait for running work here (WAITS_SWITCH). False: the three keys below stay empty and an
-            # update never answers `waiting`.
-            "waits_for_work": (waits := waits_for_work(home)),
+            # Updates wait for running work (always since #696; kept for shells that read it).
+            "waits_for_work": True,
             # What the next release touches and what applying it here stops (decides what an update waits for).
             "impact": (imp := _box_impact(impact_of(have, want, base, quick))
-                       if waits and (newer or retry is not None) else None),
+                       if newer or retry is not None else None),
             # What applying it now would cut off: the owner sees these names before Update now / a heads-up.
             "waiting_for": _waiting_for(home, imp),
             # "Update when they finish": the waiting request, and whether its 6 hours are up (ask the owner again).
-            "when_idle": when_idle(home) if waits else None,
+            "when_idle": when_idle(home),
             "hermes": hermes_update.status(home, base),
             # Signed releases (#565): only with WIZARD_VERIFY_RELEASES / verify_releases on; off adds nothing.
             **({"signature": sig} if (sig := _signature_status(home, want, base)) else {})}
@@ -690,9 +672,6 @@ def _stop_when_idle_timer(runner=subprocess.run) -> None:
 def when_idle_tick(home: Path | None = None, base: str | None = None, runner=subprocess.run) -> dict:
     """One poll of a Linux box's "Update when they finish": start the update once nothing it would stop runs."""
     req = when_idle(home)
-    if req and not waits_for_work(home):   # the switch went off: drop the request, start nothing (stays in Settings)
-        (_home(home) / WHEN_IDLE).unlink(missing_ok=True)
-        req = None
     if not req:
         _stop_when_idle_timer(runner)
         return {"started": False, "note": "no waiting update"}
@@ -1025,9 +1004,7 @@ def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subp
 
     `check`: the same decision without starting anything; `due` is True when this call would start the update now.
     A host that saves a disk copy first (HOST_UPDATES) asks this before it stops the box for that copy.
-    With updates waiting for work (waits_for_work: a host-run box, or WAITS_SWITCH on) it waits only for work this
-    update would stop (status `waiting_for`: impact × what is running); otherwise only while a chat run is active, as
-    before. `anyway`: the host already decided with `check` before its copy (its restart can make resumed work look
+    It waits only for work this update would stop (status `waiting_for`: impact × what is running). `anyway`: the host already decided with `check` before its copy (its restart can make resumed work look
     new)."""
     if mode(home) != "auto":       # the timer outlived a switch back to Ask me: do nothing
         return {"mode": mode(home), "started": False}
@@ -1058,17 +1035,13 @@ def apply_if_auto(home: Path | None = None, base: str | None = None, runner=subp
     if (st["channel"] != "latest" or target == stable) and not promoted(target, base):
         return {**st, "started": False, "skipped": "unpromoted",
                 "note": f"stable {target} has no valid promotion record; Automatic waits for a tested release"}
-    if not st["waits_for_work"]:   # WAITS_SWITCH off: the old rule, skip only while a chat run is active
-        if not anyway and (is_busy or (lambda: busy(service_origin(home))))():
-            return {**st, "started": False, "skipped": "busy", "note": "a chat run is active; trying again next window"}
-    else:
-        waiting = [] if anyway else (
-            [{"kind": "agent", "name": "A chat reply", "stops_at": "service"}] if is_busy and is_busy() else
-            [] if is_busy else st.get("waiting_for") or [])
-        if waiting:
-            names = ", ".join(w.get("name", "?") for w in waiting[:3]) + (" …" if len(waiting) > 3 else "")
-            return {**st, "started": False, "skipped": "busy", "waiting_for": waiting,
-                    "note": f"Wizard is working ({names}); trying again next window"}
+    waiting = [] if anyway else (
+        [{"kind": "agent", "name": "A chat reply", "stops_at": "service"}] if is_busy and is_busy() else
+        [] if is_busy else st.get("waiting_for") or [])
+    if waiting:
+        names = ", ".join(w.get("name", "?") for w in waiting[:3]) + (" …" if len(waiting) > 3 else "")
+        return {**st, "started": False, "skipped": "busy", "waiting_for": waiting,
+                "note": f"Wizard is working ({names}); trying again next window"}
     if check:
         return {**st, "started": False, "due": True}
     res = apply(home, base, runner, target=target, anyway=True)
