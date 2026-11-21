@@ -437,16 +437,13 @@ def test_failed_catch_up_backup_marks_the_run(tmp_path, monkeypatch):
     assert rec["backup"]["result"] == "failed" and rec["state"] == "error"
 
 
-def test_updates_step_with_waiting_on_leaves_the_decision_to_the_release(tmp_path, monkeypatch):
-    """Codex P2: with `wizard/os-update-waits` on, Hermes work the release wouldn't stop doesn't defer Automatic;
-    apply_if_auto decides from what this release stops. With it off, main's quiet gate stays."""
+def test_updates_step_leaves_the_decision_to_the_release(tmp_path, monkeypatch):
+    """Codex P2 / #696: Hermes work the release wouldn't stop doesn't defer Automatic; apply_if_auto decides from
+    what this release stops."""
     from wam import updates
     monkeypatch.setattr(updates, "mode", lambda h=None: "auto")
     monkeypatch.setattr(updates, "apply_if_auto", lambda h=None: {"started": True, "latest": "0.4.0", "installed": "0.3.9"})
-    monkeypatch.setattr(updates, "waits_for_work", lambda h=None: True, raising=False)
     assert maintain.updates_step(tmp_path, False) == {"state": "started", "to": "0.4.0", "from": "0.3.9"}
-    monkeypatch.setattr(updates, "waits_for_work", lambda h=None: False, raising=False)
-    assert maintain.updates_step(tmp_path, False)["state"] == "deferred"
 
 
 def test_nightly_run_with_waiting_on_updates_past_unrelated_hermes_work(tmp_path, monkeypatch):
@@ -457,9 +454,5 @@ def test_nightly_run_with_waiting_on_updates_past_unrelated_hermes_work(tmp_path
     applied = []
     monkeypatch.setattr(updates, "apply_if_auto", lambda h=None: applied.append(h) or
                         {"started": False, "skipped": "busy", "note": "Wizard is working (A chat reply)"})
-    monkeypatch.setattr(updates, "waits_for_work", lambda h=None: True, raising=False)
     rec = maintain.run(tmp_path, wait=0, is_busy=lambda: ["Hermes is running a background task."], sleep=lambda s: None)
     assert applied == [tmp_path] and rec["updates"]["state"] == "busy" and "A chat reply" in rec["updates"]["note"]
-    monkeypatch.setattr(updates, "waits_for_work", lambda h=None: False, raising=False)
-    rec = maintain.run(tmp_path, wait=0, is_busy=lambda: ["Hermes is running a background task."], sleep=lambda s: None)
-    assert len(applied) == 1 and rec["updates"]["state"] == "deferred"

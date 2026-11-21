@@ -88,17 +88,6 @@ def _nothing_running(request, monkeypatch):
     monkeypatch.setattr(work, "inventory", lambda home=None, now=None, max_age=10: [])
 
 
-@pytest.fixture(autouse=True)
-def _os_update_waits_off(monkeypatch):
-    """The `wizard/os-update-waits` feature switch reads as off unless a test turns it on (the real read would ask
-    the box's Agent Service for look.json). Every other switch reads as before."""
-    from wam import feature_switches
-    real = feature_switches.is_on
-    monkeypatch.setattr(feature_switches, "is_on",
-                        lambda tid, home=None, pages=None, **k: False if tid == "wizard/os-update-waits"
-                        else real(tid, home, pages, **k))
-
-
 def pytest_collection_modifyitems(config, items):
     """CI shards (#854): WAM_TEST_SHARD=<i>/<n> keeps only the tests whose id hashes to shard i, so the test
     workflow runs the suite as n parallel jobs. Unset (a local run), every test runs."""
