@@ -2673,6 +2673,17 @@ def _older_update(c: "Config", app_id: str) -> tuple[str, str] | None:
         return None
 
 
+def _older_updates(c: "Config", targets: list[str]) -> dict:
+    """{target: (target version, installed version)} for each named Wizard-store app (every one when none is named:
+    the bulk form) whose update would install a lower version (#914)."""
+    if not targets:
+        try:
+            targets = sorted(p.name for p in (Path(c.runtipi_root) / "apps" / STORE).iterdir() if p.is_dir())
+        except OSError:
+            targets = []
+    return {t: low for t in targets if (":" not in t or t.split(":", 1)[1] == STORE) and (low := _older_update(c, t))}
+
+
 def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | None = None, allow_host_access: bool = False,
                settings=None) -> dict:
     """See _app_update. With `wizard/graceful-restart` on (#642), an update of the Agent Service first waits for its
@@ -3010,15 +3021,7 @@ def main(argv: list[str] | None = None) -> int:
         allow = "--allow-older" in argv
         argv = [a for a in argv if a != "--allow-older"]
         if not allow:
-            c = Config()
-            targets = [a for a in argv[2:] if not a.startswith("-")]
-            if not targets:   # bulk: every app of the Wizard store
-                try:
-                    targets = sorted(p.name for p in (Path(c.runtipi_root) / "apps" / STORE).iterdir() if p.is_dir())
-                except OSError:
-                    targets = []
-            lows = {t: low for t in targets if (":" not in t or t.split(":", 1)[1] == STORE)
-                    and (low := _older_update(c, t))}
+            lows = _older_updates(Config(), [a for a in argv[2:] if not a.startswith("-")])
             for t, low in lows.items():
                 print(f"{t}: the version an update would install ({low[0]}) is older than the installed {low[1]}; "
                       "nothing changed. Add --allow-older to go back on purpose.", file=sys.stderr)
