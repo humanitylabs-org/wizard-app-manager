@@ -168,7 +168,7 @@ def test_an_installer_whose_hash_does_not_match_warns_and_carries_on(tmp_path, t
                                                 f.as_uri())
     assert rec["installer"] == "mismatch" and rec["installer_sha256"] == sha
     assert release_sig.read(h)["installer"] == "mismatch"
-    assert "[signature] installer sha256" in (h / "install.log").read_text()
+    assert "[signature] installer sha256" in (h / release_sig.LOG).read_text()
     r, ran = _run(script, tmp_path)
     assert r.returncode == 0 and ran == "ran start\n"
 
@@ -231,7 +231,7 @@ def test_warn_against_todays_unsigned_mirror_completes_and_records_missing(tmp_p
     assert res["signature"]["signature"] == "missing" and res["signature"]["installer"] == "unnamed"
     rec = release_sig.read(h)
     assert rec["release"] == "0.9.2" and rec["signature"] == "missing" and rec["promotion"]["signature"] == "missing"
-    log = (h / "install.log").read_text()
+    log = (h / release_sig.LOG).read_text()
     assert "release 0.9.2: signature missing" in log and "carrying on (warn-only)" in log
 
 
@@ -338,3 +338,33 @@ def test_the_installer_is_fetched_with_curl_like_the_unchecked_path(tmp_path, mo
     assert seen and seen[0][0].endswith("curl") and seen[0][1:6] == ["-fsSL", "--retry", "4", "--retry-delay", "2"]
     monkeypatch.setattr(release_sig.shutil, "which", lambda name: None)          # no curl: urllib, curl's agent
     assert release_sig.download(f.as_uri(), attempts=1) == f.read_bytes()
+
+
+def test_after_a_full_installer_run_release_and_install_status_carry_the_signature(tmp_path, monkeypatch):
+    """Tester on #907: get.sh rewrites install.log, install-status.json and release.json, so the result is carried
+    into them once the installer has finished; the log is its own file."""
+    import time as _t
+    rel, h = _mirror(tmp_path), _box(tmp_path)
+    _serve_installer(tmp_path, monkeypatch)
+    monkeypatch.setenv(release_sig.ENV, "warn")
+    calls = []
+    assert updates.apply(h, rel.as_uri(), _runner(calls))["started"] is True
+    (h / "install.log").write_text("")                                  # get.sh: `: > "$INSTALL_LOG"`
+    now = _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime())
+    (h / "install-status.json").write_text(json.dumps({"state": "running", "started_at": now}))
+    updates._latest.clear()
+    updates.status(h, rel.as_uri())
+    assert "signature" not in json.loads((h / "install-status.json").read_text())   # never while it runs
+    (h / "install-status.json").write_text(json.dumps({"state": "done", "started_at": now, "exit_code": 0}))
+    (h / "release.json").write_text(json.dumps({"release": "0.9.2", "status": "pinned", "checks": []}))
+    updates._latest.clear()
+    st = updates.status(h, rel.as_uri())
+    assert st["installed"] == "0.9.2" and st["signature"]["last_update"]["signature"] == "missing"
+    assert json.loads((h / "release.json").read_text())["signature"] == "missing"
+    done = json.loads((h / "install-status.json").read_text())
+    assert done["state"] == "done" and done["signature"]["signature"] == "missing"
+    assert "release 0.9.2: signature missing" in (h / release_sig.LOG).read_text()
+    # a run that started before the check is left alone
+    (h / "install-status.json").write_text(json.dumps({"state": "done", "started_at": "2020-01-01T00:00:00Z"}))
+    updates._latest.clear(); updates.status(h, rel.as_uri())
+    assert "signature" not in json.loads((h / "install-status.json").read_text())

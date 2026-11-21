@@ -37,10 +37,12 @@ then drop the old line. It holds **no key yet**: creating the real key and signi
 `wam updates --verify-releases off|warn`:
 
 - `off` (default): nothing is fetched, checked or written; the update runs exactly as before.
-- `warn`: checks, logs a missing or bad result to `~/.wizard-os/install.log` (`[signature] ...`), records it in
-  `~/.wizard-os/release-signature.json` and in `wam updates` (key `signature`, also a dry run: `wam updates` /
-  `wam updates --apply-if-auto --check`), and on a quick update also in `install-status.json` and `release.json`.
-  The update always carries on. Today's mirror is unsigned, so a box on `warn` records `signature: missing`.
+- `warn`: checks, logs a missing or bad result to `~/.wizard-os/release-signature.log` (`[signature] ...`; its own
+  file because get.sh empties install.log when it starts), records it in `~/.wizard-os/release-signature.json`, in
+  `wam updates` (key `signature`, also as a dry run: `wam updates`, or `--apply-if-auto --check` on an Automatic box)
+  and, once the installer has finished, in `release.json` (`signature`) and `install-status.json` (the summary).
+  A quick update writes those two itself. The update always carries on. Today's mirror is unsigned, so a box on
+  `warn` records `signature: missing`.
 - `enforce`: reserved for the next step (refuse and change nothing). Until `ENFORCE_AVAILABLE` is turned on in
   `wam/release_sig.py` it behaves like `warn`, and `wam updates` says so.
 

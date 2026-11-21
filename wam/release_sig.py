@@ -14,7 +14,7 @@ fetched from where the releases come from.
 
 The switch is `WIZARD_VERIFY_RELEASES` (environment, wins) or `"verify_releases"` in ~/.wizard-os/updates.json
 (`wam updates --verify-releases off|warn`): `off` (default) changes nothing at all; `warn` checks, logs a missing or
-bad signature to install.log, records it (`release-signature.json`, `wam updates` status `signature`, and the quick
+bad signature to release-signature.log, records it (`release-signature.json`, `wam updates` status `signature`, and the quick
 update's install-status.json / release.json) and the update carries on. `enforce` (refuse, change nothing) is
 reserved for the next step: until ENFORCE_AVAILABLE is turned on it behaves like `warn` and says so.
 
@@ -192,12 +192,54 @@ def refuses(rec: dict | None, m: str | None = None) -> str | None:
     return None
 
 
+LOG = "release-signature.log"   # its own file: get.sh empties install.log when the installer starts
+
+
 def log(home: Path | None, msg: str) -> None:
     h = _home(home)
     try:
         h.mkdir(parents=True, exist_ok=True)
-        with open(h / "install.log", "a") as f:
+        with open(h / LOG, "a") as f:
             f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} [signature] {msg}\n")
+    except OSError:
+        pass
+
+
+def _json(path: Path) -> dict | None:
+    try:
+        d = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def _put(path: Path, doc: dict) -> None:
+    tmp = path.with_name(path.name + ".sig-tmp")
+    tmp.write_text(json.dumps(doc, indent=2) + "\n")
+    try:
+        os.chmod(tmp, path.stat().st_mode & 0o777)
+    except OSError:
+        pass
+    tmp.replace(path)
+
+
+def stamp(home: Path | None) -> None:
+    """Carry the last check into what the installer wrote once it has finished: release.json gets `signature` when it
+    records the release that was checked, install-status.json gets the summary when that run (started after the
+    check) is no longer running. get.sh writes both from scratch, so this runs after it (every `wam updates` status
+    with the switch on); the installer's own files are never touched while it runs."""
+    rec = read(home)
+    if not rec or not rec.get("release"):
+        return
+    h = _home(home)
+    try:
+        receipt = _json(h / "release.json")
+        if receipt and receipt.get("release") == rec["release"] and receipt.get("signature") != rec.get("signature"):
+            _put(h / "release.json", {**receipt, "signature": rec.get("signature")})
+        st = _json(h / "install-status.json")
+        if (st and st.get("state") not in (None, "running") and "signature" not in st
+                and str(st.get("started_at") or "") >= str(rec.get("checked_at") or "~")):
+            _put(h / "install-status.json", {**st, "signature": summary(rec)})
     except OSError:
         pass
 
@@ -319,6 +361,7 @@ def status(home: Path | None, version: str | None, base: str | None = None, keys
     m = mode(home)
     if m == "off":
         return None
+    stamp(home)
     out: dict = {"mode": m}
     if requested(home) != m:
         out["requested"] = requested(home)
