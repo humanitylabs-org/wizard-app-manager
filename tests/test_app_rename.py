@@ -665,8 +665,8 @@ def test_app_data_dir_comes_from_the_runtipi_container_mounts(monkeypatch):
     from wam import agent_link
     monkeypatch.setattr(ar, "_APP_DATA", [])
     monkeypatch.setattr(agent_link, "_docker", lambda: ["docker"])
-    mounts = [{"Source": "/home/oscar/runtipi/state", "Destination": "/data/state"},
-              {"Source": "/home/oscar/runtipi/app-data", "Destination": "/app-data"}]
+    mounts = [{"Source": "/srv/runtipi/state", "Destination": "/data/state"},
+              {"Source": "/srv/runtipi/app-data", "Destination": "/app-data"}]
     seen = []
 
     def run(argv, **k):
