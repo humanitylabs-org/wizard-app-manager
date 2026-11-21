@@ -2664,6 +2664,15 @@ def rename_instead_of_update(c: "Config", app_id: str) -> dict | None:
     return app_rename.migrate(c, app, d["to"], **extra)
 
 
+def _older_update(c: "Config", app_id: str) -> tuple[str, str] | None:
+    """(target, installed) version names when updating `app_id` would install a lower version (#914)."""
+    from . import app_updates
+    try:
+        return app_updates.older(c.runtipi_root, STORE, app_id.split(":", 1)[0])
+    except Exception:  # noqa: BLE001 - unreadable recipes: the update itself decides
+        return None
+
+
 def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | None = None, allow_host_access: bool = False,
                settings=None) -> dict:
     """See _app_update. With `wizard/graceful-restart` on (#642), an update of the Agent Service first waits for its
@@ -2996,6 +3005,11 @@ def main(argv: list[str] | None = None) -> int:
             rest = main(argv)
             return rest if ok else 1
     if argv[:2] == ["app", "update"] and len(argv) >= 3 and not argv[2].startswith("-"):
+        low = None if "--allow-older" in argv else _older_update(Config(), argv[2])
+        if low:   # #914: never a lower version than the one running, unless asked for by name
+            print(f"{argv[2]}: the version an update would install ({low[0]}) is older than the installed {low[1]}; "
+                  "nothing changed. Add --allow-older to go back on purpose.", file=sys.stderr)
+            return 1
         res = app_update(Config(), argv[2], backup="--no-backup" not in argv, allow_host_access="--allow-host-access" in argv)
         print(json.dumps(res, indent=2))
         return 0 if res["status"] == "running" or not res.get("error") else 1
