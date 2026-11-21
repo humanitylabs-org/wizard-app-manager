@@ -9,8 +9,8 @@ Before `wam updates --apply` / Automatic uses a release's pins (full installer r
 
 1. **The release file**: `releases/<version>.json` against its detached signature `releases/<version>.json.sig`.
 2. **The promotion record**, when the release has one: `releases/promotions/<version>.json` against `<...>.json.sig`.
-3. **The installer**: the downloaded `https://aiwizards.com/os.sh` is hashed and compared with the hashes the release
-   file names, `"installer": {"os.sh": "<sha256>", "get.sh": "<sha256>"}` (aiwizards.com/os.sh serves get.sh, so
+3. **The installer**: `wam` itself downloads `https://aiwizards.com/os.sh`, hashes it (never trusting anything the
+   installer prints) and compares it with the hashes the release file names, `"installer": {"os.sh": "<sha256>", "get.sh": "<sha256>"}` (aiwizards.com/os.sh serves get.sh, so
    either name matches). With the check on, the installer then runs from that checked file (`bash <file> start`), so
    the detached runner is a copy of exactly those bytes instead of a second download of get.sh.
 

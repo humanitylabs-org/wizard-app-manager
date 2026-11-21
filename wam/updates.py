@@ -644,7 +644,8 @@ def _run_env(home: Path | None, base: str | None) -> dict:
     """What a detached `wam updates` run needs to check the same box and release feed as this one."""
     return {k: v for k, v in (("WIZARD_OS_HOME", str(home) if home else os.environ.get("WIZARD_OS_HOME")),
                               ("WIZARD_RELEASE_BASE", base or os.environ.get("WIZARD_RELEASE_BASE")),
-                              ("PATH", os.environ.get("PATH"))) if v}
+                              ("PATH", os.environ.get("PATH")),
+                              ("WIZARD_VERIFY_RELEASES", os.environ.get("WIZARD_VERIFY_RELEASES"))) if v}
 
 
 def request_when_idle(home: Path | None, target: str, runner=subprocess.run, base: str | None = None) -> dict:
@@ -894,14 +895,16 @@ def _apply(home, base, runner, force, target, anyway, when_idle) -> dict:
     env = f"WIZARD_RELEASE={pin} " if pin else ""
     if target:  # Automatic never inherits an operator's coordinated Hermes opt-in
         env = 'WIZARD_HERMES_PROMOTION= ' + env
-    script = installer_script(env) if sig is None else release_sig.installer_script(env, sig["expect"], sig["mode"])
+    if sig is None:
+        script = installer_script(env)
+    else:   # downloaded and hashed here; warn: a mismatch is logged and recorded, the update carries on
+        script, sig = release_sig.checked_installer(home, sig, env)
+        st = {**st, "signature": release_sig.summary(sig)}
+        if script is None:
+            return {**st, "started": False, "error": f"not updating: {sig.get('installer_error') or 'installer refused'}"}
     r = runner(["bash", "-c", script], capture_output=True, text=True,
                timeout=600)
     ok = r.returncode == 0
-    if sig is not None:
-        # warn: a mismatch is logged and recorded and the update carries on; enforce: the script exited 3 unrun
-        sig = release_sig.after_installer(home, sig, (r.stdout or "") + "\n" + (r.stderr or ""))
-        st = {**st, "signature": release_sig.summary(sig)}
     if ok and not target:
         _auto_retry_clear(home)        # a manual Update re-arms Automatic's single retry
     return {**st, "started": ok, **({} if ok else {"error": (r.stderr or r.stdout or "").strip()[-300:]})}

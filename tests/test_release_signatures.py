@@ -142,36 +142,67 @@ def _run(script, tmp_path):
     return r, (out.read_text() if out.exists() else None)
 
 
-def test_an_installer_that_matches_runs_from_the_checked_file(tmp_path):
-    f, sha = _installer(tmp_path)
-    r, ran = _run(release_sig.installer_script("", [sha], "warn", f.as_uri()), tmp_path)
-    assert r.returncode == 0 and ran == "ran start\n"
-    assert f"{release_sig.MARK} {sha}" in r.stderr
-    assert release_sig.installer_state(sha, [sha]) == "ok"
+@pytest.fixture
+def tmpdir_env(tmp_path, monkeypatch):
+    d = tmp_path / "tmp"; d.mkdir()
+    monkeypatch.setenv("TMPDIR", str(d))
+    return d
 
 
-def test_an_installer_whose_hash_does_not_match_warns_and_carries_on(tmp_path):
+def test_an_installer_that_matches_runs_from_the_checked_file(tmp_path, tmpdir_env):
     f, sha = _installer(tmp_path)
-    r, ran = _run(release_sig.installer_script("", ["0" * 64], "warn", f.as_uri()), tmp_path)
-    assert r.returncode == 0 and ran == "ran start\n" and "is not the release's" in r.stderr
     h = tmp_path / "wos"
-    rec = release_sig.after_installer(h, {"mode": "warn", "release": "0.9.2", "expect": ["0" * 64]}, r.stderr)
+    script, rec = release_sig.checked_installer(h, {"mode": "warn", "release": "0.9.2", "expect": [sha]}, "", f.as_uri())
+    assert rec["installer"] == "ok" and rec["installer_sha256"] == sha
+    f.write_text("echo swapped > \"$OUT\"\n")                   # a later change to the source is not what runs
+    r, ran = _run(script, tmp_path)
+    assert r.returncode == 0 and ran == "ran start\n"
+    assert list(tmpdir_env.iterdir()) == []                      # the checked copy is removed afterwards
+
+
+def test_an_installer_whose_hash_does_not_match_warns_and_carries_on(tmp_path, tmpdir_env):
+    body = 'echo ran "$@" > "$OUT"; echo "installer-sha256: ' + "0" * 64 + '" >&2\n'   # it cannot forge the hash
+    f, sha = _installer(tmp_path, body)
+    h = tmp_path / "wos"
+    script, rec = release_sig.checked_installer(h, {"mode": "warn", "release": "0.9.2", "expect": ["0" * 64]}, "",
+                                                f.as_uri())
     assert rec["installer"] == "mismatch" and rec["installer_sha256"] == sha
+    assert release_sig.read(h)["installer"] == "mismatch"
     assert "[signature] installer sha256" in (h / "install.log").read_text()
+    r, ran = _run(script, tmp_path)
+    assert r.returncode == 0 and ran == "ran start\n"
 
 
-def test_enforce_refuses_a_mismatched_installer_and_runs_nothing(tmp_path):
+def test_enforce_refuses_a_mismatched_installer_and_runs_nothing(tmp_path, tmpdir_env):
     f, _ = _installer(tmp_path)
-    r, ran = _run(release_sig.installer_script("", ["0" * 64], "enforce", f.as_uri()), tmp_path)
-    assert r.returncode == 3 and ran is None
+    script, rec = release_sig.checked_installer(tmp_path / "wos", {"mode": "enforce", "expect": ["0" * 64]}, "",
+                                                f.as_uri())
+    assert script is None and "does not match" in rec["installer_error"] and list(tmpdir_env.iterdir()) == []
 
 
-def test_a_release_naming_no_installer_hash_runs_the_installer_unchecked(tmp_path):
+def test_a_failed_installer_download_starts_nothing(tmp_path, tmpdir_env, monkeypatch):
+    monkeypatch.setattr(release_sig.time, "sleep", lambda s: None)
+    script, rec = release_sig.checked_installer(tmp_path / "wos", {"mode": "warn", "expect": []}, "",
+                                                (tmp_path / "gone.sh").as_uri())
+    assert script is None and "could not download" in rec["installer_error"]
+
+
+def test_a_release_naming_no_installer_hash_runs_the_installer_unchecked(tmp_path, tmpdir_env):
     f, sha = _installer(tmp_path)
-    r, ran = _run(release_sig.installer_script("", [], "warn", f.as_uri()), tmp_path)
-    assert r.returncode == 0 and ran == "ran start\n" and "is not the release's" not in r.stderr
-    assert release_sig.installer_state(sha, []) == "unnamed"
+    script, rec = release_sig.checked_installer(tmp_path / "wos", {"mode": "warn", "expect": []}, "", f.as_uri())
+    assert rec["installer"] == "unnamed"
+    r, ran = _run(script, tmp_path)
+    assert r.returncode == 0 and ran == "ran start\n"
     assert release_sig.installer_hashes({"installer": {"os.sh": sha.upper(), "get.sh": "short"}}) == [sha]
+
+
+def _serve_installer(tmp_path, monkeypatch, body="exit 0\n"):
+    import hashlib
+    f = tmp_path / "served-os.sh"; f.write_text(body)
+    monkeypatch.setattr(updates, "INSTALLER", f.as_uri())
+    (tmp_path / "tmp").mkdir(exist_ok=True)
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "tmp"))
+    return hashlib.sha256(f.read_bytes()).hexdigest()
 
 
 # --- the switch on the update path ----------------------------------------------------------------------------------
@@ -191,12 +222,13 @@ def test_with_the_switch_off_updates_are_unchanged(tmp_path, monkeypatch):
 
 def test_warn_against_todays_unsigned_mirror_completes_and_records_missing(tmp_path, monkeypatch):
     rel, h = _mirror(tmp_path), _box(tmp_path)
+    _serve_installer(tmp_path, monkeypatch)
     monkeypatch.setenv(release_sig.ENV, "warn")
     calls = []
     res = updates.apply(h, rel.as_uri(), _runner(calls))
     assert res["started"] is True and len(calls) == 1
-    assert f"{release_sig.MARK}" in calls[0][-1] and 'bash "$t" start' in calls[0][-1]
-    assert res["signature"]["signature"] == "missing" and res["signature"]["installer"] == "unchecked"
+    assert calls[0][-1].startswith("trap 'rm -f ") and "WIZARD_RELEASE=0.9.2 bash " in calls[0][-1]
+    assert res["signature"]["signature"] == "missing" and res["signature"]["installer"] == "unnamed"
     rec = release_sig.read(h)
     assert rec["release"] == "0.9.2" and rec["signature"] == "missing" and rec["promotion"]["signature"] == "missing"
     log = (h / "install.log").read_text()
@@ -204,30 +236,32 @@ def test_warn_against_todays_unsigned_mirror_completes_and_records_missing(tmp_p
 
 
 def test_warn_records_a_good_signature_and_the_installer_hash(tmp_path, monkeypatch, keys):
-    sha = "a" * 64
+    sha = _serve_installer(tmp_path, monkeypatch)
     rel, h = _mirror(tmp_path, installer={"os.sh": sha, "get.sh": sha}), _box(tmp_path)
     _sign(keys["trusted"], rel / "0.9.2.json"); _sign(keys["trusted"], rel / "promotions" / "0.9.2.json")
     monkeypatch.setattr(release_sig, "SIGNERS", keys["list"])
     monkeypatch.setenv(release_sig.ENV, "warn")
     calls = []
-    res = updates.apply(h, rel.as_uri(), _runner(calls, out=f"{release_sig.MARK} {sha}\n"))
-    assert res["started"] is True
+    res = updates.apply(h, rel.as_uri(), _runner(calls))
+    assert res["started"] is True and len(calls) == 1
     assert res["signature"] == {**res["signature"], "signature": "ok", "installer": "ok", "promotion": "ok"}
-    assert "a" * 64 in calls[0][-1]
 
 
 def test_warn_with_a_bad_signature_still_updates(tmp_path, monkeypatch, keys):
-    rel, h = _mirror(tmp_path), _box(tmp_path)
+    rel, h = _mirror(tmp_path, installer={"os.sh": "0" * 64}), _box(tmp_path)
+    _serve_installer(tmp_path, monkeypatch)
     _sign(keys["other"], rel / "0.9.2.json")
     monkeypatch.setattr(release_sig, "SIGNERS", keys["list"])
     monkeypatch.setenv(release_sig.ENV, "warn")
     calls = []
     res = updates.apply(h, rel.as_uri(), _runner(calls))
     assert res["started"] is True and res["signature"]["signature"] == "bad" and len(calls) == 1
+    assert res["signature"]["installer"] == "mismatch"           # warn-only: the update still started
 
 
 def test_enforce_is_warn_only_in_this_step(tmp_path, monkeypatch):
     rel, h = _mirror(tmp_path), _box(tmp_path)
+    _serve_installer(tmp_path, monkeypatch)
     monkeypatch.setenv(release_sig.ENV, "enforce")
     assert release_sig.mode(h) == "warn"
     calls = []
@@ -283,3 +317,9 @@ def test_quick_update_writes_the_signature_into_release_and_install_status(tmp_p
     assert json.loads((h / "release.json").read_text())["signature"] == "missing"
     st = json.loads((h / "install-status.json").read_text())
     assert st["state"] == "done" and st["signature"]["signature"] == "missing"
+
+
+def test_a_detached_quick_update_keeps_an_environment_only_switch(tmp_path, monkeypatch):
+    assert "WIZARD_VERIFY_RELEASES" not in updates._run_env(tmp_path, None)         # off: main's environment
+    monkeypatch.setenv(release_sig.ENV, "warn")
+    assert updates._run_env(tmp_path, None)["WIZARD_VERIFY_RELEASES"] == "warn"

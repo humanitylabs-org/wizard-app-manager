@@ -393,15 +393,17 @@ class Ops:
         from . import release_sig
         env = ("WIZARD_HERMES_PROMOTION= " if auto else "") + f"WIZARD_RELEASE={version} "
         sig = _signature(self.home, version)          # None while the switch is off (#565)
-        script = installer_script(env) if sig is None else release_sig.installer_script(env, sig.get("expect") or [],
-                                                                                         sig.get("mode", "warn"))
+        script = installer_script(env)
+        if sig is not None:
+            script, sig = release_sig.checked_installer(self.home, sig, env)
+            if script is None:
+                self.log(f"installer not started: {sig.get('installer_error')}")
+                return False
         # A failed download must not look like a started installer, and a retry must not run a partial script (#499).
         r = subprocess.run(["bash", "-c", script], capture_output=True,
                            text=True, timeout=600)
         for line in (r.stdout + r.stderr).splitlines():
             self.log(line)
-        if sig is not None:
-            release_sig.after_installer(self.home, sig, r.stdout + "\n" + r.stderr)
         return r.returncode == 0
 
 

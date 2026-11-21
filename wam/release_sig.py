@@ -45,7 +45,6 @@ PRINCIPAL = "wizardos-release"   # the name every allowed key carries in release
 SIGNERS = Path(__file__).with_name("release_signers")
 RECORD = "release-signature.json"
 INSTALLER_NAMES = ("os.sh", "get.sh")
-MARK = "[wizard-os] installer-sha256:"
 CACHE_SECONDS = 600
 _cache: dict[tuple, tuple[float, dict]] = {}
 
@@ -252,36 +251,45 @@ def before_update(home: Path | None, version: str, base: str | None = None, keys
     return rec
 
 
-def installer_script(env: str, expect: list[str], m: str, url: str | None = None) -> str:
-    """Like updates.installer_script, but the downloaded installer's sha256 is printed (MARK) and compared with the
-    release's hashes before it runs; it then runs FROM that file (`bash <file> start`), so the detached runner is a
-    copy of exactly these bytes and get.sh is not downloaded a second time. warn: a mismatch is reported, the update
-    carries on. enforce: a mismatch exits 3 and nothing runs."""
+def download(url: str, attempts: int = 4, timeout: float = 60) -> bytes | None:
+    """The installer's bytes (retried like `curl --retry 4`), or None."""
+    for i in range(attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                return r.read(16 * 1024 * 1024)
+        except (OSError, ValueError):
+            if i + 1 < attempts:
+                time.sleep(2)
+    return None
+
+
+def checked_installer(home: Path | None, rec: dict, env: str, url: str | None = None) -> tuple[str | None, dict]:
+    """Download the installer HERE, hash it and compare with the release's hashes, then return the `bash -c` text that
+    runs exactly that file (`<env>bash <file> start`; get.sh's detached start copies itself, so get.sh is not
+    downloaded a second time). The hash is measured by this process, never read from the installer's own output.
+
+    warn: a mismatch is logged and recorded and the installer still runs. enforce: a mismatch returns no script.
+    A failed download returns no script either (as before, a failed download never looks like a started update)."""
     from .updates import INSTALLER
-    u = shlex.quote(url or INSTALLER)
-    want = shlex.quote(" ".join(expect))
-    stop = 'exit 3' if m == "enforce" else 'true'
-    return ('t="$(mktemp "${TMPDIR:-/tmp}/wizard-os-installer.XXXXXX")" || exit 1; '
-            "trap 'rm -f \"$t\"' EXIT; "
-            f'curl -fsSL --retry 4 --retry-delay 2 -o "$t" {u} || exit; '
-            's="$(sha256sum < "$t" | cut -d" " -f1)"; '
-            f'echo "{MARK} $s" >&2; w={want}; '
-            'case " $w " in *" $s "*) ;; '
-            f'*) if [ -n "$w" ]; then echo "installer sha256 $s is not the release\'s" >&2; {stop}; fi ;; esac; '
-            f'{env}bash "$t" start')
-
-
-def after_installer(home: Path | None, rec: dict, output: str) -> dict:
-    """Record what the installer download hashed to (parsed from installer_script's MARK line)."""
-    sha = None
-    for line in (output or "").splitlines():
-        if line.startswith(MARK):
-            sha = line[len(MARK):].strip().lower()[:64] or None
+    data = download(url or INSTALLER)
+    if data is None:
+        rec = write(home, {**rec, "installer": "unchecked", "installer_sha256": None,
+                           "installer_error": f"could not download the installer ({url or INSTALLER})"})
+        return None, rec
+    sha = hashlib.sha256(data).hexdigest()
     state = installer_state(sha, rec.get("expect") or [])
+    rec = {**rec, "installer": state, "installer_sha256": sha}
+    rec.pop("installer_error", None)
     if state == "mismatch":
         log(home, f"installer sha256 {sha} is not one the release {rec.get('release')} names; "
                   + ("refused (enforce)" if rec.get("mode") == "enforce" else "carrying on (warn-only)"))
-    return write(home, {**rec, "installer": state, "installer_sha256": sha})
+        if rec.get("mode") == "enforce":
+            return None, write(home, {**rec, "installer_error": "the installer does not match the release's hash"})
+    fd, path = tempfile.mkstemp(prefix="wizard-os-installer.", dir=os.environ.get("TMPDIR") or None)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    q = shlex.quote(path)
+    return f"trap 'rm -f {q}' EXIT; {env}bash {q} start", write(home, rec)
 
 
 def summary(rec: dict | None) -> dict | None:
