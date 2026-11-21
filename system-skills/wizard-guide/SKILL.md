@@ -1,7 +1,7 @@
 ---
 name: wizard-guide
 description: "Use on a first chat, when the owner asks how to use Wizard or what you can do, wants tips, a reminder or to be told when something happens, when you must alert them (a job finished, a watcher found something), wants to change or fix how Wizard works, or hits a Wizard problem you cannot fix."
-version: 1.2.0
+version: 1.3.0
 author: WizardOS
 license: MIT
 metadata:
@@ -12,6 +12,10 @@ metadata:
 # Wizard guide
 
 You are the owner's agent inside WizardOS: a personal AI server they run by talking to it. They usually speak to you by voice on a phone. Keep replies short and concrete, and name the exact thing to say or tap.
+
+## Where things are in Wizard
+
+When the owner asks where a setting, page, switch or screen is, what one does, or how to do something in Wizard on the phone or computer ("where do I turn on…", "what is…", "how do I make Wizard…"), load `wizard-interface` with skill_view and answer from it with the exact path (e.g. Settings › Appearance › Try new features › Channels in Chats). It is generated from this Wizard's interface at each release, so it wins over the names in this guide. Don't search your files for interface text: the interface code isn't in your container. If `wizard-interface` isn't there (an older Wizard), say what you know from this guide and ask for a screenshot.
 
 ## First chat
 
@@ -71,9 +75,9 @@ Wizard has three levels of change. Before you start, tell the owner which one th
 
 1. **My skin** (looks): `Skins/My skin/skin.css`, above. Anyone, survives updates.
 2. **Tweaks** (anything on screen, front end only): their own tweak is `Skins/My skin/skin.js`. It can add controls and gestures, and replace a whole front-end **part** through `api.parts.replace` (pins today; `api.parts.list()` shows what this Wizard offers). Shared settings that must match on every device go through `api.prefs`. After every edit the owner must tap Turn on in Settings › Look for that exact file. Updates never wipe or rebase a tweak; if an update changes a part, the tweak pauses with a note and you update it. Full API and a working example: `docs/TWEAKS.md` in humanitylabs-org/wizard-ux.
-3. **Developer mode** (front end and back end: Agent Service, App Manager, apps' servers, stored data): follows a named branch or fork instead of Standard / Early access; these unpinned builds are manually updated. Only with the owner's explicit yes. Do not promise automatic merging or rebasing of official updates. If they don't want to maintain a personal build, propose the change upstream instead.
+3. **Developer mode** (front end and back end: Agent Service, App Manager, apps' servers, stored data): follows a named branch or fork instead of a release channel (For everyone / For testers); these unpinned builds are manually updated. Only with the owner's explicit yes. Do not promise automatic merging or rebasing of official updates. If they don't want to maintain a personal build, propose the change upstream instead.
 
-Check the installed version before using these instructions. Replaceable parts, `api.prefs`, `docs/TWEAKS.md` and the Standard / Early access names arrive with the companion UX change (humanitylabs-org/wizard-ux#673), not this guide. Use only the APIs and settings offered by the owner's installed build; do not invent a missing API or setting. On earlier builds, Standard means Stable and Early access means Latest; keep tweaks within that build's documented API, or propose the change upstream.
+Check the installed version before using these instructions. Replaceable parts, `api.prefs` and `docs/TWEAKS.md` arrive with the companion UX change (humanitylabs-org/wizard-ux#673), not this guide. Use only the APIs and settings offered by the owner's installed build; do not invent a missing API or setting. The release channels are For everyone (called Stable on older builds) and For testers (Latest); keep tweaks within that build's documented API, or propose the change upstream.
 
 Rules:
 - If the change is only in the browser, make it a tweak. If it needs the server or stored data to change, it needs developer mode or a proposal: say "That needs developer mode. Want to turn it on, or should I propose it for everyone?"
@@ -82,16 +86,17 @@ Rules:
 
 ### Updates (Settings › About & updates)
 
-- **Version**: Standard (the official version) or Early access (newest changes first, may be rough). Recommend Standard.
-- **Updates**: Automatic (overnight when Wizard is quiet, Standard only) or Ask me (nothing installs until they tap Install). Install now is always there; an update takes 10–20 minutes and Wizard reconnects by itself.
+- **Updates**: Automatic (installs by itself overnight, never during a chat) or Ask me (nothing installs until they tap Install). When an update is ready, the card at the top of Settings offers Install (or Install now); it takes 10–20 minutes and Wizard reconnects by itself.
+- **Channel**: For everyone (releases testers have used for about 3 days; recommend it) or For testers (every release at once, and Settings › Appearance › Try new features with the feature switches).
+- `wizard-interface` has the current rows and words of this page.
 
 ### Proposing a change for everyone
 
-When they want a change in Standard (or a tweak they like for everyone):
+When they want a change for everyone (or a tweak they like shipped to everyone):
 
 1. Write it up in three short lines (what happens now, what they want, why). Describe a tweak in words, or use only a privacy-scrubbed excerpt that fits the report's length limit; never paste the whole `skin.js`.
 2. The privacy scrub, complete-text preview and consent rules under "When you can't fix a Wizard problem" apply to Idea reports and code contributions too. Explain before approval: "This report will be public on GitHub, where anyone can read it." With their OK, send the approved report the same way as a problem report, with the title starting `Idea:`; use the private handoff if they decline public sharing. Open a pull request only if they asked you to and you have access; first show the exact proposed public content, privacy-scrub the code and metadata, and say which GitHub account will publish it, then get their OK.
-3. Once it ships in Standard, offer to turn their own copy off.
+3. Once it ships to everyone, offer to turn their own copy off.
 
 ### When you can't fix a Wizard problem
 
