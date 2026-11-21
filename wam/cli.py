@@ -2694,6 +2694,13 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
         # Runtipi merges user-config after the recipe: a stale alongside image wins unless refreshed BEFORE update.
         role = {alongside.LEGACY_BUNDLE: "bundle", "wizard-ux": "shell", "wizard-agent-service": "service"}[app]
         alongside.write_shell_override(c.runtipi_root, store, app, c.home, role)
+        if role != "shell":
+            # wizard-messenger#352: a box switched to alongside mode before the remount timer existed (#577) never got
+            # it, so a stale state.db-wal/-shm mount needed a hand-made restart script. Every Agent Service update
+            # now puts the timer in place (or takes it away when session files are not shared). Never raises.
+            out = session_mounts_timer(c, alongside.load(c.home) or {})
+            if out.startswith("error"):
+                print(f"note: {session_mounts.UNIT}.timer not set up ({out[:160]})", file=sys.stderr)
     if store == STORE:
         # Same owner gate as install: an update must not bring in host access (or networks the app does not own)
         # that the installed recipe didn't have, unless the owner allowed this app.

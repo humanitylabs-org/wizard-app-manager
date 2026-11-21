@@ -111,3 +111,34 @@ def test_cli_entry_point(box, capsys):
     _hermes_restart(hh)
     assert cli.main(["alongside", "--refresh-mounts"]) == 0
     assert json.loads(capsys.readouterr().out)["state"] == "refreshed"
+
+
+def test_an_agent_service_update_puts_the_timer_in_place(box, tmp_path, monkeypatch):
+    """wizard-messenger#352: a box switched to alongside mode before the timer existed never got it (only `wam
+    alongside` set it up), so stale -wal/-shm mounts needed a hand-made restart script. The next Agent Service update
+    now sets the timer up; the update itself is cut short here, right after the override is refreshed."""
+    c, hh, ovr, restarts = box
+    units = tmp_path / "_systemd_user"
+    for f in units.glob("wizard-session-mounts.*"):
+        f.unlink()                                      # the old box: alongside on, no timer
+
+    class RT:
+        def app(self, urn): return {"app": {"status": "running"}}
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+
+    def stop(*a, **k):
+        raise SystemExit("stop here")
+    monkeypatch.setattr(cli, "host_access_risks", stop)
+    with pytest.raises(SystemExit, match="stop here"):
+        cli._app_update(c, "wizard-agent-service")
+    assert "alongside --refresh-mounts" in (units / "wizard-session-mounts.service").read_text()
+    assert (units / "wizard-session-mounts.timer").is_file()
+
+    # A shell update leaves it alone; with session files no longer shared, the next service update takes it away.
+    alongside.enable(c.home, hh, None, True)
+    with pytest.raises(SystemExit, match="stop here"):
+        cli._app_update(c, "wizard-ux")
+    assert (units / "wizard-session-mounts.timer").is_file()
+    with pytest.raises(SystemExit, match="stop here"):
+        cli._app_update(c, "wizard-agent-service")
+    assert not (units / "wizard-session-mounts.timer").exists()
