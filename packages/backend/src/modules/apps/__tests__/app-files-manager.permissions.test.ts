@@ -81,6 +81,47 @@ describe('setAppDataDirPermissions', () => {
     expect(await mode(path.join(grants(), 'agent-service.json'))).toBe(0o600);
   });
 
+  it("keeps every agent's gateway folder 0700 and its sockets 0600 (wizard-messenger#352)", async () => {
+    const { execFileSync } = await import('node:child_process');
+    const gateway = path.join(app(), 'data/wizard-os/agents/daily/gateway');
+    await fs.mkdir(gateway, { recursive: true });
+    // Real socket files, bound by a relative name from inside the folder (a full temp path can pass the 108-byte
+    // socket path limit). A bound socket's file stays after its process exits.
+    execFileSync('python3', ['-c', 'import socket\nfor n in ("gateway.sock", "ingress.sock"): socket.socket(socket.AF_UNIX).bind(n)'], {
+      cwd: gateway,
+    });
+    try {
+      // What an earlier update left behind: the folder opened to everyone (the sockets are made 0600 by their service).
+      await fs.chmod(gateway, 0o777);
+      await fs.chmod(path.join(gateway, 'gateway.sock'), 0o600);
+      await fs.chmod(path.join(gateway, 'ingress.sock'), 0o600);
+      await fs.mkdir(path.join(app(), 'data/wizard-os/agents/daily/home'), { recursive: true });
+
+      await manager.setAppDataDirPermissions('wizard-agent-service:wizardapps' as AppUrn);
+
+      expect(await mode(gateway)).toBe(0o700);
+      expect(await mode(path.join(gateway, 'gateway.sock'))).toBe(0o600);
+      expect(await mode(path.join(gateway, 'ingress.sock'))).toBe(0o600);
+      // Only the gateway folder is kept private; the rest of the agent folder keeps Runtipi's behaviour.
+      expect(await mode(path.join(app(), 'data/wizard-os/agents/daily/home'))).toBe(0o777);
+      expect(logger.error).not.toHaveBeenCalled();
+      expect((await fs.lstat(path.join(gateway, 'ingress.sock'))).isSocket()).toBe(true);
+    } finally {
+      await fs.rm(gateway, { recursive: true, force: true });
+    }
+  });
+
+  it('never follows a link where an agent gateway folder should be', async () => {
+    await fs.mkdir(path.join(app(), 'data/wizard-os/agents/evil'), { recursive: true });
+    await fs.symlink(outside, path.join(app(), 'data/wizard-os/agents/evil/gateway'));
+    await fs.chmod(outside, 0o755);
+
+    await manager.setAppDataDirPermissions('wizard-agent-service:wizardapps' as AppUrn);
+
+    expect(await mode(outside)).toBe(0o755);
+    expect(await mode(path.join(outside, 'target'))).toBe(0o600);
+  });
+
   it('never follows a link out of the app data folder', async () => {
     await fs.symlink(path.join(outside, 'target'), path.join(app(), 'data/state/link'));
     await fs.symlink(outside, path.join(app(), 'data/state/dir-link'));

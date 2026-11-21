@@ -20,8 +20,19 @@ import { type } from 'arktype';
 export const PRIVATE_APP_DATA_DIRS = ['data/wizard-os/grants'];
 
 /**
+ * Each agent's gateway folder `data/wizard-os/agents/<id>/gateway` (gateway.sock, ingress.sock). The Agent Service
+ * and the agent runtime refuse it unless the folder is exactly 0700 and its sockets 0600, so opening it on an update
+ * made new chats fail (503) and the agents' Messenger tools vanish (wizard-messenger#352).
+ */
+const AGENTS_DIR = 'data/wizard-os/agents';
+const AGENT_GATEWAY = /^data\/wizard-os\/agents\/[^/]+\/gateway$/;
+
+export const isPrivateAppDataDir = (relativePath: string) => PRIVATE_APP_DATA_DIRS.includes(relativePath) || AGENT_GATEWAY.test(relativePath);
+
+/**
  * Folder exactly 0700, its regular files exactly 0600 (what the gateway requires); owners unchanged, links and
- * anything else left alone. Never opens anything to group or others.
+ * anything else left alone. Never opens anything to group or others. Sockets are left as their service made them
+ * (0600): the walk can't open them, so it never widened them, and a chmod by path could follow a link swapped in.
  */
 async function tightenPrivateDir(dir: string) {
   const NOFOLLOW = fsp.constants.O_RDONLY | fsp.constants.O_NOFOLLOW | fsp.constants.O_NONBLOCK;
@@ -41,6 +52,18 @@ async function tightenPrivateDir(dir: string) {
   for (const e of await fsp.readdir(dir, { withFileTypes: true })) {
     if (e.isFile()) await tighten(path.join(dir, e.name), 0o600, 'file');
   }
+}
+
+/** The private folders that exist in this app's data folder: the fixed ones plus every agent's gateway folder. */
+async function privateDirsOf(appDataDir: string): Promise<string[]> {
+  const out = [...PRIVATE_APP_DATA_DIRS];
+  const agents = path.join(appDataDir, AGENTS_DIR);
+  const st = await fsp.lstat(agents).catch(() => null);
+  if (!st?.isDirectory()) return out;
+  for (const e of await fsp.readdir(agents, { withFileTypes: true }).catch(() => [])) {
+    if (e.isDirectory()) out.push(path.posix.join(AGENTS_DIR, e.name, 'gateway'));
+  }
+  return out;
 }
 
 export type AppMigration = { id: string; path: string };
@@ -275,7 +298,7 @@ export class AppFilesManager {
 
   /**
    * Set the permissions for the app data directory: everything a+rwx (Runtipi's `chmod -Rf a+rwx`), except the
-   * owner-only secret folders in PRIVATE_APP_DATA_DIRS, which are skipped and brought back to 0700 / 0600.
+   * owner-only secret folders (PRIVATE_APP_DATA_DIRS and each agent's gateway folder), which are skipped and brought back to 0700 / 0600.
    * Links are never followed, as `chmod -R` does not follow them either. Apps with `private_data` are left alone.
    * @param appUrn - The app id
    */
@@ -292,7 +315,7 @@ export class AppFilesManager {
     } catch (error) {
       this.logger.error(`Error setting permissions for app ${appUrn}`, error);
     }
-    for (const rel of PRIVATE_APP_DATA_DIRS) {
+    for (const rel of await privateDirsOf(appDataDir)) {
       await tightenPrivateDir(path.join(appDataDir, rel)).catch(() => {
         this.logger.error(`Error restoring private permissions for app ${appUrn}`);
       });
@@ -301,7 +324,7 @@ export class AppFilesManager {
 
   private async setAppDataDirPermissionsOnLinux(entryPath: string, relativePath = ''): Promise<void> {
     // Wizard: owner-only secret folders are never opened (PRIVATE_APP_DATA_DIRS).
-    if (PRIVATE_APP_DATA_DIRS.includes(relativePath)) return;
+    if (isPrivateAppDataDir(relativePath)) return;
     const openFlags = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK;
     let entryHandle: fs.promises.FileHandle;
 
@@ -340,7 +363,7 @@ export class AppFilesManager {
   }
 
   private async setAppDataDirPermissionsOutsideLinux(entryPath: string, relativePath = ''): Promise<void> {
-    if (PRIVATE_APP_DATA_DIRS.includes(relativePath)) return;
+    if (isPrivateAppDataDir(relativePath)) return;
     let entryStats: fs.Stats;
 
     try {
