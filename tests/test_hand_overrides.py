@@ -109,6 +109,15 @@ def test_the_published_hermes_api_port_is_removed_and_everything_else_kept(tmp_p
     assert ho.retire(tmp_path, STORE, FakeRt(installed=["hermes-agent"])) == []   # once
 
 
+def test_a_tagged_port_list_is_cleaned_and_keeps_its_tag(tmp_path):
+    p = _override(tmp_path, "hermes-agent",
+                  "services:\n  hermes-agent-engine:\n    ports: !override\n      - 127.0.0.1:18642:8642\n"
+                  "    volumes:\n      - /x:/y\n")
+    (out,) = ho.retire(tmp_path, STORE, FakeRt())
+    assert out["removed_ports"] == ["hermes-agent-engine: 127.0.0.1:18642:8642"]
+    assert "ports: !override []" in p.read_text()
+
+
 @pytest.mark.parametrize("entry", ["18642:8642", "8642", "127.0.0.1:18642:8642/tcp",
                                    "{target: 8642, published: '18642', host_ip: 127.0.0.1}"])
 def test_every_form_of_the_api_port_counts(tmp_path, entry):
@@ -162,6 +171,9 @@ def test_second_hand_gets_its_own_ledger_and_host_scripts_keep_working(tmp_path)
     assert svc["volumes"] == ["/etc/localtime:/etc/localtime:ro"]
     assert svc["environment"] == {"KEEP": "1"}                         # LEDGER_DIR goes: the app's default is it
     assert rt.calls == [("stop", "second-hand:wizardapps"), ("start", "second-hand:wizardapps")]
+    # one lock for the app and the host scripts across the switch: the same inode as the original's
+    kept_lock = Path(out["host_folder_kept_as"]) / "ledger.lock"
+    assert (own / "ledger.lock").stat().st_ino == kept_lock.stat().st_ino
     assert ho.retire(root, STORE, FakeRt(installed=["second-hand"])) == []   # once
 
 
@@ -247,3 +259,12 @@ def test_the_step_never_fails_the_installer(monkeypatch):
         raise RuntimeError("x")
     monkeypatch.setattr(hand_overrides, "retire", boom)
     assert cli.hand_overrides_step(SimpleNamespace(runtipi_root=Path("/nonexistent"), home=None), FakeRt()) == []
+
+
+@pytest.mark.parametrize("status", ["starting", "updating", "stopping", None])
+def test_second_hand_is_only_moved_at_rest(tmp_path, status):
+    root, ledger, p = _box(tmp_path, SECOND)
+    rt = FakeRt(status=status)
+    (out,) = ho.retire(root, STORE, rt)
+    assert "next update" in out["skipped"] and rt.calls == []
+    assert ledger.is_dir() and not ledger.is_symlink() and _asides(p) == []

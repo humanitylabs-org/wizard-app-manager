@@ -31,6 +31,8 @@ import sys
 import time
 from pathlib import Path
 
+from .network import _Tagged
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - non-POSIX
@@ -146,13 +148,17 @@ def agent_port(runtipi_root, store: str, *, dry_run: bool = False, stamp: str | 
     removed = []
     for name, svc in (doc.get("services") or {}).items() if isinstance(doc.get("services"), dict) else []:
         ports = svc.get("ports") if isinstance(svc, dict) else None
-        if not isinstance(ports, list):   # absent, or a tagged `!reset []` the App Manager may write: leave it
+        tagged = isinstance(ports, _Tagged) and isinstance(ports.value, list)   # `!override [...]` / `!reset []`
+        entries = ports.value if tagged else ports
+        if not isinstance(entries, list):
             continue
-        keep = [e for e in ports if _container_port(e) != HERMES_API_PORT]
-        if len(keep) == len(ports):
+        keep = [e for e in entries if _container_port(e) != HERMES_API_PORT]
+        if len(keep) == len(entries):
             continue
-        removed += [f"{name}: {e}" for e in ports if e not in keep]
-        if keep:
+        removed += [f"{name}: {e}" for e in entries if e not in keep]
+        if tagged:   # the tag stays: `!override` still means "only these ports", now without the API
+            svc["ports"] = _Tagged(ports.tag, keep)
+        elif keep:
             svc["ports"] = keep
         else:
             del svc["ports"]
@@ -229,6 +235,12 @@ def _files(root: Path) -> dict[str, int]:
     return out
 
 
+def _no_root_lock(src: Path):
+    def ignore(folder, names):
+        return ["ledger.lock"] if Path(folder) == src and "ledger.lock" in names else []
+    return ignore
+
+
 def _app_uid(runtipi_root, store: str) -> int:
     try:
         return int(json.loads((Path(runtipi_root) / "apps" / store / SECOND_HAND / "config.json").read_text())["uid"])
@@ -288,11 +300,17 @@ def second_hand(runtipi_root, store: str, rt=None, *, dry_run: bool = False, sta
         probe = probe.parent
     if not os.access(probe, os.W_OK | os.X_OK) or not os.access(src.parent, os.W_OK | os.X_OK):
         return {**base, "skipped": "no write access to the ledger folders; left as it is"}
+    if (src / "ledger.lock").exists() and os.stat(src / "ledger.lock").st_dev != os.stat(probe).st_dev:
+        # the lock file is hard-linked into the new folder (one lock for the app and the host scripts across the
+        # switch); that needs one filesystem
+        return {**base, "skipped": "the host ledger is on another disk than the app's data; left as it is"}
+    urn = f"{SECOND_HAND}:{store}"
+    was = _status(rt, urn) if rt is not None else None
+    if was not in ("running", "stopped"):   # starting, updating, ...: containers may be live; next run (Codex P1)
+        return {**base, "skipped": f"Second Hand is {was or 'not readable'}; tried again on the next update"}
     if dry_run:
         return {**base, "would": "move the host ledger into Second Hand's own data folder"}
     stamp = stamp or _stamp()
-    urn = f"{SECOND_HAND}:{store}"
-    was = _status(rt, urn) if rt is not None else None
     if was == "running":
         try:
             rt.stop(urn)
@@ -308,8 +326,12 @@ def second_hand(runtipi_root, store: str, rt=None, *, dry_run: bool = False, sta
     try:
         with _ledger_lock(src):
             dest.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(src, dest, symlinks=True, dirs_exist_ok=True)
+            shutil.copytree(src, dest, symlinks=True, dirs_exist_ok=True, ignore=_no_root_lock(src))
             done.append("copied")
+            if (src / "ledger.lock").exists():
+                # the SAME lock inode in both places (Codex P1): a host script already waiting on the old path's
+                # lock excludes the app's later saves, which lock dest/ledger.lock
+                os.link(src / "ledger.lock", dest / "ledger.lock")
             if _files(src) != _files(dest):
                 raise OSError("the copy does not match the host folder")
             os.rename(src, aside)
