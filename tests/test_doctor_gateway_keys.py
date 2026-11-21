@@ -100,6 +100,8 @@ def test_no_agent_service_or_no_tools_adds_no_row(box):
 
 
 def test_unreadable_file_is_read_through_the_runtipi_container(box, monkeypatch):
+    import wam.app_rename as ar
+    monkeypatch.setattr(ar, "app_data_dir", lambda: "/app-data")   # Runtipi 4's own mount (#889)
     d = service_home(box)
     f = write_keys(d, {})
     seen = []
@@ -114,7 +116,7 @@ def test_unreadable_file_is_read_through_the_runtipi_container(box, monkeypatch)
     app_rows(box, "messenger", [KEY])
     app_rows(box, "notes", [KEY])
     row = gateway_keys.check(REG, box.home, box.runtipi_root, rt_read=rt_read)
-    assert row and row[1] and seen == ["/data/app-data/wizardapps/wizard-agent-service/data/wizard-os/grants/agent-service.json"]
+    assert row and row[1] and seen == ["/app-data/wizardapps/wizard-agent-service/data/wizard-os/grants/agent-service.json"]
 
 
 def test_invalid_json_fails(box):

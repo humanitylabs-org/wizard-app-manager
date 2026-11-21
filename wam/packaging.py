@@ -137,11 +137,18 @@ def prepare_package(pkg, compose: dict, src: Path, target: Path, app: str, commi
 
 
 def _container_path(host: Path) -> str:
-    """<runtipi root>/app-data/... on the host is /data/app-data/... inside the Runtipi container."""
+    """<runtipi root>/app-data/... on the host, inside the Runtipi container. Runtipi 4 mounts app-data on its own
+    at /app-data, not under /data (#889): use the container's real mount, like app_rename (#869)."""
     parts = Path(host).parts
     if "app-data" not in parts:
         raise PackagingError(f"{host} is not under Runtipi's app-data")
-    return "/data/" + "/".join(parts[parts.index("app-data"):])
+    from .app_rename import RenameError, app_data_dir
+    try:
+        inner = app_data_dir()
+    except RenameError as e:
+        raise PackagingError(str(e)) from e
+    rest = parts[parts.index("app-data") + 1:]
+    return "/".join([inner.rstrip("/"), *rest])
 
 
 def _copy_as_runtipi(src: Path, target: Path) -> None:

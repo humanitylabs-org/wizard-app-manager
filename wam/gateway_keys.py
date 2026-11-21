@@ -63,9 +63,15 @@ def _read(p: Path, runtipi_root: Path | None, rt_read=None) -> bytes | None:
     try:
         if runtipi_root is None:
             raise ValueError
-        inner = "/data/" + str(p.relative_to(Path(runtipi_root)))
+        rel = p.relative_to(Path(runtipi_root))
     except ValueError:
         raise PermissionError(f"can't read {p}")
+    if rel.parts and rel.parts[0] == "app-data":
+        # Runtipi 4 mounts app-data at /app-data, not /data/app-data (#889): ask the container where it is.
+        from .app_rename import app_data_dir
+        inner = "/".join([app_data_dir().rstrip("/"), *rel.parts[1:]])
+    else:
+        inner = "/data/" + rel.as_posix()
     return rt_read(inner)
 
 
