@@ -142,7 +142,9 @@ def test_doctor_row(tmp_path, monkeypatch):
     home, rt = tmp_path / "h/.wizard-os", tmp_path / "h/runtipi"
     hh = tmp_path / "h/.hermes"
     monkeypatch.setenv("HERMES_HOME", str(hh))
-    c = SimpleNamespace(home=home, runtipi_root=rt)
+    installed = []
+    c = SimpleNamespace(home=home, runtipi_root=rt,
+                        runtipi=lambda: SimpleNamespace(installed=lambda: [{"info": {"urn": u}} for u in installed]))
     home.mkdir(parents=True)
     _w(hh / "config.yaml", "model: x\n")
     assert cli.doctor_backup_main_agent(c) is None                           # no backups set up: no row
@@ -152,5 +154,25 @@ def test_doctor_row(tmp_path, monkeypatch):
     _w(home / "alongside.json", json.dumps({"mode": "alongside", "agent": {"hermes_home": str(hh)}}))
     assert cli.doctor_backup_main_agent(c)[1] is True
     (home / "alongside.json").unlink()
+    # a folder a failed install left behind is not an installed main agent: the backup leaves it out too (Codex P2)
     (rt / "app-data/wizardapps/hermes-agent/data").mkdir(parents=True)
+    assert cli.doctor_backup_main_agent(c)[1] is None
+    installed.append("hermes-agent:wizardapps")
     assert cli.doctor_backup_main_agent(c)[1] is True
+
+
+def test_verify_and_import_plan_say_what_the_backup_left_out(tmp_path):
+    fb = _host_main_box(tmp_path, write_tools(tmp_path / "tools"))
+    code, res, out, key = _export(fb, tmp_path)
+    assert code == 0, res
+    kf = tmp_path / "k"
+    kf.write_text(crypto.encode_recovery_key(key))
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = bcli.main(["verify", str(out), "--key-file", str(kf), "--json"], box=fb.box())
+    ver = json.loads(buf.getvalue().strip().splitlines()[-1])
+    assert code == 0 and ver["manifest"]["warnings"] == res["warnings"], ver
+    from wam.backup import restore
+    manifest = json.loads(_contents(out, key)["manifest.json"])
+    p = restore.plan(fb.box(), manifest, probe=False)
+    assert p["warnings"][0] == "this backup: " + res["warnings"][0]

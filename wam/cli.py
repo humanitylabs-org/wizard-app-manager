@@ -1838,7 +1838,12 @@ def doctor_backup_main_agent(c: Config) -> tuple[str, bool | None, str] | None:
     st = alongside.load(c.home)
     if st and (st.get("agent") or {}).get("hermes_home"):
         return (name, True, f"the host Hermes at {st['agent']['hermes_home']} (alongside.json)")
-    if (c.runtipi_root / "app-data" / STORE / bbox.MAIN_APP / "data").is_dir():
+    # the same rule as the capture (Box.agents): the main app counts only when Runtipi lists it as installed
+    try:
+        urns = {(r.get("info") or {}).get("urn") for r in c.runtipi().installed()}
+    except Exception as e:  # noqa: BLE001 - a doctor row, never a crash
+        return (name, None, f"cannot tell: App Manager API not reachable ({str(e)[:80]})")
+    if f"{bbox.MAIN_APP}:{STORE}" in urns:
         return (name, True, f"the {bbox.MAIN_APP} app")
     left = bbox.host_main_agent_home(os.environ)
     return (name, None, bbox.main_agent_warning(left)) if left else None

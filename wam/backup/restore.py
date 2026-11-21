@@ -220,7 +220,9 @@ def summary(m: dict) -> dict:
             "files": m.get("files"),
             "active": {"agents": {k: {"messaging": len(v.get("messaging", [])), "cron": len(v.get("cron", []))}
                                   for k, v in (m.get("active", {}).get("agents") or {}).items()},
-                       "schedule": (m.get("active") or {}).get("schedule")}}
+                       "schedule": (m.get("active") or {}).get("schedule")},
+            # what the backup left out when it was made (#885: a host Hermes main agent): verify and import say so
+            **({"warnings": list(m["warnings"])} if m.get("warnings") else {})}
 
 
 # ---------------------------------------------------------------- plan
@@ -273,7 +275,8 @@ def plan(box: Box, m: dict, probe: bool = True, stage: Path | None = None) -> di
     """What a restore of manifest `m` does on this box. An app whose backup is newer than this box's release is
     `refused` (wizard-os#91): not installed, its data not put back, this box's copy left as it is."""
     out = {"mode_here": None, "mode_bundle": (m.get("source") or {}).get("mode"), "install": [], "replace": [],
-           "leave": [], "agents": [], "warnings": [], "kept_here": [], "refused": [], "agents_skipped": []}
+           "leave": [], "agents": [], "warnings": [f"this backup: {w}" for w in m.get("warnings") or []],
+           "kept_here": [], "refused": [], "agents_skipped": []}
     try:
         out["mode_here"] = box.mode()
         here = box.installed() if probe else {}
