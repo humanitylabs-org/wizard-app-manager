@@ -8,11 +8,34 @@ import pytest
 from wam import packaging
 
 
+@pytest.fixture(autouse=True)
+def runtipi4_mount(monkeypatch):
+    """Runtipi 4 mounts app-data at /app-data inside the runtipi container (#889)."""
+    import wam.app_rename as ar
+    monkeypatch.setattr(ar, "app_data_dir", lambda: "/app-data")
+
+
 def test_container_path():
-    assert packaging._container_path("/home/u/runtipi/app-data/.wizard-source/wizardapps/food@abc") == \
-        "/data/app-data/.wizard-source/wizardapps/food@abc"
+    assert packaging._container_path("/srv/runtipi/app-data/.wizard-source/wizardapps/food@abc") == \
+        "/app-data/.wizard-source/wizardapps/food@abc"
     with pytest.raises(packaging.PackagingError):
         packaging._container_path("/tmp/elsewhere")
+
+
+def test_container_path_follows_the_real_mount(monkeypatch):
+    import wam.app_rename as ar
+    monkeypatch.setattr(ar, "app_data_dir", lambda: "/data/app-data")   # an older layout that mounts it under /data
+    assert packaging._container_path("/srv/runtipi/app-data/x/y") == "/data/app-data/x/y"
+
+
+def test_container_path_without_app_data_folder_refuses(monkeypatch):
+    import wam.app_rename as ar
+
+    def missing():
+        raise ar.RenameError("cannot find Runtipi's app-data folder inside the runtipi container")
+    monkeypatch.setattr(ar, "app_data_dir", missing)
+    with pytest.raises(packaging.PackagingError, match="app-data"):
+        packaging._container_path("/srv/runtipi/app-data/x")
 
 
 def test_root_owned_source_root_copies_through_runtipi(tmp_path, monkeypatch):
@@ -40,5 +63,5 @@ def test_root_owned_source_root_copies_through_runtipi(tmp_path, monkeypatch):
     compose = {"services": {"food": {"image": "python:3.12-alpine"}}}
     assert packaging.prepare_package("source", compose, src, target, "food", "abc") is True
     argv, names = calls[0]
-    assert argv[:4] == ["docker", "exec", "-i", "runtipi"] and argv[-1] == "/data/app-data/.wizard-source/wizardapps/food@abc"
+    assert argv[:4] == ["docker", "exec", "-i", "runtipi"] and argv[-1] == "/app-data/.wizard-source/wizardapps/food@abc"
     assert "./app/server.py" in names
