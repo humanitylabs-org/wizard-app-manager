@@ -153,6 +153,7 @@ def backup(box: Box, repo: Repo, host: str, *, min_free_bytes: int | None = None
             "changed_while_reading": got.get("changed_while_reading"),
             "apps_without_data": got.get("apps_without_data") or [],
             "skipped_app_copies": got.get("skipped_app_copies") or [],
+            "warnings": got.get("warnings") or [],
             "peak_extra_disk_bytes": peak.peak, "restic_cache_bytes": _tree_bytes(cache) if cache.is_dir() else 0,
             "seconds": round(time.time() - t0, 1)}
 

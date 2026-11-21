@@ -228,7 +228,11 @@ back a share of the data within the last week. One run at a time; a second run e
 
 `backup-status.json`: `ok`, `snapshot`, `data_added` (new bytes this run, before restic's compression),
 `data_added_packed`, `capture_bytes`, `repository_bytes`, `snapshots`, `retention`, `check`, `read_data`,
-`peak_extra_disk_bytes`, `restic_cache_bytes`, `seconds`, `error`, `last_success_at`. A low-disk stop records
+`peak_extra_disk_bytes`, `restic_cache_bytes`, `seconds`, `error`, `last_success_at`, `warnings`. `warnings` lists
+what an `ok` run left out that the owner expects in it: today `main agent not in backup: <path> (…)` when the box
+has no `hermes-agent` app and no `alongside.json` but a host Hermes home (a box older than alongside mode, #885); the
+file export and its manifest carry the same list, and `wam doctor` shows it as a warning row. `wam alongside` makes
+that Hermes the box's main agent, and the next backup includes it. A low-disk stop records
 `ok: false`, `verified: false`, `error: "stopped: free disk below floor"`, `stopped_low_disk: true`, `free_bytes`
 (the free space when stopped), `min_free_bytes` (the floor on that filesystem), and a plain `message` saying how to
 retry. `last_success_at` still refers to the previous successful run.

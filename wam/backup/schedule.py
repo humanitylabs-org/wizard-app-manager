@@ -477,6 +477,8 @@ def _run(box: Box, cfg: dict, now: float | None = None) -> dict:
                 log("warning: " + msg)
             # a leftover copy of an app in a second store is left out, never the whole run (#826)
             st["skipped_app_copies"] = bk.get("skipped_app_copies") or []
+            # the run is still ok, but says what it left out that the owner expects in it (#885)
+            st["warnings"] = bk.get("warnings") or []
             log(f"snapshot {bk['short_id']}: {human(bk['data_added'] or 0)} new of {human(bk['capture_bytes'] or 0)}")
             st["retention"] = apply_retention(repo, cfg, host)
             log("restic check")

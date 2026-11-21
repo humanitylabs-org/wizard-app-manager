@@ -1823,6 +1823,27 @@ def container_doctor(c: Config) -> list[tuple[str, bool | None, str]]:
     return out
 
 
+def doctor_backup_main_agent(c: Config) -> tuple[str, bool | None, str] | None:
+    """With backups set up: does the backup include the box's main agent? A box that predates alongside mode
+    runs its Wizard on the host Hermes with no alongside.json, and the backup leaves that Hermes out (#885).
+    A warning row (None), never a failure: switching the box to alongside mode is the owner's step."""
+    from .backup import box as bbox
+    try:
+        cfg = json.loads((c.home / "backup.json").read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(cfg, dict) or not cfg.get("target"):
+        return None
+    name = "Backup includes the main agent"
+    st = alongside.load(c.home)
+    if st and (st.get("agent") or {}).get("hermes_home"):
+        return (name, True, f"the host Hermes at {st['agent']['hermes_home']} (alongside.json)")
+    if (c.runtipi_root / "app-data" / STORE / bbox.MAIN_APP / "data").is_dir():
+        return (name, True, f"the {bbox.MAIN_APP} app")
+    left = bbox.host_main_agent_home(os.environ)
+    return (name, None, bbox.main_agent_warning(left)) if left else None
+
+
 def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool | None, str]]:
     from .bundle_delegate import in_agent_container
     if in_agent_container():
@@ -1911,6 +1932,12 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool | None, str]]:
         else:
             out.append(("alongside: Hermes home not shared with the shell", True,
                         "chats over the Hermes API (opt in: wam alongside --share-sessions)"))
+    try:   # #885: scheduled backups must not leave out a host Hermes main agent without saying so (warning only)
+        row = doctor_backup_main_agent(c)
+        if row:
+            out.append(row)
+    except Exception as e:  # noqa: BLE001 - a doctor row, never a crash
+        out.append(("Backup includes the main agent", None, str(e)[:120]))
     if regp.is_file():
         out.extend(registry.slot_choices(json.loads(regp.read_text())))
         out.extend(doctor_gateway_keys(c, json.loads(regp.read_text())))
