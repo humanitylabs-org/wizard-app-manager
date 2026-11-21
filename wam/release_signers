@@ -1,0 +1,8 @@
+# Trusted WizardOS release keys (wizard-app-manager#565). OpenSSH allowed-signers format, read by
+# `ssh-keygen -Y verify -f <this file> -I wizardos-release -n wizardos-release`. One line per key:
+#
+#   wizardos-release namespaces="wizardos-release" ssh-ed25519 AAAA... <comment: who holds it, since when>
+#
+# This list ships inside the App Manager checkout and is never fetched from where the releases come from.
+# To change the key: add the new key's line first, release, sign with the new key, then remove the old line.
+# Empty for now: the real signing key is created and added by a person in a later step (wizard-os#416).
