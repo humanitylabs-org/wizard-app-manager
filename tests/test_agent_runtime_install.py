@@ -112,6 +112,7 @@ def box(monkeypatch):
 
 
 def _install(b, **kw):
+    kw.setdefault("reads_unix", lambda store, app: True)
     return ar.install(b["wiz"], b["rt"], [AS], STORE, home=b["home"], systemctl=b["sc"], **kw)
 
 
@@ -207,7 +208,7 @@ def test_hand_installed_helper_and_alongside_boxes_are_left_alone(box, source):
 
 
 def test_skips_without_one_agent_service_or_when_switched_off(box, source, monkeypatch):
-    assert ar.install(box["wiz"], box["rt"], [], STORE, home=box["home"], systemctl=box["sc"])["state"] == "skipped"
+    assert ar.install(box["wiz"], box["rt"], [], STORE, home=box["home"], systemctl=box["sc"], reads_unix=lambda *a: True)["state"] == "skipped"
     monkeypatch.setenv("WIZARD_AGENT_RUNTIME", "0")
     assert _install(box)["state"] == "skipped"
     assert not box["sc"].calls
@@ -247,5 +248,58 @@ def test_a_release_pin_is_fetched_exactly(box, source, monkeypatch):
 def test_a_socket_path_too_long_for_unix_sockets_is_refused(tmp_path, source, monkeypatch):
     monkeypatch.delenv("WIZARD_RELEASE_PINS", raising=False)
     home = tmp_path / ("x" * 90)
-    res = ar.install(home / ".wizard-os", home / "runtipi", [AS], STORE, home=home, systemctl=lambda *a: None)
+    res = ar.install(home / ".wizard-os", home / "runtipi", [AS], STORE, home=home, systemctl=lambda *a: None,
+                     reads_unix=lambda *a: True)
     assert res["state"] == "failed" and "too long" in res["reason"]
+
+
+def test_an_agent_service_without_the_unix_client_is_never_wired(box, source):
+    """A fresh box whose Agent Service image predates wizard-agent-service#593 would crash-loop on a unix: URL."""
+    res = _install(box, reads_unix=lambda store, app: False)
+    assert res["state"] == "skipped" and "older than" in res["reason"]
+    over = ar._bb.override_path(box["rt"], STORE, AS)
+    assert not over.exists() or ar.MARK not in over.read_text()
+    assert not (box["home"] / ".config/systemd/user" / ar.UNIT).exists()
+    assert _install(box, reads_unix=lambda store, app: None)["state"] == "skipped"
+
+
+def test_a_block_is_taken_back_when_the_agent_service_can_no_longer_read_it(box, source):
+    assert _install(box)["state"] == "ready"
+    over = ar._bb.override_path(box["rt"], STORE, AS)
+    assert ar.MARK in over.read_text()
+    res = _install(box, reads_unix=lambda store, app: False)
+    assert res["state"] == "skipped" and res["override_changed"] is True
+    assert not over.exists() or ar.MARK not in over.read_text()
+    assert ar.sync_app(None, box["rt"], STORE, AS, wizard_home=box["wiz"]) is False   # a reinstall doesn't bring it back
+    assert _install(box)["state"] == "ready" and ar.MARK in over.read_text()
+
+
+def test_the_image_check_reads_the_agent_service_code_from_its_container(tmp_path):
+    import io, tarfile
+    def tar(body):
+        b = io.BytesIO()
+        with tarfile.open(fileobj=b, mode="w") as t:
+            info = tarfile.TarInfo("agents.mjs"); info.size = len(body); t.addfile(info, io.BytesIO(body))
+        return b.getvalue()
+    for body, want in ((b"export function unixSocketFetch(p) {}", True), (b"export function createRuntimeClient() {}", False)):
+        f = tmp_path / "out.tar"; f.write_bytes(tar(body))
+        fake = tmp_path / "docker"; fake.write_text(f"#!/bin/sh\n[ \"$1 $2\" = \"cp {AS}_{STORE}-{AS}-1:/app/server/agents.mjs\" ] || exit 9\ncat {f}\n")
+        fake.chmod(0o755)
+        assert ar.service_reads_unix(STORE, AS, docker=[str(fake)]) is want
+    fake.write_text("#!/bin/sh\necho 'No such container' >&2; exit 1\n")
+    assert ar.service_reads_unix(STORE, AS, docker=[str(fake)]) is None
+
+
+def test_a_box_whose_agent_service_writes_as_another_uid_is_not_wired(box, source, monkeypatch):
+    """Owner not uid 1000 (or rootless Docker): the helper could never read the agent folders, so say so."""
+    agents = ar.agents_dir(box["rt"], STORE, AS)
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / ".main-agent.json").write_text("{}")
+    assert ar.foreign_writer(agents) is None
+    assert _install(box)["state"] == "ready"
+    real = os.getuid()
+    monkeypatch.setattr(ar.os, "getuid", lambda: real + 1)
+    res = _install(box)
+    assert res["state"] == "failed" and f"uid {real}" in res["reason"] and res["override_changed"] is True
+    over = ar._bb.override_path(box["rt"], STORE, AS)
+    assert not over.exists() or ar.MARK not in over.read_text()

@@ -110,6 +110,42 @@ def supports_socket(tree: Path) -> bool:
         return False
 
 
+UNIX_CLIENT = b"unixSocketFetch"   # wizard-agent-service#593: the Service's client for a unix: runtime URL
+
+
+def service_reads_unix(store: str, app_id: str, docker: list[str] | None = None) -> bool | None:
+    """Whether the Agent Service this app runs can use a `unix:` runtime URL. An older image throws at start on one
+    ("agent runtime must be a loopback or box-network http address") and the Service never comes up, so the block
+    must only be written for an image that has the client. Reads server/agents.mjs out of the app's container
+    (`docker cp` works on a stopped or restarting one too). None when it can't be told (no container yet)."""
+    if docker is None:
+        from .network import docker_cmd
+        docker = docker_cmd()
+    name = f"{app_id}_{store}-{app_id}-1"   # Runtipi's compose project naming
+    try:
+        p = subprocess.run([*docker, "cp", f"{name}:/app/server/agents.mjs", "-"], capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if p.returncode or not p.stdout:
+        return None
+    return UNIX_CLIENT in p.stdout
+
+
+def foreign_writer(agents: Path) -> int | None:
+    """The host uid the Agent Service writes its agent folders as, when that is not this user. The Service keeps
+    each agent's folder 0700 and its files 0600, so a helper running as another uid can't read them (it answers
+    agent_not_found). That happens where the box owner is not uid 1000 (the Service image's user) or under rootless
+    Docker. None when every file the Service wrote here is ours, or it wrote none yet."""
+    me = os.getuid()
+    try:
+        for f in sorted(agents.iterdir()):
+            if f.name.startswith(".") and f.is_file() and not f.is_symlink() and f.stat().st_uid != me:
+                return f.stat().st_uid
+    except OSError:
+        return None
+    return None
+
+
 def stage_release(p: dict, commit: str) -> tuple[Path, bool]:
     """Copy ops/agent-runtime of the checkout into releases/<commit> once and point `current` at it atomically.
     (release dir, whether `current` moved)."""
@@ -242,7 +278,8 @@ def healthy(p: dict, timeout: float = 3.0) -> bool:
 
 
 def install(wizard_home: Path, runtipi_root: Path, app_ids, store: str = "wizardapps", alongside_box: bool = False,
-            apply: bool = True, home: Path | None = None, systemctl=None, wait_s: float = 10.0) -> dict:
+            apply: bool = True, home: Path | None = None, systemctl=None, wait_s: float = 10.0,
+            reads_unix=None) -> dict:
     """Install or update the helper and wire the one Agent Service app to it. Returns the status (also saved)."""
     import time
     p = paths(home, wizard_home)
@@ -267,6 +304,29 @@ def install(wizard_home: Path, runtipi_root: Path, app_ids, store: str = "wizard
     app_id = ids[0]
     if hand_installed(p):
         return done("kept", app=app_id, reason=f"a hand-installed {UNIT} exists; left exactly as it is")
+    ok = (reads_unix or service_reads_unix)(store, app_id)
+    if not ok:
+        # Never point an Agent Service at a socket it can't read: it would not start at all. Take back a block an
+        # earlier run wrote (a newer image went back), and wire it on the first run after the image has the client.
+        try:
+            removed = apply and _bb.write_overlay(_bb.override_path(runtipi_root, store, app_id), None, MARK)
+        except ValueError as e:
+            return done("failed", app=app_id, reason=str(e)[:300])
+        why = ("its Agent Service could not be read (not installed or no container yet)" if ok is None else
+               "the installed Agent Service is older than wizard-agent-service#593 and can't use the helper's socket")
+        return done("skipped", app=app_id, reason=f"{why}; rerun after the Agent Service updates",
+                    override_changed=bool(removed))
+    other = foreign_writer(agents_dir(runtipi_root, store, app_id))
+    if other is not None:
+        # Wiring it anyway would look connected while every agent it creates stays unreadable to the helper; a
+        # plain refusal keeps private first's runtime_unavailable answer visible and logged instead.
+        try:
+            removed = apply and _bb.write_overlay(_bb.override_path(runtipi_root, store, app_id), None, MARK)
+        except ValueError as e:
+            return done("failed", app=app_id, reason=str(e)[:300])
+        return done("failed", app=app_id, override_changed=bool(removed),
+                    reason=(f"the Agent Service writes its agent folders as uid {other} and this user is uid {os.getuid()}, "
+                            "so the helper could not read them; not wired"))
     try:
         repo, ref, pinned = pinned_source()
     except (ValueError, OSError) as e:
