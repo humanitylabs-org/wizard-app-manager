@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import re
 import secrets
+import stat
 import sys
 from pathlib import Path
 
@@ -55,9 +56,12 @@ def recipe_text(runtipi_root: Path, app_id: str, store: str = STORE, prefer: str
     return ""
 
 
-def service_home(runtipi_root: Path, store: str = STORE) -> Path | None:
+def service_home(runtipi_root: Path, store: str = STORE, home: Path | None = None) -> Path | None:
     """The Agent Service's own WIZARD_OS_HOME on the host (gateway_keys.path's lookup), None when no Service data
-    folder is here yet."""
+    folder is here yet. A Service app in Runtipi wins; otherwise a Service that runs on the host itself (#931: no
+    Runtipi Service app, e.g. a systemd Service on 127.0.0.1:8923) counts when the given Wizard home (WIZARD_OS_HOME,
+    else ~/.wizard-os) already holds the Service's `app-tokens/` folder, the proof that this Service reads tokens
+    from there."""
     from .gateway_keys import AGENT_SERVICE_APPS
     for app in AGENT_SERVICE_APPS:
         data = Path(runtipi_root) / "app-data" / store / app / "data"
@@ -66,7 +70,67 @@ def service_home(runtipi_root: Path, store: str = STORE) -> Path | None:
                 return data / "wizard-os"
         except OSError:
             continue
+    return host_service_home(home)
+
+
+def host_service_home(home: Path | None) -> Path | None:
+    """The host Service's WIZARD_OS_HOME: `home` when it holds a real (not symlinked) `app-tokens/` folder."""
+    if not home:
+        return None
+    h = Path(home).expanduser()
+    try:
+        tokens = h / "app-tokens"
+        if h.is_dir() and not h.is_symlink() and tokens.is_dir() and not tokens.is_symlink():
+            return h
+    except OSError:
+        pass
     return None
+
+
+class HostFiles:
+    """RuntipiFiles' read/stat/write for a Service home outside the Runtipi root: plain files on this host."""
+
+    def read(self, p: Path) -> bytes | None:
+        p = Path(p)
+        if p.is_symlink() or not p.is_file():
+            return None
+        return p.read_bytes()
+
+    def stat(self, p: Path) -> tuple[int, int, int] | None:
+        try:
+            st = os.lstat(p)
+        except FileNotFoundError:
+            return None
+        if stat.S_ISLNK(st.st_mode):
+            return None
+        return stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid
+
+    def write(self, p: Path, data: bytes, mode: int, uid: int, gid: int) -> None:
+        """Replace `p` atomically: a private temp file beside it, mode and owner set before it is renamed in."""
+        p = Path(p)
+        if not p.parent.is_dir():
+            p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _own(p.parent, uid, gid)
+        tmp = p.with_name(f"{p.name}.wam-it.{os.getpid()}")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.chmod(tmp, mode)
+            _own(tmp, uid, gid)
+            tmp.replace(p)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+
+
+def _own(p: Path, uid: int, gid: int) -> None:
+    st = os.lstat(p)
+    if (st.st_uid, st.st_gid) != (uid, gid):
+        os.chown(p, uid, gid, follow_symlinks=False)   # only root can give it away; anyone else fails loudly
+
+
+NO_SERVICE = "no Agent Service data folder on this box yet"
 
 
 def _user_env(runtipi_root: Path, app_id: str, store: str = STORE) -> dict[str, str]:
@@ -91,7 +155,7 @@ def _write_user_env(runtipi_root: Path, app_id: str, values: dict[str, str], sto
 
 
 def sync_app(runtipi_root: Path, app_id: str, *, store: str = STORE, prefer: str = "installed", files=None,
-             mint=lambda: secrets.token_urlsafe(32)) -> dict:
+             mint=lambda: secrets.token_urlsafe(32), home: Path | None = None) -> dict:
     """Give one installed app its inbox token. Returns {"vars": [...], "token": "kept|created|adopted",
     "changed": bool (its user-config app.env changed)} or {"skipped": reason}. Never prints the token.
     One sync at a time per box: registry writers run concurrently (API, watchers, installer), and two first-time
@@ -99,32 +163,34 @@ def sync_app(runtipi_root: Path, app_id: str, *, store: str = STORE, prefer: str
     import fcntl
     if not APP_ID.fullmatch(app_id or ""):
         return {"skipped": "not an app id the Agent Service accepts"}
-    if not token_vars(recipe_text(runtipi_root, app_id, store, prefer)):
+    names = token_vars(recipe_text(runtipi_root, app_id, store, prefer))
+    if not names:
         return {"skipped": "its recipe takes no agent inbox token"}   # nothing written for any other app
-    if service_home(runtipi_root, store) is None:
-        return {"skipped": "no Agent Service data folder on this box yet"}
+    if service_home(runtipi_root, store, home) is None:
+        return {"vars": names, "skipped": NO_SERVICE}
     lock = Path(runtipi_root) / "user-config" / store / ".wam-inbox-tokens.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     with open(lock, "a") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
         try:
-            return _sync_app(runtipi_root, app_id, store=store, prefer=prefer, files=files, mint=mint)
+            return _sync_app(runtipi_root, app_id, store=store, prefer=prefer, files=files, mint=mint, home=home)
         finally:
             fcntl.flock(fh, fcntl.LOCK_UN)
 
 
-def _sync_app(runtipi_root: Path, app_id: str, *, store: str, prefer: str, files, mint) -> dict:
+def _sync_app(runtipi_root: Path, app_id: str, *, store: str, prefer: str, files, mint, home=None) -> dict:
     if not APP_ID.fullmatch(app_id or ""):
         return {"skipped": "not an app id the Agent Service accepts"}
     names = token_vars(recipe_text(runtipi_root, app_id, store, prefer))
     if not names:
         return {"skipped": "its recipe takes no agent inbox token"}
-    os_home = service_home(runtipi_root, store)
+    os_home = service_home(runtipi_root, store, home)
     if os_home is None:
-        return {"skipped": "no Agent Service data folder on this box yet"}
+        return {"vars": names, "skipped": NO_SERVICE}
     if files is None:
         from .gateway_keys import RuntipiFiles
-        files = RuntipiFiles(Path(runtipi_root))
+        inside = Path(os_home).is_relative_to(Path(runtipi_root))
+        files = RuntipiFiles(Path(runtipi_root)) if inside else HostFiles()
     owner = files.stat(os_home)
     if owner is None:
         # The Service creates its WIZARD_OS_HOME as the user it runs as; until it has, we don't know that user.
@@ -151,7 +217,7 @@ def _sync_app(runtipi_root: Path, app_id: str, *, store: str, prefer: str, files
     return {"vars": names, "token": how, "changed": bool(want)}
 
 
-def sync(reg: dict, runtipi_root: Path, *, store: str = STORE, files=None, mint=None) -> dict:
+def sync(reg: dict, runtipi_root: Path, *, store: str = STORE, files=None, mint=None, home: Path | None = None) -> dict:
     """sync_app for every installed app of this store: {"apps": {id: result}}. Never raises per app."""
     out: dict = {"apps": {}}
     for a in (reg or {}).get("apps") or []:
@@ -161,7 +227,7 @@ def sync(reg: dict, runtipi_root: Path, *, store: str = STORE, files=None, mint=
             continue
         try:
             kw = {"mint": mint} if mint else {}
-            r = sync_app(runtipi_root, a["id"], store=store, files=files, **kw)
+            r = sync_app(runtipi_root, a["id"], store=store, files=files, home=home, **kw)
         except Exception as e:  # noqa: BLE001 - one app's trouble never stops the others
             r = {"error": str(e)[:160] or type(e).__name__}
         if "skipped" not in r or r.get("vars"):
@@ -189,7 +255,7 @@ def sync_registry(c, rt, reg: dict, files=None) -> dict | None:
     """The registry hook (after every registry write): hand out missing tokens, and restart (once) a running app
     whose env just got its token, so its door works now rather than after its next update. Never raises."""
     try:
-        res = sync(reg, Path(c.runtipi_root), files=files)
+        res = sync(reg, Path(c.runtipi_root), files=files, home=getattr(c, "home", None))
         for app_id in changed_running(res, rt):
             try:
                 rt.restart(f"{app_id}:{STORE}")
@@ -199,17 +265,49 @@ def sync_registry(c, rt, reg: dict, files=None) -> dict | None:
         for app_id, r in res["apps"].items():
             if r.get("error"):
                 print(f"note: agent inbox token not handed to {app_id} ({r['error']})", file=sys.stderr)
+        waiting = sorted(i for i, r in res["apps"].items() if r.get("skipped") == NO_SERVICE)
+        if waiting:   # one line per sync, never silent (#931)
+            print(f"note: agent inbox tokens not handed to {', '.join(waiting)} ({NO_SERVICE}; "
+                  f"looked in Runtipi app-data and {getattr(c, 'home', None) or 'no Wizard home'}/app-tokens)",
+                  file=sys.stderr)
         return res
     except Exception as e:  # noqa: BLE001 - a registry write must never fail on this
         print(f"note: agent inbox tokens not checked ({str(e)[:160]})", file=sys.stderr)
         return None
 
 
+LABEL = "agent inbox apps hold their Agent Service token"
+
+
+def check(reg: dict, runtipi_root: Path, home: Path | None = None, store: str = STORE):
+    """`wam doctor` row (read-only): every installed app whose recipe asks for an inbox token has one in its
+    user-config app.env. None when no installed app asks. Names apps only, never a token."""
+    asking = {}
+    for a in (reg or {}).get("apps") or []:
+        if not isinstance(a, dict) or not APP_ID.fullmatch(str(a.get("id") or "")):
+            continue
+        if str(a.get("urn") or f"_:{store}").partition(":")[2] != store:
+            continue
+        names = token_vars(recipe_text(runtipi_root, a["id"], store))
+        if names:
+            asking[a["id"]] = names
+    if not asking:
+        return None
+    ids = ", ".join(sorted(asking))
+    if service_home(runtipi_root, store, home) is None:
+        return (LABEL, False, f"{ids}: {NO_SERVICE} (looked in Runtipi app-data and {home or 'no Wizard home'}/app-tokens)")
+    missing = sorted(i for i, names in asking.items()
+                     if not all(TOKEN.fullmatch(_user_env(runtipi_root, i, store).get(n, "") or "") for n in names))
+    if missing:
+        return (LABEL, False, f"no token yet for {', '.join(missing)} (the next registry write hands it out)")
+    return (LABEL, True, ids)
+
+
 def before_start(c, app_id: str, prefer: str = "store") -> None:
     """Install/update hook, before Runtipi generates the app's env: the token is in user-config by then, so the app
     starts with it. Never raises (the registry hook after the install/update retries)."""
     try:
-        r = sync_app(Path(c.runtipi_root), app_id, prefer=prefer)
+        r = sync_app(Path(c.runtipi_root), app_id, prefer=prefer, home=getattr(c, "home", None))
         if r.get("error"):
             print(f"note: agent inbox token not handed to {app_id} ({r['error']})", file=sys.stderr)
     except Exception as e:  # noqa: BLE001
