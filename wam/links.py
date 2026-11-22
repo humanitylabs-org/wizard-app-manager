@@ -160,8 +160,11 @@ def gateway_paths(home: Path | None = None) -> dict[str, dict]:
     # First-party defaults must work on a fresh box, without a private catalog
     # or a links.json copied from somebody else's installation.
     defaults = json.loads(Path(__file__).with_name("defaults.json").read_text())["slots"]
-    out = {d["app"]: {"path": d["gateway"]["path"], "strip": d["gateway"].get("strip_prefix", True),
-                      "local_path": d["gateway"]["path"]}
+    # `local_path` is where the installed recipe itself serves the page: the gateway path when the prefix is kept
+    # (Files at /files/), the root when it is stripped (Connected accounts serves at / behind /connected-accounts/;
+    # comparing that root against the gateway path dropped its Wizard path, wizard-connectors#63).
+    out = {d["app"]: {"path": d["gateway"]["path"], "strip": (strip := d["gateway"].get("strip_prefix", True) is not False),
+                      "local_path": "/" if strip else d["gateway"]["path"]}
            for d in defaults.values() if d.get("app") and d.get("gateway")}
     if home:
         try:
