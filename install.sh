@@ -362,6 +362,14 @@ fi
 if [ "${WIZARD_MODE:-fresh}" = fresh ] && [ "${WAM_NO_BOOTSTRAP:-0}" != 1 ] && [ "$healthy" = 1 ]; then
   "$HOME/.local/bin/wam" builder-bundle fresh --restart || FAILED+=("stock Hermes could not adopt builder discovery/mount")
 fi
+# 3b) The agent runtime helper (wizard-agent-service#582): the host piece the Agent Service creates agents with (the
+#     private agent private first makes when Tinfoil connects, any agent the owner adds). Fetched at the Agent Service
+#     commit the release pins, run as a user unit on a Unix socket that only the Agent Service's container mounts;
+#     the Agent Service is restarted when its settings change. Every install and update; WIZARD_AGENT_RUNTIME=0 skips it.
+if [ "${WIZARD_MODE:-fresh}" = fresh ] && [ "${WAM_NO_BOOTSTRAP:-0}" != 1 ] && [ "$healthy" = 1 ]; then
+  "$HOME/.local/bin/wam" agent-runtime \
+    || DEGRADED+=("the agent runtime helper is not set up, so new agents (and private first) can't be made ('wam agent-runtime' shows why; ~/.wizard-os/agent-runtime.json)")
+fi
 if [ -n "$RESTART_LATER" ]; then
   pre_restart_doctor "$HOME/.local/bin/wam" doctor || DEGRADED+=("wam doctor reported FAIL lines (above)")
 else
