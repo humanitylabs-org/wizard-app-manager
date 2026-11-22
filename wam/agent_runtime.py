@@ -119,6 +119,21 @@ def supports_tinfoil_volume(tree: Path) -> bool:
         return False
 
 
+def supports_tinfoil_json(tree: Path) -> bool:
+    """wizard-agent-service#596: --tinfoil-key-file may be the Tinfoil app's own connection.json (an older helper
+    would take that JSON line for the key itself, so it is passed only when the helper can read it)."""
+    try:
+        return "the Tinfoil app's own connection.json" in (tree / "agent_runtime.py").read_text()
+    except OSError:
+        return False
+
+
+def tinfoil_key_file(runtipi_root: Path, store: str) -> Path:
+    """Where Runtipi keeps the Tinfoil app's data volume as app-data storage on a fresh box (wam#289): the key the
+    owner pasted is in its private/connection.json. The helper reads only that key, on every apply."""
+    return Path(runtipi_root) / "app-data" / store / "wizard-tinfoil" / "volumes" / "tinfoil-private-data" / "private" / "connection.json"
+
+
 # The Tinfoil app's fixed data volume (wizard-tinfoil runtipi/docker-compose.yml); its private/connection.json holds
 # the key the owner pasted. The helper reads only that key, on every apply, and puts it in the private agent's .env.
 TINFOIL_VOLUME = "wizard-tinfoil-private-data"
@@ -212,8 +227,10 @@ def agents_dir(runtipi_root: Path, store: str, app_id: str) -> Path:
     return Path(runtipi_root) / "app-data" / store / app_id / "data" / "wizard-os" / "agents"
 
 
-def unit_text(p: dict, python: str, wam_dir: Path, agents: Path, runtipi_root: Path, tinfoil_volume: str = "") -> str:
-    for v in (python, str(wam_dir), str(agents), str(runtipi_root), str(p["token"]), str(p["socket"]), str(p["current"])):
+def unit_text(p: dict, python: str, wam_dir: Path, agents: Path, runtipi_root: Path, tinfoil_volume: str = "",
+              tinfoil_file: Path | None = None) -> str:
+    for v in (python, str(wam_dir), str(agents), str(runtipi_root), str(p["token"]), str(p["socket"]), str(p["current"]),
+              *([str(tinfoil_file)] if tinfoil_file else [])):
         if not _SAFE.fullmatch(v):
             raise ValueError(f"path {v!r} has characters a unit file can't carry safely")
     current, token, sock = p["current"], p["token"], p["socket"]
@@ -230,7 +247,7 @@ Type=simple
 Environment=RUNTIPI_ROOT={runtipi_root}
 Environment=PYTHONDONTWRITEBYTECODE=1
 WorkingDirectory={current}
-ExecStart={python} {current}/agent_runtime.py --driver runtipi --wam {wam_dir} --agents-dir {agents} --token-file {token} --socket {sock} --home-mount alongside{f" --tinfoil-key-volume {tinfoil_volume}" if tinfoil_volume else ""}
+ExecStart={python} {current}/agent_runtime.py --driver runtipi --wam {wam_dir} --agents-dir {agents} --token-file {token} --socket {sock} --home-mount alongside{f" --tinfoil-key-file {tinfoil_file}" if tinfoil_file else ""}{f" --tinfoil-key-volume {tinfoil_volume}" if tinfoil_volume else ""}
 Restart=on-failure
 RestartSec=3
 UMask=0077
@@ -368,7 +385,8 @@ def install(wizard_home: Path, runtipi_root: Path, app_ids, store: str = "wizard
         p["sock_dir"].mkdir(parents=True, exist_ok=True)
         os.chmod(p["sock_dir"], 0o711)   # the container user only needs to reach the socket inside
         text = unit_text(p, sys.executable, Path(__file__).resolve().parents[1], agents_dir(runtipi_root, store, app_id), Path(runtipi_root),
-                         TINFOIL_VOLUME if supports_tinfoil_volume(p["current"]) else "")
+                         TINFOIL_VOLUME if supports_tinfoil_volume(p["current"]) else "",
+                         tinfoil_key_file(runtipi_root, store) if supports_tinfoil_json(p["current"]) else None)
     except (ValueError, OSError) as e:
         return done("failed", app=app_id, commit=commit, reason=str(e)[:300])
     p["units"].mkdir(parents=True, exist_ok=True)

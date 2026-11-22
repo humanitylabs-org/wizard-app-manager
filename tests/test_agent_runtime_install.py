@@ -25,7 +25,7 @@ AS = "wizard-agent-service"
 STAND_IN = r'''
 import argparse, http.server, os, socketserver
 ap = argparse.ArgumentParser()
-for a in ("--driver", "--wam", "--agents-dir", "--token-file", "--socket", "--home-mount", "--tinfoil-key-volume"):
+for a in ("--driver", "--wam", "--agents-dir", "--token-file", "--socket", "--home-mount", "--tinfoil-key-volume", "--tinfoil-key-file"):
     ap.add_argument(a)
 args = ap.parse_args()
 token = open(args.token_file).read().strip()
@@ -57,7 +57,8 @@ def source(tmp_path, monkeypatch):
         return subprocess.run(["git", "-C", real, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     repo = tmp_path / "as-repo"
     (repo / "ops/agent-runtime").mkdir(parents=True)
-    (repo / "ops/agent-runtime/agent_runtime.py").write_text('# ap.add_argument("--socket") ap.add_argument("--tinfoil-key-volume")\n' + STAND_IN)
+    (repo / "ops/agent-runtime/agent_runtime.py").write_text('# ap.add_argument("--socket") ap.add_argument("--tinfoil-key-volume")\n'
+                                                            "# the Tinfoil app's own connection.json\n" + STAND_IN)
     (repo / "server.mjs").write_text("// not checked out\n")
     _git("init", "-q", "-b", "main", cwd=repo)
     _git("add", "-A", cwd=repo)
@@ -132,6 +133,9 @@ def test_fresh_box_gets_the_helper_on_a_socket_and_the_agent_service_is_wired(bo
     assert "--port" not in unit
     # The helper reads the key the owner saves in the Tinfoil app from that app's volume (issue 582).
     assert f"--tinfoil-key-volume {ar.TINFOIL_VOLUME}" in unit and ar.TINFOIL_VOLUME == "wizard-tinfoil-private-data"
+    # ... and, where Runtipi made that volume app-data storage (every fresh box), from the file itself.
+    assert (f"--tinfoil-key-file {box['rt']}/app-data/{STORE}/wizard-tinfoil/volumes/tinfoil-private-data/private/"
+            "connection.json") in unit
     # Only ops/agent-runtime is staged (as it is: the restricted runtime checks its own file list).
     assert (p["current"] / "agent_runtime.py").is_file() and not (p["current"] / "server.mjs").exists()
     assert os.readlink(p["current"]).endswith(source)
@@ -318,7 +322,7 @@ def test_a_release_whose_helper_cannot_read_the_tinfoil_volume_gets_no_flag(box,
     res = _install(box)
     assert res["state"] == "ready", res
     unit = (ar.paths(box["home"], box["wiz"])["units"] / ar.UNIT).read_text()
-    assert "--tinfoil-key-volume" not in unit
+    assert "--tinfoil-key-volume" not in unit and "--tinfoil-key-file" not in unit
 
 
 def test_a_rerun_with_other_blocks_after_ours_leaves_the_override_alone(box, source):
