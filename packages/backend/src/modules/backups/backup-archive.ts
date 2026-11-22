@@ -187,7 +187,7 @@ export class BackupArchive {
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       // Wizard: a live Unix socket (e.g. an agent gateway socket) can't be opened or restored; it is runtime state, not data.
-      if (code === 'ENXIO' && (await this.isSocket(source))) {
+      if (code === 'ENXIO' && (await this.socketOrGone(source))) {
         return;
       }
       if (code !== 'ELOOP') {
@@ -218,6 +218,10 @@ export class BackupArchive {
       await fs.promises.mkdir(destination, { recursive: true });
       const directory = await fs.promises.opendir(sourceHandlePath);
       for await (const entry of directory) {
+        // Wizard: sockets are runtime state; skip them by their directory entry type so one unlinked mid-walk can't fail the backup.
+        if (entry.isSocket()) {
+          continue;
+        }
         await this.copySourceToQuarantine(
           path.join(sourceHandlePath, entry.name),
           path.join(destination, entry.name),
@@ -232,11 +236,12 @@ export class BackupArchive {
     }
   }
 
-  private async isSocket(source: string): Promise<boolean> {
+  // ENXIO on open means a socket; if it was unlinked right after (rotating agent sockets), there is nothing to copy either.
+  private async socketOrGone(source: string): Promise<boolean> {
     try {
       return (await fs.promises.lstat(source)).isSocket();
-    } catch {
-      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ENOENT';
     }
   }
 
@@ -315,8 +320,12 @@ export class BackupArchive {
     }
 
     await fs.promises.mkdir(destination, { recursive: true });
-    const entries = await fs.promises.readdir(source);
-    for (const entry of entries) {
+    const entries = await fs.promises.readdir(source, { withFileTypes: true });
+    for (const dirent of entries) {
+      if (dirent.isSocket()) {
+        continue;
+      }
+      const entry = dirent.name;
       const entrySource = path.join(source, entry);
       const entryDestination = path.join(destination, entry);
       const entryFilterSource = path.join(filterSource, entry);

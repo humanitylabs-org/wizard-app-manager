@@ -159,4 +159,25 @@ describe('BackupArchive Linux filesystem security', () => {
       await fs.promises.rm(rootDir, { recursive: true, force: true });
     }
   });
+
+  it.runIf(process.platform === 'linux')('skips a socket that is unlinked right after open refuses it', async () => {
+    const rootDir = await fs.promises.mkdtemp('/tmp/runtipi-backup-source-');
+    const source = path.join(rootDir, 'loop-tick.1.sock');
+    const logger = createLogger();
+    const manager = new BackupArchive(new FilesystemService(logger), logger);
+    const copySourceToQuarantine = (
+      manager as unknown as { copySourceToQuarantine: (source: string, destination: string) => Promise<void> }
+    ).copySourceToQuarantine.bind(manager);
+    const openSpy = vi.spyOn(fs.promises, 'open').mockImplementation(async () => {
+      throw Object.assign(new Error('ENXIO: no such device or address'), { code: 'ENXIO' });
+    });
+
+    try {
+      await copySourceToQuarantine(source, path.join(rootDir, 'quarantine', 'loop-tick.1.sock'));
+      await expect(fs.promises.access(path.join(rootDir, 'quarantine'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      openSpy.mockRestore();
+      await fs.promises.rm(rootDir, { recursive: true, force: true });
+    }
+  });
 });
