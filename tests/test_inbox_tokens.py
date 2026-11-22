@@ -200,3 +200,91 @@ def test_concurrent_first_syncs_hand_out_one_token(box):
     [t.join() for t in ts]
     assert sorted(r["token"] for r in out) == ["created"] + ["kept"] * 5
     assert user_env(box, "messenger")["MESSENGER_AGENT_INBOX_TOKEN"] == (box.tokens / "messenger").read_text().strip()
+
+
+# #931: the Agent Service runs on the host (no Runtipi Service app), its WIZARD_OS_HOME holds app-tokens/.
+
+@pytest.fixture
+def host_box(tmp_path):
+    root = tmp_path / "host-runtipi"
+    for app_id, text in (("wizard-mail", MAIL), ("messenger", MESSENGER), ("wizard-notes", PLAIN)):
+        d = root / "apps" / "wizardapps" / app_id
+        d.mkdir(parents=True)
+        (d / "docker-compose.yml").write_text(text)
+    home = tmp_path / "wizard-os-home"
+    (home / "app-tokens").mkdir(parents=True)
+    (home / "app-tokens" / "mizel").write_text("r" * 43 + "\n")   # another app's token, untouched
+    return SimpleNamespace(root=root, home=home, tokens=home / "app-tokens")
+
+
+def test_a_host_service_home_with_app_tokens_is_found(host_box, tmp_path):
+    assert it.service_home(host_box.root) is None                       # no Wizard home given: as before
+    assert it.service_home(host_box.root, home=host_box.home) == host_box.home
+    bare = tmp_path / "bare-home"
+    bare.mkdir()
+    assert it.service_home(host_box.root, home=bare) is None            # a Wizard home without app-tokens/ is not one
+
+
+def test_a_runtipi_service_still_wins_over_the_host_home(box, host_box):
+    assert it.service_home(box.root, home=host_box.home) == box.os_home
+
+
+def test_host_service_apps_get_their_tokens_0600_and_running_ones_restart_once(host_box, capsys):
+    rt = FakeRt({"wizard-mail": "running", "messenger": "running"})
+    c = SimpleNamespace(runtipi_root=host_box.root, home=host_box.home)
+    (host_box.tokens / "messenger").write_text("m" * 43 + "\n")      # Messenger's file already there: kept
+    res = it.sync_registry(c, rt, reg("wizard-mail", "messenger", "wizard-notes"))   # real HostFiles
+    assert res["apps"]["messenger"]["token"] == "kept"
+    assert res["apps"]["wizard-mail"]["token"] == "created"
+    assert "wizard-notes" not in res["apps"]
+    mail = (host_box.tokens / "wizard-mail").read_text().strip()
+    assert it.TOKEN.fullmatch(mail) and stat.S_IMODE((host_box.tokens / "wizard-mail").stat().st_mode) == 0o600
+    for app_id, var, want in (("wizard-mail", "MAIL_AGENT_INBOX_TOKEN", mail),
+                              ("messenger", "MESSENGER_AGENT_INBOX_TOKEN", "m" * 43)):
+        env = host_box.root / "user-config" / "wizardapps" / app_id / "app.env"
+        assert user_env(SimpleNamespace(root=host_box.root), app_id)[var] == want
+        assert stat.S_IMODE(env.stat().st_mode) == 0o600
+    assert sorted(rt.restarts) == ["messenger:wizardapps", "wizard-mail:wizardapps"]
+    assert (host_box.tokens / "mizel").read_text() == "r" * 43 + "\n"
+    assert not list(host_box.tokens.glob("*.wam-it.*"))
+    it.sync_registry(c, rt, reg("wizard-mail", "messenger"))
+    assert len(rt.restarts) == 2                                         # nothing new: no second restart
+    err = capsys.readouterr().err
+    assert mail not in err and "m" * 43 not in err                       # no token ever printed
+
+
+def test_before_start_uses_the_host_service_home(host_box):
+    it.before_start(SimpleNamespace(runtipi_root=host_box.root, home=host_box.home), "messenger", prefer="installed")
+    assert it.TOKEN.fullmatch((host_box.tokens / "messenger").read_text().strip())
+
+
+def test_no_service_home_says_so_once_on_stderr_and_in_doctor(host_box, tmp_path, capsys):
+    bare = tmp_path / "bare-home"
+    bare.mkdir()
+    c = SimpleNamespace(runtipi_root=host_box.root, home=bare)
+    res = it.sync_registry(c, FakeRt({}), reg("wizard-mail", "messenger", "wizard-notes"))
+    assert res["apps"]["messenger"]["skipped"] == it.NO_SERVICE
+    err = capsys.readouterr().err
+    assert err.count("note: agent inbox tokens not handed to messenger, wizard-mail") == 1
+    assert not (host_box.root / "user-config" / "wizardapps" / "messenger").exists()
+    row = it.check(reg("wizard-mail", "messenger", "wizard-notes"), host_box.root, bare)
+    assert row[0] == it.LABEL and row[1] is False and "messenger, wizard-mail" in row[2]
+
+
+def test_doctor_row_turns_green_once_every_asking_app_has_its_token(host_box):
+    r = reg("wizard-mail", "messenger", "wizard-notes")
+    assert it.check(r, host_box.root, host_box.home)[1] is False          # tokens not handed out yet
+    it.sync(r, host_box.root, home=host_box.home)
+    row = it.check(r, host_box.root, host_box.home)
+    assert row == (it.LABEL, True, "messenger, wizard-mail")
+    assert it.check(reg("wizard-notes"), host_box.root, host_box.home) is None   # no app asks: no row
+    (host_box.tokens / "messenger").write_text("x" * 43 + "\n")      # Codex P2: Service copy differs (restore)
+    assert it.check(r, host_box.root, host_box.home) == (
+        it.LABEL, False, "messenger: no token matching the Agent Service's copy yet (the next registry write hands it out)")
+    (host_box.tokens / "messenger").unlink()                            # Service copy lost
+    assert it.check(r, host_box.root, host_box.home)[1] is False
+
+
+def test_doctor_lists_the_inbox_token_row():
+    src = Path(cli.__file__).read_text()
+    assert "out.extend(doctor_inbox_tokens(c, json.loads(regp.read_text())))" in src

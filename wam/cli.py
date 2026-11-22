@@ -1820,6 +1820,17 @@ def doctor_gateway_keys(c: Config, reg: dict) -> list[tuple[str, bool, str]]:
     return [row] if row else []
 
 
+def doctor_inbox_tokens(c: Config, reg: dict) -> list[tuple[str, bool, str]]:
+    """#931: flag agent-inbox apps without their Agent Service app token (read-only), so a box where the token
+    sync skips (no Service data folder found) no longer passes without anyone noticing."""
+    from . import inbox_tokens
+    try:
+        row = inbox_tokens.check(reg, c.runtipi_root, c.home)
+    except Exception as e:  # noqa: BLE001 - a doctor row, never a crash
+        row = (inbox_tokens.LABEL, None, str(e)[:160])
+    return [row] if row else []
+
+
 # The box rows of `wam doctor`; inside the agent's container they report NOT_APPLICABLE (ok None), not failures.
 BOX_DOCTOR_ROWS = ("Wizard builder agent terminal reachability", "App Manager API reachable",
                    "Wizard store reads the index", "App Store lists index apps", "API is box-only",
@@ -1966,6 +1977,7 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool | None, str]]:
     if regp.is_file():
         out.extend(registry.slot_choices(json.loads(regp.read_text())))
         out.extend(doctor_gateway_keys(c, json.loads(regp.read_text())))
+        out.extend(doctor_inbox_tokens(c, json.loads(regp.read_text())))
     try:
         from . import network
         rep = network.report(c)
