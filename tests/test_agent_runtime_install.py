@@ -25,7 +25,7 @@ AS = "wizard-agent-service"
 STAND_IN = r'''
 import argparse, http.server, os, socketserver
 ap = argparse.ArgumentParser()
-for a in ("--driver", "--wam", "--agents-dir", "--token-file", "--socket", "--home-mount"):
+for a in ("--driver", "--wam", "--agents-dir", "--token-file", "--socket", "--home-mount", "--tinfoil-key-volume"):
     ap.add_argument(a)
 args = ap.parse_args()
 token = open(args.token_file).read().strip()
@@ -57,7 +57,7 @@ def source(tmp_path, monkeypatch):
         return subprocess.run(["git", "-C", real, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     repo = tmp_path / "as-repo"
     (repo / "ops/agent-runtime").mkdir(parents=True)
-    (repo / "ops/agent-runtime/agent_runtime.py").write_text('# ap.add_argument("--socket")\n' + STAND_IN)
+    (repo / "ops/agent-runtime/agent_runtime.py").write_text('# ap.add_argument("--socket") ap.add_argument("--tinfoil-key-volume")\n' + STAND_IN)
     (repo / "server.mjs").write_text("// not checked out\n")
     _git("init", "-q", "-b", "main", cwd=repo)
     _git("add", "-A", cwd=repo)
@@ -130,6 +130,8 @@ def test_fresh_box_gets_the_helper_on_a_socket_and_the_agent_service_is_wired(bo
     assert ar.MARKER in unit and "--driver runtipi" in unit and f"--socket {p['socket']}" in unit
     assert f"--agents-dir {box['rt']}/app-data/{STORE}/{AS}/data/wizard-os/agents" in unit
     assert "--port" not in unit
+    # The helper reads the key the owner saves in the Tinfoil app from that app's volume (issue 582).
+    assert f"--tinfoil-key-volume {ar.TINFOIL_VOLUME}" in unit and ar.TINFOIL_VOLUME == "wizard-tinfoil-private-data"
     # Only ops/agent-runtime is staged (as it is: the restricted runtime checks its own file list).
     assert (p["current"] / "agent_runtime.py").is_file() and not (p["current"] / "server.mjs").exists()
     assert os.readlink(p["current"]).endswith(source)
@@ -303,3 +305,17 @@ def test_a_box_whose_agent_service_writes_as_another_uid_is_not_wired(box, sourc
     assert res["state"] == "failed" and f"uid {real}" in res["reason"] and res["override_changed"] is True
     over = ar._bb.override_path(box["rt"], STORE, AS)
     assert not over.exists() or ar.MARK not in over.read_text()
+
+
+def test_a_release_whose_helper_cannot_read_the_tinfoil_volume_gets_no_flag(box, tmp_path, monkeypatch):
+    repo = tmp_path / "socket-only"
+    (repo / "ops/agent-runtime").mkdir(parents=True)
+    (repo / "ops/agent-runtime/agent_runtime.py").write_text('# ap.add_argument("--socket")\n' + STAND_IN)
+    _git("init", "-q", "-b", "main", cwd=repo)
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-qm", "x", cwd=repo)
+    monkeypatch.setenv("WAM_AGENT_RUNTIME_REPO_URL", f"file://{repo}")
+    res = _install(box)
+    assert res["state"] == "ready", res
+    unit = (ar.paths(box["home"], box["wiz"])["units"] / ar.UNIT).read_text()
+    assert "--tinfoil-key-volume" not in unit

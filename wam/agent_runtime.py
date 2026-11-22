@@ -110,6 +110,18 @@ def supports_socket(tree: Path) -> bool:
         return False
 
 
+def supports_tinfoil_volume(tree: Path) -> bool:
+    """wizard-agent-service#595: the helper can read the key the owner saved in the Tinfoil app from its volume."""
+    try:
+        return 'add_argument("--tinfoil-key-volume"' in (tree / "agent_runtime.py").read_text()
+    except OSError:
+        return False
+
+
+# The Tinfoil app's fixed data volume (wizard-tinfoil runtipi/docker-compose.yml); its private/connection.json holds
+# the key the owner pasted. The helper reads only that key, on every apply, and puts it in the private agent's .env.
+TINFOIL_VOLUME = "wizard-tinfoil-private-data"
+
 UNIX_CLIENT = b"unixSocketFetch"   # wizard-agent-service#593: the Service's client for a unix: runtime URL
 
 
@@ -199,7 +211,7 @@ def agents_dir(runtipi_root: Path, store: str, app_id: str) -> Path:
     return Path(runtipi_root) / "app-data" / store / app_id / "data" / "wizard-os" / "agents"
 
 
-def unit_text(p: dict, python: str, wam_dir: Path, agents: Path, runtipi_root: Path) -> str:
+def unit_text(p: dict, python: str, wam_dir: Path, agents: Path, runtipi_root: Path, tinfoil_volume: str = "") -> str:
     for v in (python, str(wam_dir), str(agents), str(runtipi_root), str(p["token"]), str(p["socket"]), str(p["current"])):
         if not _SAFE.fullmatch(v):
             raise ValueError(f"path {v!r} has characters a unit file can't carry safely")
@@ -217,7 +229,7 @@ Type=simple
 Environment=RUNTIPI_ROOT={runtipi_root}
 Environment=PYTHONDONTWRITEBYTECODE=1
 WorkingDirectory={current}
-ExecStart={python} {current}/agent_runtime.py --driver runtipi --wam {wam_dir} --agents-dir {agents} --token-file {token} --socket {sock} --home-mount alongside
+ExecStart={python} {current}/agent_runtime.py --driver runtipi --wam {wam_dir} --agents-dir {agents} --token-file {token} --socket {sock} --home-mount alongside{f" --tinfoil-key-volume {tinfoil_volume}" if tinfoil_volume else ""}
 Restart=on-failure
 RestartSec=3
 UMask=0077
@@ -348,7 +360,8 @@ def install(wizard_home: Path, runtipi_root: Path, app_ids, store: str = "wizard
         token_new = ensure_token(p)
         p["sock_dir"].mkdir(parents=True, exist_ok=True)
         os.chmod(p["sock_dir"], 0o711)   # the container user only needs to reach the socket inside
-        text = unit_text(p, sys.executable, Path(__file__).resolve().parents[1], agents_dir(runtipi_root, store, app_id), Path(runtipi_root))
+        text = unit_text(p, sys.executable, Path(__file__).resolve().parents[1], agents_dir(runtipi_root, store, app_id), Path(runtipi_root),
+                         TINFOIL_VOLUME if supports_tinfoil_volume(p["current"]) else "")
     except (ValueError, OSError) as e:
         return done("failed", app=app_id, commit=commit, reason=str(e)[:300])
     p["units"].mkdir(parents=True, exist_ok=True)
