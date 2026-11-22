@@ -22,6 +22,7 @@ Wizard additions:
   wam troubleshooter [--json] [--dry-run]  install/update the native Troubleshooter (/troubleshoot/, works when chat is down)
     [--report-only|--act]       the guardian repairs broken links by itself; --report-only keeps it to reporting
                                 (saved, kept across updates); --act turns repairs back on
+  wam agent-runtime [--json] [--dry-run]  install/update the agent runtime helper the Agent Service creates agents with
   wam app-updates [--apply [ids]|--ask|--auto|--hold id]  new versions of installed apps (nightly when Automatic, hourly
                                 with switch wizard/app-updates-hourly; checked and rolled back on failure)
   wam agent-restart [wait [--minutes N]|now|cancel]  a waiting Agent Service restart (switch wizard/graceful-restart):
@@ -432,6 +433,8 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
     if role in ("service", "bundle") and not al:   # WAM#759: the installer's WIZARD_PRIVATE_FIRST, only when one was given
         from . import private_first as _pf
         _pf.sync_app(c.home, c.runtipi_root, STORE, app_id)
+        from . import agent_runtime as _ar   # wizard-agent-service#582: keep the runtime helper's socket block
+        _ar.sync_app(None, c.runtipi_root, STORE, app_id, wizard_home=c.home)
     if "port" not in form:
         # The recipe's default port may already be taken on this box (e.g. two test apps both default to 8799):
         # Runtipi then fails `compose up` with "port is already allocated". Pick the next free one instead.
@@ -1312,6 +1315,23 @@ def private_first_cmd(c: Config, args) -> int:
                 res["prefetch"] = "started"
     print(json.dumps(res, indent=2) if args.json else "\n".join(f"{k}: {v}" for k, v in res.items()))
     return 1 if any(str(v).startswith("error") for v in (res.get("restart") or {}).values()) else 0
+
+
+def agent_runtime_cmd(c: Config, args) -> int:
+    """`wam agent-runtime` (wizard-agent-service#582): install or update the host agent runtime helper, wire the
+    fresh-mode Agent Service to it through a Unix socket, and restart the Agent Service when its settings changed."""
+    from . import agent_runtime as ar
+    try:
+        rt = c.runtipi()
+    except (RuntipiError, OSError):
+        rt = None
+    ids = [a for a, r in _alongside_apps(c, rt).items() if r in ar.ROLES]
+    res = ar.install(c.home, c.runtipi_root, ids, STORE, alongside_box=bool(alongside.load(c.home)), apply=not args.dry_run)
+    if (res.get("override_changed") or res.get("token_replaced")) and not args.no_restart:
+        res["restart"] = (recreate_apps(c, rt, [res["app"]]).get(res["app"]) if rt is not None
+                          else "error: the App Manager could not reach Runtipi; restart this app")
+    print(json.dumps(res, indent=2) if args.json else ar.describe(res))
+    return 1 if res["state"] == "failed" or str(res.get("restart") or "").startswith("error") else 0
 
 
 def recreate_apps(c: Config, rt: Runtipi, ids: list[str]) -> dict[str, str]:
@@ -3137,6 +3157,9 @@ def main(argv: list[str] | None = None) -> int:
                      help="the guardian only reports what it would fix (saved; kept across updates)")
     trg.add_argument("--act", dest="guardian", action="store_true", default=None,
                      help="the guardian repairs broken links by itself (the default)")
+    arp = sub.add_parser("agent-runtime", help="install/update the agent runtime helper (agents, private first) for this box")
+    arp.add_argument("--json", action="store_true"); arp.add_argument("--dry-run", action="store_true")
+    arp.add_argument("--no-restart", action="store_true", help="write the Agent Service's settings but don't restart it")
     al = sub.add_parser("alongside"); al.add_argument("--detect", action="store_true"); al.add_argument("--off", action="store_true")
     al.add_argument("--hermes-home"); al.add_argument("--shell-port", type=int)
     al.add_argument("--share-history", dest="share_history", action="store_true", default=None)
@@ -3398,6 +3421,8 @@ def main(argv: list[str] | None = None) -> int:
             res = troubleshooter.install(c.home, c.runtipi_root, apply=not args.dry_run, guardian=args.guardian)
             print(json.dumps(res, indent=2) if args.json else troubleshooter.describe(res))
             return 1 if res["state"] in ("failed", "degraded") else 0
+        elif args.cmd == "agent-runtime":
+            return agent_runtime_cmd(c, args)
         elif args.cmd == "browser-boundary":
             return browser_boundary_cmd(c, args)
         elif args.cmd == "private-first":

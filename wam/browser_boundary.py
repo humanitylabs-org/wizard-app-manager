@@ -157,6 +157,19 @@ def _strip(doc: dict, marker: str = MARK) -> dict:
     return doc
 
 
+def _already(doc: dict, block: dict, marker: str) -> bool:
+    """The block is in the override exactly as asked (its record, its values and its mounts), wherever it sits."""
+    want = {"service": block["service"], "environment": sorted(block["environment"]), "volumes": list(block["volumes"])}
+    if doc.get(marker) != want:
+        return False
+    svc = (doc.get("services") or {}).get(block["service"])
+    if not isinstance(svc, dict):
+        return False
+    env = svc.get("environment") if isinstance(svc.get("environment"), dict) else {}
+    vols = svc.get("volumes") if isinstance(svc.get("volumes"), list) else []
+    return all(env.get(k) == v for k, v in block["environment"].items()) and all(v in vols for v in block["volumes"])
+
+
 def render(path, block: dict | None, marker: str = MARK):
     """What write_overlay would write: (before, after) texts, after None for "remove the file", or None when nothing
     changes. Raises ValueError for any override it can't safely edit, so callers can check every app first.
@@ -178,6 +191,8 @@ def render(path, block: dict | None, marker: str = MARK):
     mark = doc.get(marker)
     if mark is not None and not (isinstance(mark, dict) and isinstance(doc.get("services", {}).get(mark.get("service"), {}), dict)):
         raise ValueError(f"{path}: the {marker} block is malformed; fix it by hand")
+    if block and _already(doc, block, marker):
+        return None   # the block is there as asked: never reorder it (a rerun must not recreate the app)
     doc = _strip(doc, marker)
     if block:
         svcs = doc.setdefault("services", {})
