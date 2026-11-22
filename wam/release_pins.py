@@ -72,6 +72,27 @@ def image_ref(im):
     return f"{repo}@{digest}"
 
 
+BASE_TAG = re.compile(r":(v\d+\.\d+\.\d+)-wizard\.")
+
+
+def runtipi_base(image, doc=None):
+    """The Runtipi release an App Manager image is built on, from its tag (`...:v4.12.0-wizard.<n>-<sha>`), or None.
+
+    The installer installs that base's runtipi-cli (wizard-app-manager#867): a newer CLI signs tokens the image's
+    backend rejects (401). get.sh hands install.sh the release image as `repo@sha256:...` (no tag), so the tag is read
+    from the release manifest's `ref` when its digest is the one being installed."""
+    image = str(image or "")
+    m = BASE_TAG.search(image.split("@", 1)[0])
+    if m:
+        return m.group(1)
+    im = ((doc or {}).get("images") or {}).get("wizard-app-manager") or {}
+    if isinstance(im, dict) and im.get("digest") and image.endswith("@" + str(im["digest"])):
+        m = BASE_TAG.search(str(im.get("ref", "")).split("@", 1)[0])
+        if m:
+            return m.group(1)
+    return None
+
+
 def resolve(ref):
     doc = load()
     lock = hermes_lock.load()
@@ -191,8 +212,10 @@ def configure_manager(path, image, pins):
 if __name__ == "__main__":
     import sys
     try:
-        load()
-        if len(sys.argv) > 1:
+        doc = load()
+        if sys.argv[1:2] == ["--runtipi-base"]:
+            print(runtipi_base(sys.argv[2] if len(sys.argv) > 2 else "", doc) or "")
+        elif len(sys.argv) > 1:
             configure_manager(sys.argv[1], sys.argv[2], os.environ.get("WIZARD_RELEASE_PINS"))
     except (ValueError, OSError, TypeError, KeyError) as e:
         sys.exit(f"invalid release pins: {e}")

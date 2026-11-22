@@ -375,3 +375,29 @@ def test_the_base_falls_back_to_the_runtipi_the_image_workflow_builds(tmp_path):
     assert _setup_version(tmp_path) == built.pop()
     assert _setup_version(tmp_path / "x", WIZARD_RUNTIPI_VERSION="v4.12.1",
                           WAM_IMAGE="ghcr.io/humanitylabs-org/wizard-app-manager:v4.10.2-wizard.1-abc") == "v4.12.1"
+
+
+def test_a_release_install_reads_the_base_from_the_manifest_tag(tmp_path):
+    """Codex P1 on #950: get.sh hands install.sh the release image as `repo@sha256:...` (no tag), so the base comes
+    from the release manifest in WIZARD_RELEASE_PINS whose digest is the one being installed."""
+    latest = (REPO / "releases/latest").read_text().strip()
+    rel = json.loads((REPO / f"releases/{latest}.json").read_text())
+    im = rel["images"]["wizard-app-manager"]
+    im["ref"] = "ghcr.io/humanitylabs-org/wizard-app-manager:v4.10.2-wizard.1477-c81ff5b"
+    pins = tmp_path / "release-pins.json"
+    pins.write_text(json.dumps(rel))
+    digest_only = "ghcr.io/humanitylabs-org/wizard-app-manager@" + im["digest"]
+    assert _setup_version(tmp_path / "a", WAM_IMAGE=digest_only, WIZARD_RELEASE_PINS=str(pins)) == "v4.10.2"
+    # Another image than the release's (a WAM_IMAGE override) never borrows the release's tag.
+    other = "ghcr.io/humanitylabs-org/wizard-app-manager@sha256:" + "0" * 64
+    assert _setup_version(tmp_path / "b", WAM_IMAGE=other, WIZARD_RELEASE_PINS=str(pins)) == "v4.12.0"
+
+
+def test_runtipi_base_names_the_image_s_runtipi():
+    from wam.release_pins import runtipi_base
+    doc = {"images": {"wizard-app-manager": {"ref": "ghcr.io/x/wam:v4.10.2-wizard.9-abc", "digest": "sha256:" + "a" * 64}}}
+    assert runtipi_base("ghcr.io/x/wam:v4.12.0-wizard.1610-8a32ed51") == "v4.12.0"
+    assert runtipi_base("ghcr.io/x/wam@sha256:" + "a" * 64, doc) == "v4.10.2"
+    assert runtipi_base("ghcr.io/x/wam@sha256:" + "b" * 64, doc) is None
+    assert runtipi_base("ghcr.io/x/wam:latest", doc) is None
+    assert runtipi_base("", None) is None

@@ -47,8 +47,9 @@ YML
   # The base's runtipi-cli must be the Runtipi the App Manager image is built on (wizard-app-manager#867): a 4.12
   # runtipi-cli signs its tokens with 4.12's CLI key, which a 4.10-based App Manager rejects, so every stock
   # `runtipi-cli app stop/start` answered 401 on boxes whose image was older than the CLI. A Wizard image tag names
-  # its base (`v4.12.0-wizard.<n>-<sha>`); the fallback is the base .github/workflows/image.yml builds today.
-  RUNTIPI_BASE_VERSION="${WIZARD_RUNTIPI_VERSION:-$(printf '%s' "$IMAGE" | sed -nE 's#.*:(v[0-9]+\.[0-9]+\.[0-9]+)-wizard\..*#\1#p')}"
+  # its base (`v4.12.0-wizard.<n>-<sha>`; a release's digest-only image is looked up in WIZARD_RELEASE_PINS); the
+  # fallback is the base .github/workflows/image.yml builds today.
+  RUNTIPI_BASE_VERSION="${WIZARD_RUNTIPI_VERSION:-$(cd "$HERE" && python3 -m wam.release_pins --runtipi-base "$IMAGE" 2>/dev/null || true)}"
   RUNTIPI_BASE_VERSION="${RUNTIPI_BASE_VERSION:-v4.12.0}"
   base_failed() {
     rm -rf "$ENVF" "$SETUP_DIR"
