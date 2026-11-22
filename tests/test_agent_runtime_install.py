@@ -153,6 +153,35 @@ def test_a_rerun_changes_nothing_and_keeps_the_token(box, source):
     assert ("restart", ar.UNIT) not in box["sc"].calls[len(box["sc"].calls) - 3:]
 
 
+def test_a_remade_token_restarts_the_helper_and_recreates_the_agent_service(box, source):
+    _install(box)
+    p = ar.paths(box["home"], box["wiz"])
+    p["token"].write_text("broken\n")   # a damaged token: the rerun makes a new file (a new inode)
+    n = len(box["sc"].calls)
+    res = _install(box)
+    assert res["state"] == "ready" and res["token_replaced"] is True
+    # the running helper keeps its old token in memory, so it is restarted ...
+    assert ("restart", ar.UNIT) in box["sc"].calls[n:]
+    assert ar.healthy(p)
+    # ... and the Agent Service's bind mount still holds the old file, so the caller recreates it
+    assert res["override_changed"] is True
+    assert _install(box)["token_replaced"] is False
+
+
+def test_the_command_recreates_the_agent_service_when_the_token_was_remade(monkeypatch):
+    from types import SimpleNamespace
+    from wam import cli
+    calls = []
+    monkeypatch.setattr(cli, "_alongside_apps", lambda c, rt: {AS: "service"})
+    monkeypatch.setattr(cli.alongside, "load", lambda h: None)
+    monkeypatch.setattr(ar, "install", lambda *a, **k: {"state": "ready", "app": AS, "override_changed": False,
+                                                       "token_replaced": True})
+    monkeypatch.setattr(cli, "recreate_apps", lambda c, rt, ids: calls.append(ids) or {AS: "recreated"})
+    c = SimpleNamespace(home=Path("/nonexistent"), runtipi_root=Path("/nonexistent"), runtipi=lambda: object())
+    assert cli.agent_runtime_cmd(c, SimpleNamespace(dry_run=False, no_restart=False, json=True)) == 0
+    assert calls == [[AS]]
+
+
 def test_other_override_blocks_are_kept(box, source):
     from wam import private_first as pf
     pf.set_box(box["wiz"], box["rt"], STORE, [AS], "1")

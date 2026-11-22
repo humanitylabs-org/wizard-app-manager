@@ -1327,7 +1327,7 @@ def agent_runtime_cmd(c: Config, args) -> int:
         rt = None
     ids = [a for a, r in _alongside_apps(c, rt).items() if r in ar.ROLES]
     res = ar.install(c.home, c.runtipi_root, ids, STORE, alongside_box=bool(alongside.load(c.home)), apply=not args.dry_run)
-    if res.get("override_changed") and not args.no_restart:
+    if (res.get("override_changed") or res.get("token_replaced")) and not args.no_restart:
         res["restart"] = (recreate_apps(c, rt, [res["app"]]).get(res["app"]) if rt is not None
                           else "error: the App Manager could not reach Runtipi; restart this app")
     print(json.dumps(res, indent=2) if args.json else ar.describe(res))

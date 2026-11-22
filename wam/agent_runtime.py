@@ -136,15 +136,17 @@ def stage_release(p: dict, commit: str) -> tuple[Path, bool]:
     return rel, moved
 
 
-def ensure_token(p: dict) -> Path:
+def ensure_token(p: dict) -> bool:
     """The helper's bearer token, made once (32 random bytes, hex). Its folder is 0700; the file is 0644 so the Agent
-    Service's container user can read its own read-only mount of it, whatever host uid it maps to."""
+    Service's container user can read its own read-only mount of it, whatever host uid it maps to. True when it was
+    (re)made: a new file is a new inode, so the running helper (token in memory) and the Agent Service (a bind mount
+    of the old inode) both have to start again to see it."""
     t = p["token"]
     t.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(t.parent, 0o700)
     try:
         if _HEX.fullmatch(t.read_text().strip()):
-            return t
+            return False
     except OSError:
         pass
     tmp = t.with_name(t.name + ".tmp")
@@ -153,7 +155,7 @@ def ensure_token(p: dict) -> Path:
         f.write(secrets.token_hex(32) + "\n")
     os.chmod(tmp, 0o644)
     tmp.replace(t)
-    return t
+    return True
 
 
 def agents_dir(runtipi_root: Path, store: str, app_id: str) -> Path:
@@ -283,7 +285,7 @@ def install(wizard_home: Path, runtipi_root: Path, app_ids, store: str = "wizard
     try:
         p["releases"].mkdir(parents=True, exist_ok=True)
         _rel, moved = stage_release(p, commit)
-        ensure_token(p)
+        token_new = ensure_token(p)
         p["sock_dir"].mkdir(parents=True, exist_ok=True)
         os.chmod(p["sock_dir"], 0o711)   # the container user only needs to reach the socket inside
         text = unit_text(p, sys.executable, Path(__file__).resolve().parents[1], agents_dir(runtipi_root, store, app_id), Path(runtipi_root))
@@ -299,7 +301,7 @@ def install(wizard_home: Path, runtipi_root: Path, app_ids, store: str = "wizard
     sc("daemon-reload")
     if (r := sc("enable", UNIT)).returncode:
         return done("failed", app=app_id, commit=commit, reason=f"systemctl enable failed: {(r.stderr or r.stdout).strip()[-200:]}")
-    sc("restart" if unit_changed or moved else "start", UNIT)
+    sc("restart" if unit_changed or moved or token_new else "start", UNIT)
     deadline = time.monotonic() + wait_s
     up = healthy(p)
     while not up and time.monotonic() < deadline:
@@ -312,7 +314,9 @@ def install(wizard_home: Path, runtipi_root: Path, app_ids, store: str = "wizard
         changed = _bb.write_overlay(_bb.override_path(runtipi_root, store, app_id), overlay(p, app_id), MARK)
     except ValueError as e:
         return done("failed", app=app_id, commit=commit, reason=str(e)[:300])
-    return done("ready", app=app_id, commit=commit, pinned=pinned, override_changed=changed, socket=str(p["socket"]))
+    # a new token reaches a running Agent Service only through a recreate (its bind mount still holds the old file)
+    return done("ready", app=app_id, commit=commit, pinned=pinned, override_changed=changed or token_new,
+                token_replaced=token_new, socket=str(p["socket"]))
 
 
 def describe(res: dict) -> str:
