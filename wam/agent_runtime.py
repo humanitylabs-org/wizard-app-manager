@@ -31,6 +31,7 @@ import re
 import secrets
 import shutil
 import socket
+import time
 import subprocess
 import sys
 from pathlib import Path
@@ -282,8 +283,14 @@ def healthy(p: dict, timeout: float = 3.0) -> bool:
         s.settimeout(timeout)
         s.connect(str(p["socket"]))
         s.sendall(f"GET /healthz HTTP/1.0\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n".encode())
-        head = s.recv(64).decode("latin-1", "replace")
+        data, deadline = b"", time.monotonic() + timeout
+        while len(data) < 65536 and time.monotonic() < deadline:   # read the whole answer: closing early
+            chunk = s.recv(4096)                                     # leaves a BrokenPipeError in the helper's log
+            if not chunk:
+                break
+            data += chunk
         s.close()
+        head = data[:64].decode("latin-1", "replace")
         return head.startswith("HTTP/1.") and head.split(" ", 2)[1] == "200"
     except (OSError, IndexError):
         return False

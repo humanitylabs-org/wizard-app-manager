@@ -319,3 +319,49 @@ def test_a_release_whose_helper_cannot_read_the_tinfoil_volume_gets_no_flag(box,
     assert res["state"] == "ready", res
     unit = (ar.paths(box["home"], box["wiz"])["units"] / ar.UNIT).read_text()
     assert "--tinfoil-key-volume" not in unit
+
+
+def test_a_rerun_with_other_blocks_after_ours_leaves_the_override_alone(box, source):
+    """Tester, issue 582: each rerun moved the block inside the file and recreated the Agent Service."""
+    _install(box)
+    path = bb.override_path(box["rt"], STORE, AS)
+    # Another writer's block and a hand-written mount land after ours.
+    from wam.network import dump_yaml
+    doc = load_yaml(path.read_text())
+    doc["services"][AS]["volumes"].append("/srv/extra:/extra:ro")
+    doc["x-other-block"] = {"service": AS, "environment": [], "volumes": ["/srv/extra:/extra:ro"]}
+    path.write_text(dump_yaml(doc))
+    before = path.read_text()
+    for _ in range(2):
+        res = _install(box)
+        assert res["state"] == "ready" and res["override_changed"] is False, res
+        assert path.read_text() == before
+
+
+def test_the_health_probe_reads_the_whole_answer():
+    import socket as so
+    import threading
+    a, b = so.socketpair()
+    p = {"token": Path("/nonexistent")}
+    got = {}
+    def serve():
+        b.recv(4096)
+        try:
+            b.sendall(b"HTTP/1.0 200 OK\r\n" + b"x" * 20000)
+            got["ok"] = True
+        except OSError as e:
+            got["err"] = e
+        b.close()
+    t = threading.Thread(target=serve); t.start()
+    class S:
+        def __init__(self, *a): pass
+        def settimeout(self, t): a.settimeout(t)
+        def connect(self, where): pass
+        def sendall(self, d): a.sendall(d)
+        def recv(self, n): return a.recv(n)
+        def close(self): a.close()
+    import unittest.mock as m
+    with m.patch.object(Path, "read_text", lambda self: "t" * 64), m.patch.object(ar.socket, "socket", S):
+        assert ar.healthy({**p, "socket": Path("/nonexistent")}) is True
+    t.join(5)
+    assert got.get("ok") is True, got
