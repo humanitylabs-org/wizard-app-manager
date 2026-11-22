@@ -279,9 +279,10 @@ def sync_registry(c, rt, reg: dict, files=None) -> dict | None:
 LABEL = "agent inbox apps hold their Agent Service token"
 
 
-def check(reg: dict, runtipi_root: Path, home: Path | None = None, store: str = STORE):
-    """`wam doctor` row (read-only): every installed app whose recipe asks for an inbox token has one in its
-    user-config app.env. None when no installed app asks. Names apps only, never a token."""
+def check(reg: dict, runtipi_root: Path, home: Path | None = None, store: str = STORE, files=None):
+    """`wam doctor` row (read-only): every installed app whose recipe asks for an inbox token holds the very token
+    the Service has in app-tokens/<id> (a different or missing Service copy still answers 403). None when no
+    installed app asks. Names apps only, never a token."""
     asking = {}
     for a in (reg or {}).get("apps") or []:
         if not isinstance(a, dict) or not APP_ID.fullmatch(str(a.get("id") or "")):
@@ -294,12 +295,23 @@ def check(reg: dict, runtipi_root: Path, home: Path | None = None, store: str = 
     if not asking:
         return None
     ids = ", ".join(sorted(asking))
-    if service_home(runtipi_root, store, home) is None:
+    os_home = service_home(runtipi_root, store, home)
+    if os_home is None:
         return (LABEL, False, f"{ids}: {NO_SERVICE} (looked in Runtipi app-data and {home or 'no Wizard home'}/app-tokens)")
-    missing = sorted(i for i, names in asking.items()
-                     if not all(TOKEN.fullmatch(_user_env(runtipi_root, i, store).get(n, "") or "") for n in names))
+    if files is None:
+        from .gateway_keys import RuntipiFiles
+        inside = Path(os_home).is_relative_to(Path(runtipi_root))
+        files = RuntipiFiles(Path(runtipi_root)) if inside else HostFiles()
+    missing = []
+    for i, names in sorted(asking.items()):
+        raw = files.read(os_home / "app-tokens" / i)
+        held = raw.decode("utf-8", "replace").strip() if raw is not None else ""
+        env = _user_env(runtipi_root, i, store)
+        if not TOKEN.fullmatch(held) or any(env.get(n) != held for n in names):
+            missing.append(i)
     if missing:
-        return (LABEL, False, f"no token yet for {', '.join(missing)} (the next registry write hands it out)")
+        return (LABEL, False, f"{', '.join(missing)}: no token matching the Agent Service's copy yet "
+                              "(the next registry write hands it out)")
     return (LABEL, True, ids)
 
 

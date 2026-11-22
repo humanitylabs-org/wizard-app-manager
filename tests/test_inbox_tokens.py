@@ -278,6 +278,11 @@ def test_doctor_row_turns_green_once_every_asking_app_has_its_token(host_box):
     row = it.check(r, host_box.root, host_box.home)
     assert row == (it.LABEL, True, "messenger, wizard-mail")
     assert it.check(reg("wizard-notes"), host_box.root, host_box.home) is None   # no app asks: no row
+    (host_box.tokens / "messenger").write_text("x" * 43 + "\n")      # Codex P2: Service copy differs (restore)
+    assert it.check(r, host_box.root, host_box.home) == (
+        it.LABEL, False, "messenger: no token matching the Agent Service's copy yet (the next registry write hands it out)")
+    (host_box.tokens / "messenger").unlink()                            # Service copy lost
+    assert it.check(r, host_box.root, host_box.home)[1] is False
 
 
 def test_doctor_lists_the_inbox_token_row():
