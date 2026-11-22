@@ -185,7 +185,12 @@ export class BackupArchive {
     try {
       sourceHandle = await fs.promises.open(source, openFlags);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ELOOP') {
+      const code = (error as NodeJS.ErrnoException).code;
+      // Wizard: a live Unix socket (e.g. an agent gateway socket) can't be opened or restored; it is runtime state, not data.
+      if (code === 'ENXIO' && (await this.isSocket(source))) {
+        return;
+      }
+      if (code !== 'ELOOP') {
         throw error;
       }
 
@@ -224,6 +229,14 @@ export class BackupArchive {
       await fs.promises.chmod(destination, stats.mode & 0o7777);
     } finally {
       await sourceHandle.close().catch((error) => this.logger.warn(`Failed to close backup file ${source}`, error));
+    }
+  }
+
+  private async isSocket(source: string): Promise<boolean> {
+    try {
+      return (await fs.promises.lstat(source)).isSocket();
+    } catch {
+      return false;
     }
   }
 
@@ -278,6 +291,9 @@ export class BackupArchive {
     }
 
     const stats = await fs.promises.lstat(source);
+    if (stats.isSocket()) {
+      return;
+    }
     if (stats.isSymbolicLink()) {
       await fs.promises.mkdir(path.dirname(destination), { recursive: true });
       await fs.promises.symlink(await fs.promises.readlink(source), destination);

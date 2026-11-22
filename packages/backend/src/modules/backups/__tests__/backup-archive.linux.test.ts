@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import type { LoggerService } from '@/core/logger/logger.service';
@@ -123,6 +124,38 @@ describe('BackupArchive Linux filesystem security', () => {
       await expect(fs.promises.readdir(externalDirectory)).resolves.toEqual(['external.txt']);
     } finally {
       openSpy.mockRestore();
+      await fs.promises.rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === 'linux')('leaves live unix sockets out of an app data backup', async () => {
+    const rootDir = await fs.promises.mkdtemp('/tmp/runtipi-backup-source-');
+    const source = path.join(rootDir, 'source');
+    const gateway = path.join(source, 'data', 'wizard-os', 'agents', 'main-agent', 'gateway');
+    const destination = path.join(rootDir, 'backup', 'app-data');
+    const logger = createLogger();
+    const manager = new BackupArchive(new FilesystemService(logger), logger);
+    const servers: net.Server[] = [];
+
+    try {
+      await writeFile(path.join(gateway, 'agent.json'), '{}');
+      for (const name of ['ingress.sock', 'gateway.sock']) {
+        const server = net.createServer();
+        await new Promise<void>((resolve, reject) => {
+          server.once('error', reject);
+          server.listen(path.join(gateway, name), resolve);
+        });
+        servers.push(server);
+      }
+      expect((await fs.promises.lstat(path.join(gateway, 'ingress.sock'))).isSocket()).toBe(true);
+
+      await manager.stageBackupDirectory(source, destination, 'app data');
+
+      const copied = path.join(destination, 'data', 'wizard-os', 'agents', 'main-agent', 'gateway');
+      await expect(fs.promises.readFile(path.join(copied, 'agent.json'), 'utf8')).resolves.toBe('{}');
+      await expect(fs.promises.readdir(copied)).resolves.toEqual(['agent.json']);
+    } finally {
+      await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
       await fs.promises.rm(rootDir, { recursive: true, force: true });
     }
   });
