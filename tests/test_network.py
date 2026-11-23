@@ -1573,3 +1573,45 @@ def test_carried_network_never_replaces_the_owners_own_declaration(tmp_path):
     assert "signin-lane" not in doc[net.MARK]["networks"]
     net.write_overlay(f, None)
     assert yaml.safe_load(f.read_text())["networks"]["signin-lane"]["driver_opts"]
+
+
+def _sidecar_update_box(tmp_path):
+    """Installed single-service app (no Runtipi app network yet); the update adds a sidecar service."""
+    root = tmp_path / "runtipi"
+    inst = root / "apps" / "wizardapps" / "c"
+    new = root / "repos" / "wizardapps" / "apps" / "c"
+    inst.mkdir(parents=True)
+    new.mkdir(parents=True)
+    old = {"services": {"c": {"image": "a", "x-runtipi": {"is_main": True}}}}
+    (inst / "docker-compose.yml").write_text(yaml.safe_dump(old))
+    (inst / "docker-compose.generated.yml").write_text(yaml.safe_dump({
+        "services": {"c": {"image": "a", "networks": {"tipi_main_network": {"gw_priority": 1}}}},
+        "networks": {"tipi_main_network": {"name": "runtipi_tipi_main_network", "external": True}}}))
+    newdoc = {"services": {"c": {"image": "a", "x-runtipi": {"is_main": True}}, "c-dav": {"image": "b"}}}
+    (new / "docker-compose.yml").write_text(yaml.safe_dump(newdoc))
+    return root, inst
+
+
+def test_pre_update_override_declares_runtipi_app_network_when_update_adds_a_sidecar(tmp_path):
+    """Calendar 41 -> 47 (adds Radicale) and Finances 16 -> 19 (adds Actual) rolled back every run: the pre-update
+    override put the main service on `<app>_wizardapps_network`, which only a multi-service generated compose defines,
+    so Runtipi's `stop`/rollback with the old generated compose refused the project ("undefined network")."""
+    root, inst = _sidecar_update_box(tmp_path)
+    a = net.read_app(root, "wizardapps", "c", fresh=True)
+    ov = net.overlay_for(net.plan([a], [], set())["apps"][0])
+    assert "c_wizardapps_network" in ov["services"]["c"]
+    assert ov["networks"]["c_wizardapps_network"] == {}
+
+
+def test_sidecar_pre_update_override_parses_with_the_old_generated_compose(tmp_path):
+    import shutil
+    import subprocess
+    if not shutil.which("docker") or subprocess.run(["docker", "compose", "version"], capture_output=True).returncode:
+        pytest.skip("docker compose not installed")
+    root, inst = _sidecar_update_box(tmp_path)
+    a = net.read_app(root, "wizardapps", "c", fresh=True)
+    f = net.override_path(root, "wizardapps", "c")
+    net.write_overlay(f, net.overlay_for(net.plan([a], [], set())["apps"][0]))
+    r = subprocess.run(["docker", "compose", "-p", "c_wizardapps", "-f", str(inst / "docker-compose.generated.yml"),
+                        "-f", str(f), "config", "-q"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr

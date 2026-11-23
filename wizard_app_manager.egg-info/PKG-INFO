@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: wizard-app-manager
+Version: 0.1.0
+Summary: Finds Wizard apps, checks them, compiles them into a stock Runtipi store, installs them, and writes apps.json.
+License: GPL-3.0-only
+Requires-Python: >=3.10
+License-File: LICENSE
+Requires-Dist: PyYAML>=6
+Dynamic: license-file

@@ -598,6 +598,10 @@ def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -
                 v = _plain(v)
                 if str(k) not in installed_nets and str(k) != SHARED and (v is None or isinstance(v, dict)):
                     carry[str(k)] = dict(v or {})
+            # Runtipi's own per-app network appears only once an app has 2+ services: an update that adds a sidecar
+            # (Calendar's Radicale, Finances' Actual) puts the main service on it before the old compose defines it.
+            if multi and f"{app_id}_{store}_network" not in installed_nets:
+                carry[f"{app_id}_{store}_network"] = {}
     out = {"id": app_id, "name": w.get("name") or app_id, "uses": uses, "provides": [str(p) for p in w.get("provides") or []],
            "renamed_from": [str(x) for x in (rf if isinstance(rf, list) else [rf] if isinstance(rf, str) else [])],
            "router": bool(req.get("models") or req.get("services")), "services": services, "custom": None,
