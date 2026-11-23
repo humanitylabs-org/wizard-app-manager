@@ -43,6 +43,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from . import browser_boundary
+
 STORE_PATH = "_feature-switches"     # under /wizard-os-home/store-install/ (StoreHandler)
 ID = re.compile(r"[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*")
 ISSUE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}#\d{1,7}")
@@ -262,7 +264,7 @@ class Pages:
         data = json.dumps(body).encode() if body is not None else None
         proof = self.proof()
         r = urllib.request.Request(self.origin + LOOK, data=data, method=method,
-                                   headers={"Accept": "application/json",
+                                   headers={"Accept": "application/json", **browser_boundary.owner_headers(),
                                             **({OWNER_PROOF_HEADER: proof} if proof else {}),
                                             **({"Content-Type": "application/json"} if data else {})})
         try:
