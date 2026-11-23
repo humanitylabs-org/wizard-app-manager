@@ -162,8 +162,23 @@ print(json.dumps({'plugin': state, 'changed': state in ('installed', 'refreshed'
 
 # Runs inside the Hermes container as uid 1000. Token on stdin (first line); prints one JSON line.
 EDIT = r'''
-import json, os, sys, tempfile, urllib.request
-import yaml
+import io, json, os, sys, tempfile, urllib.request
+try:
+    import yaml
+    def load(raw):
+        return yaml.safe_load(raw)
+    def dump(doc):
+        return yaml.safe_dump(doc, sort_keys=False)
+except ModuleNotFoundError:
+    # #971: Hermes v0.23+ engines ship ruamel.yaml only. Its round-trip mode also keeps the owner's comments and order.
+    from ruamel.yaml import YAML
+    rt = YAML()
+    def load(raw):
+        return rt.load(raw) if raw.strip() else None
+    def dump(doc):
+        out = io.StringIO()
+        rt.dump(doc, out)
+        return out.getvalue()
 token = sys.stdin.readline().strip()
 url, name, skills = sys.argv[1], sys.argv[2], sys.argv[3]
 home = os.environ.get('HERMES_HOME') or '/opt/data'
@@ -176,7 +191,7 @@ def atomic(path, text, mode):
     os.replace(tmp, path)
 out = {'config_changed': False, 'env_changed': False}
 raw = open(cfgp).read() if os.path.exists(cfgp) else ''
-cfg = yaml.safe_load(raw) or {}
+cfg = load(raw) or {}
 if not isinstance(cfg, dict):
     raise SystemExit('config.yaml is not a mapping; left alone')
 servers = cfg.get('mcp_servers') or {}
@@ -217,7 +232,7 @@ if has_plugin:
         cfg['plugins'] = pl
         out['config_changed'] = True
 if out['config_changed']:
-    atomic(cfgp, yaml.safe_dump(cfg, sort_keys=False), 0o600)
+    atomic(cfgp, dump(cfg), 0o600)
 lines = open(envp).read().splitlines() if os.path.exists(envp) else []
 keys = [l.split('=', 1)[0].strip() for l in lines]
 want = list(lines)
