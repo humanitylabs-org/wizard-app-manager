@@ -366,7 +366,11 @@ def walk(root, *, skip_denied=False):
         if skip_denied: return
         raise
     import stat as s
-    dirs = [p.name for p in names if s.S_ISDIR(p.lstat().st_mode)]
+    try: dirs = [p.name for p in names if s.S_ISDIR(p.lstat().st_mode)]
+    except PermissionError:
+        # listable but not searchable (a mode-600 folder): its entries cannot even be stat-ed (#960)
+        if skip_denied: return
+        raise
     files = [p.name for p in names if p.name not in dirs]
     yield str(root), dirs, files
     for name in dirs:
