@@ -364,11 +364,10 @@ print("; ".join(f"{k}: {v}" for k, v in f.items() if k not in core))' "$HERE/wam
     failed_apps="$(printf '%s\n' "$split" | sed -n 2p)"
     [ -z "$core_failed" ] || FAILED+=("the Wizard shell / Agent Service did not install, so WizardOS can't be used: $core_failed")
     [ -z "$failed_apps" ] || DEGRADED+=("some default apps did not install: $failed_apps")
-    # wizard-os#133: bootstrap turned the browser boundary on for this new box; `wam serve` gates its own routes
-    # only from its next start (`wam browser-boundary off` is the way back).
-    if printf '%s' "$boot" | python3 -c 'import json,sys; sys.exit(0 if (json.load(sys.stdin).get("browser_boundary") or {}).get("on") else 1)' 2>/dev/null; then
-      systemctl --user restart wizard-app-manager-api.service \
-        || DEGRADED+=("the App Manager did not restart after turning the browser boundary on (systemctl --user restart wizard-app-manager-api)")
+    # wizard-os#133: bootstrap turned the browser boundary on for this new box and restarted `wam serve` so its own
+    # routes follow (`wam browser-boundary off` is the way back). Report a restart that failed.
+    if printf '%s' "$boot" | python3 -c 'import json,sys; sys.exit(0 if str((json.load(sys.stdin).get("browser_boundary") or {}).get("serve", "")).startswith("error") else 1)' 2>/dev/null; then
+      DEGRADED+=("the App Manager did not restart after turning the browser boundary on (systemctl --user restart wizard-app-manager-api)")
     fi
   else
     DEGRADED+=("default apps could not be installed (wam bootstrap failed)")

@@ -127,6 +127,21 @@ def settle_new_box(home, installed, core, defaults, env=None) -> dict | None:
     return {"on": True, "why": "new box"}
 
 
+API_UNIT = "wizard-app-manager-api.service"
+
+
+def restart_serve(run=None) -> str:
+    """`wam serve` gates its own routes only from its next start (apply_box_state): restart its user unit if it runs
+    (try-restart: a box without the unit is left alone). "restarted", or "error: ..." for the caller to report."""
+    import subprocess
+    run = run or (lambda *a: subprocess.run(["systemctl", "--user", *a], capture_output=True, text=True, timeout=60))
+    try:
+        r = run("try-restart", API_UNIT)
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"error: {str(e)[:160]}"
+    return "restarted" if r.returncode == 0 else f"error: {(r.stderr or '').strip()[:160] or r.returncode}"
+
+
 def owner_headers(home=None) -> dict:
     """The shell token header for this box's own programs that call the owner API on its loopback (`wam` agent
     access, feature switches and agent restarts; `wizard contact`), or {} when the box has no token. The boundary

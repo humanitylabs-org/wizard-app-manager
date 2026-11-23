@@ -1590,8 +1590,8 @@ def bootstrap(c: Config) -> dict:
 
 def settle_browser_boundary(c: Config, rt) -> dict | None:
     """wizard-os#133 (Miguel, 23 Nov): a new box starts with the browser boundary on; a box that already runs Wizard,
-    or whose owner chose, is left as it is (browser_boundary.settle_new_box). The installer restarts `wam serve` when
-    this turned it on, so the App Manager's own routes follow. Never fails the installer."""
+    or whose owner chose, is left as it is (browser_boundary.settle_new_box). `wam bootstrap` then restarts `wam serve`
+    (restart_serve), so the App Manager's own routes follow. Never fails the installer."""
     from . import browser_boundary as bb
     try:
         defaults = slots.load_defaults()
@@ -3393,7 +3393,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"{r['name']:<20} {(r['active'] or '-'):<20} {r['state']:<15} default {r['default_app'] or '(none yet)'}"
                 + ("  required" if r["required"] else "") for r in rows))
         elif args.cmd == "bootstrap":
-            print(json.dumps(bootstrap(c), indent=2))
+            boot = bootstrap(c)
+            if boot.get("browser_boundary"):   # wizard-os#133: switched on just now; `wam serve` must gate its routes too
+                from . import browser_boundary as _bb
+                boot["browser_boundary"]["serve"] = _bb.restart_serve()
+            print(json.dumps(boot, indent=2))
         elif args.cmd == "prefetch":
             from . import recommended
             print(json.dumps(recommended.prefetch_private_first(c) if args.private_first else recommended.prefetch(c),

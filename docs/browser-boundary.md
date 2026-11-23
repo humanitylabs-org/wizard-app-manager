@@ -23,8 +23,8 @@ before keeps it off for one more release (apps that keep data in the browser mov
 `wam bootstrap` decides it once, before it installs anything (`browser_boundary.settle_new_box`): when no choice is
 recorded (`<wam home>/browser-boundary/state.json` is missing), no shell / Agent Service / pre-split bundle is
 installed and nothing but Wizard's own defaults is, it records `on` (`"why": "new box"`) and mints the token, so the
-shell and the Agent Service get their block as bootstrap installs them. install.sh then restarts `wam serve` so its
-own routes follow. A box that already runs Wizard, or whose owner chose, is left as it is. `WIZARD_BROWSER_BOUNDARY=0`
+shell and the Agent Service get their block as bootstrap installs them. `wam bootstrap` then restarts `wam serve`
+(`systemctl --user try-restart wizard-app-manager-api`) so its own routes follow; install.sh reports a failed restart. A box that already runs Wizard, or whose owner chose, is left as it is. `WIZARD_BROWSER_BOUNDARY=0`
 in the installer's environment (get.sh forwards it) keeps a new box off; the Mac guest build uses that until its
 setup page sends the token. `wam browser-boundary off` is the way back on any box.
 

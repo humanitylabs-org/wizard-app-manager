@@ -102,3 +102,19 @@ def test_box_programs_send_the_token_to_the_owner_api(tmp_path, monkeypatch):
     graceful_restart.http("GET", "http://127.0.0.1:1/wizard/v1/restart")
     feature_switches.Pages("http://127.0.0.1:1")._req("GET")
     assert len(seen) == 3 and all(s == tok for s in seen)
+
+
+def test_restart_serve_only_restarts_a_running_unit():
+    calls = []
+    ok = lambda *a: calls.append(a) or SimpleNamespace(returncode=0, stderr="")
+    assert bb.restart_serve(ok) == "restarted" and calls == [("try-restart", bb.API_UNIT)]
+    bad = lambda *a: SimpleNamespace(returncode=1, stderr="Failed to connect to bus")
+    assert bb.restart_serve(bad) == "error: Failed to connect to bus"
+
+
+def test_the_bootstrap_command_restarts_serve_when_it_switched_on(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "Config", lambda: SimpleNamespace(home=None))
+    monkeypatch.setattr(cli, "bootstrap", lambda c: {"installed": [], "browser_boundary": {"on": True, "why": "new box"}})
+    monkeypatch.setattr(bb, "restart_serve", lambda run=None: "restarted")
+    cli.main(["bootstrap"])
+    assert json.loads(capsys.readouterr().out)["browser_boundary"]["serve"] == "restarted"
