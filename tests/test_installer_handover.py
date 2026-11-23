@@ -42,11 +42,13 @@ def _runs(fake):
 
 def _as_user(fake, tmp_path):
     """Run get.sh's own as_user (sliced from get.sh) with a fake `sudo -iu` that runs the command as this user."""
-    fn = re.search(r"^as_user\(\) \{\n.*?^\}\n", (ROOT / "get.sh").read_text(), re.S | re.M).group(0)
+    src = (ROOT / "get.sh").read_text()
+    fn = "".join(re.search(r"^" + name + r"\(\) \{\n.*?^\}\n", src, re.S | re.M).group(0)
+                 for name in ("wizard_fetch", "as_user"))   # as_user downloads through wizard_fetch (#868)
     sudo = tmp_path / "bin" / "sudo"
     sudo.write_text('#!/bin/sh\n[ "$1" = -iu ] && shift 2\nexec "$@"\n'); sudo.chmod(0o755)
     prog = ("set -euo pipefail; fwd_env() { printf '%s\\n' WAM_REF=; }; enable_linger() { :; }; "
-            "repo_raw() { printf 'https://example.test/%s' \"$1\"; }; WIZARD_BUS_WAIT=0\n" + fn
+            "repo_raw() { printf 'https://example.test/%s' \"$1\"; }; WIZARD_BUS_WAIT=0 WIZARD_FETCH_TRIES=2\n" + fn
             + 'as_user "$(id -un)" alongside /h; echo "returned"\n')
     return subprocess.run(["bash", "-c", prog], capture_output=True, text=True)
 

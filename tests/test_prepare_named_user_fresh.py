@@ -16,7 +16,7 @@ def test_fresh_admin_phase_keeps_base_loopback_only_and_preserves_database_uid(t
         'id': 'case "$*" in "-u") echo 0;; "-u alice"|"-g alice") echo 1234;; esac',
         'getent': 'printf "alice:x:1234:1234::%s:/bin/bash\\n" "$OWNER_HOME"',
         'install': 'mkdir -p "${@: -1}"',
-        'curl': 'printf "curl %s\\n" "$*" >> "$CALLS"; cp "$SETUP_FIXTURE" "${@: -1}"',
+        'curl': '[ "$1" = --help ] && exit 0; printf "curl %s\\n" "$*" >> "$CALLS"; cp "$SETUP_FIXTURE" "${@: -1}"',
         'chown': 'printf "chown %s\\n" "$*" >> "$CALLS"',
         'find': 'printf "find %s\\n" "$*" >> "$CALLS"',
         'usermod': 'printf "usermod %s\\n" "$*" >> "$CALLS"',

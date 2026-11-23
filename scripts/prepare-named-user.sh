@@ -12,6 +12,26 @@ home="$(getent passwd "$owner" | cut -d: -f6)"
 [ -n "$home" ] && [ -d "$home" ] || { echo 'Selected owner has no home directory.' >&2; exit 2; }
 uid="$(id -u "$owner")"; gid="$(id -g "$owner")"
 base="$home/runtipi"
+# wizard_fetch <url> <file>: download to a file, and try again when the connection drops (wizard-app-manager#868:
+# one TLS reset, curl exit 35, failed a fresh install outright). Always into a file, never `curl | sh`: a retry
+# rewrites the file from the start, while a retried pipe would feed the script twice. Same text in every installer.
+wizard_fetch() {
+  local n="${WIZARD_FETCH_TRIES:-5}" i=1 rc
+  while :; do
+    rc=0; curl -fsSL "$1" -o "$2" || rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    [ "$i" -ge "$n" ] && return "$rc"
+    echo "Download of $1 failed (curl exit $rc, try $i of $n); trying again in $((i * 3))s." >&2
+    sleep "$((i * 3))"; i=$((i + 1))
+  done
+}
+# retry_curlrc <dir>: a curl config in <dir> (run a third-party installer with CURL_HOME=<dir>) so that its own
+# downloads also try again after a dropped connection. retry-all-errors only where this curl knows it (7.71+).
+retry_curlrc() {
+  { printf 'retry = 5\nretry-delay = 3\nretry-connrefused\n'
+    case "$(curl --help all 2>/dev/null || true)" in *--retry-all-errors*) echo retry-all-errors ;; esac
+  } > "$1/.curlrc"
+}
 # The privileged base setup is the same upstream installer used by install.sh. Do it ONCE as administrator,
 # rather than relying on the selected account being able to run sudo from an unattended process.
 if [ ! -f "$base/.env" ]; then
@@ -22,8 +42,9 @@ if [ ! -f "$base/.env" ]; then
   fi
   work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
   printf 'NGINX_PORT=8480\nNGINX_PORT_SSL=8443\nINTERNAL_IP=127.0.0.1\n' > "$work/base.env"
-  curl -fsSL https://setup.runtipi.io -o "$work/setup.sh"
-  (cd "$home" && bash "$work/setup.sh" --env-file "$work/base.env")
+  wizard_fetch https://setup.runtipi.io "$work/setup.sh"
+  retry_curlrc "$work"   # the setup script downloads runtipi-cli itself, with a plain curl
+  (cd "$home" && CURL_HOME="$work" bash "$work/setup.sh" --env-file "$work/base.env")
   chown "$uid:$gid" "$base"
   find "$base" -mindepth 1 -maxdepth 1 ! -name data -exec chown -R "$uid:$gid" {} +
   rm -rf "$work"; trap - EXIT
@@ -38,7 +59,7 @@ loginctl enable-linger "$owner"
 if [ "${WIZARD_PRIVATE_ACCESS:-tailscale}" = tailscale ]; then
   if ! command -v tailscale >/dev/null; then
     script="$(mktemp)"; trap 'rm -f "$script"' EXIT
-    curl -fsSL https://tailscale.com/install.sh -o "$script"
+    wizard_fetch https://tailscale.com/install.sh "$script"
     sh "$script"; rm -f "$script"; trap - EXIT
   fi
   systemctl enable --now tailscaled

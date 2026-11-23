@@ -1,6 +1,7 @@
 """The base Docker preflight is exercised with no real privileged/network commands."""
 from pathlib import Path
 import os
+import re
 import shutil
 import subprocess
 
@@ -14,14 +15,16 @@ def run_preflight(tmp_path, release='ID=debian\n', existing=False, download_rc=0
     assert source.is_file(), 'fresh Debian installs need a Docker preflight before upstream Runtipi'
     bin_dir = tmp_path / 'bin'
     bin_dir.mkdir()
-    for cmd in ('mktemp', 'rm', 'sh'):
+    for cmd in ('mktemp', 'rm', 'sh', 'env'):
         (bin_dir / cmd).symlink_to(shutil.which(cmd))
     calls = tmp_path / 'calls'
     release_file = tmp_path / 'os-release'
     release_file.write_text(release)
     for name, body in {
         'sudo': 'printf "sudo %s\\n" "$*" >> "$CALLS"; exec "$@"',
-        'curl': '''printf "curl %s\\n" "$*" >> "$CALLS"
+        'sleep': 'printf "sleep %s\\n" "$*" >> "$CALLS"',
+        'curl': '''[ "$1" = --help ] && exit 0
+printf "curl %s\\n" "$*" >> "$CALLS"
 [ "$DOWNLOAD_RC" = 0 ] || exit "$DOWNLOAD_RC"
 [ "$1" = -fsSL ] && [ "$2" = https://get.docker.com ] && [ "$3" = -o ]
 printf 'printf "official-docker-script\\n" >> "$CALLS"; exit "$INSTALL_RC"\n' > "$4"
@@ -48,7 +51,8 @@ def test_debian_cloud_uses_official_docker_before_upstream(tmp_path):
     p, log, leftovers = run_preflight(tmp_path)
     assert p.returncode == 0, p.stderr
     assert 'curl -fsSL https://get.docker.com -o ' in log
-    assert 'sudo sh ' in log
+    # Docker's installer runs with a curl config that makes its own downloads try again (#868).
+    assert re.search(r'^sudo env CURL_HOME=\S+ sh ', log, re.M), log
     assert 'official-docker-script' in log
     assert not leftovers
 
@@ -74,11 +78,12 @@ def test_failure_aborts_and_removes_private_download(tmp_path, download_rc, inst
     assert not leftovers
     if download_rc:
         assert 'sudo ' not in log
+        assert log.count('curl -fsSL https://get.docker.com -o ') == 5, 'a failed download is tried 5 times (#868)'
 
 
 def test_preflight_is_only_on_missing_base_and_precedes_upstream():
     source = (REPO / 'install.sh').read_text()
     missing = source.index('if [ ! -f "$RUNTIPI_ROOT/.env" ]')
     preflight = source.index('source "$HERE/scripts/ensure-base-docker.sh"')
-    upstream = source.index('curl -fsSL https://setup.runtipi.io')
+    upstream = source.index('wizard_fetch https://setup.runtipi.io')
     assert missing < preflight < upstream

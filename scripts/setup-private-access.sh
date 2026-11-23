@@ -39,11 +39,24 @@ else
   }
 fi
 
+# wizard_fetch <url> <file>: download to a file, and try again when the connection drops (wizard-app-manager#868:
+# one TLS reset, curl exit 35, failed a fresh install outright). Always into a file, never `curl | sh`: a retry
+# rewrites the file from the start, while a retried pipe would feed the script twice. Same text in every installer.
+wizard_fetch() {
+  local n="${WIZARD_FETCH_TRIES:-5}" i=1 rc
+  while :; do
+    rc=0; curl -fsSL "$1" -o "$2" || rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    [ "$i" -ge "$n" ] && return "$rc"
+    echo "Download of $1 failed (curl exit $rc, try $i of $n); trying again in $((i * 3))s." >&2
+    sleep "$((i * 3))"; i=$((i + 1))
+  done
+}
 if ! command -v tailscale >/dev/null; then
   echo "Installing Tailscale (private access)"
   script="$(mktemp)"
   trap 'rm -f "$script"' EXIT
-  curl -fsSL https://tailscale.com/install.sh -o "$script"
+  wizard_fetch https://tailscale.com/install.sh "$script"
   root sh "$script"
   rm -f "$script"
   trap - EXIT
