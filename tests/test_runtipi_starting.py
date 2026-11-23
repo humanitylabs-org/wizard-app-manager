@@ -147,3 +147,23 @@ def test_a_working_runtipi_is_asked_once(box, tmp_path):
     rt, seen, naps = box([OK])
     assert rt.ensure_operator(tmp_path / "op.json") is False
     assert seen == [("GET", "/api/marketplace/all")] and naps == []
+
+
+def test_a_stalled_runtipi_is_bounded_by_the_clock_not_by_request_timeouts(tmp_path):
+    # Codex P2: a Runtipi that accepts the connection but never answers must not stretch the 2-minute wait into
+    # 40 request timeouts. Naps are counted as 0 s here, so only the clock can end the wait.
+    import socket
+    import time
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    s.listen(64)  # accepts (backlog) but never answers
+    try:
+        rt = Runtipi(f"http://127.0.0.1:{s.getsockname()[1]}/api", SECRET)
+        rt.sleep = lambda _s: None
+        rt.STEP, rt.READY_WAIT, rt.PROBE_TIMEOUT = 0, 3, 1
+        t = time.monotonic()
+        with pytest.raises(RuntipiError, match="did not answer within"):
+            rt.ensure_operator(tmp_path / "op.json")
+        assert time.monotonic() - t < 6
+    finally:
+        s.close()

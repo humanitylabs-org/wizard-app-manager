@@ -69,9 +69,15 @@ class Runtipi:
         # its proxy route comes up, and 401 to the CLI token while its database is not ready: the auth middleware
         # looks up the operator, swallows the error and serves the request unauthenticated. So wait out the first,
         # and only call a 401 "no operator" once it repeats.
-        waited, unauth = 0, 0
+        waited, unauth, t0 = 0, 0, time.monotonic()
+
+        def left(budget: int) -> float:
+            # Counted naps (tests nap instantly) and the clock both bound the wait: a Runtipi that accepts the
+            # connection but stalls must not stretch 2 minutes into 40 request timeouts (Codex P2).
+            return max(0.0, min(budget - waited, budget - (time.monotonic() - t0)))
+
         while True:
-            code, ans = self._probe()
+            code, ans = self._probe(max(1.0, min(self.PROBE_TIMEOUT, left(self.READY_WAIT))))
             if code == 200:
                 return False
             if code == 401:
@@ -80,7 +86,7 @@ class Runtipi:
                     break
             elif self._starting(code):
                 unauth = 0
-                if waited >= self.READY_WAIT:
+                if not left(self.READY_WAIT):
                     raise RuntipiError(f"Runtipi did not answer within {self.READY_WAIT} s: {ans}")
             else:
                 raise RuntipiError(ans)
@@ -93,7 +99,7 @@ class Runtipi:
             r = urllib.request.Request(f"{self.base}/auth/register", json.dumps({"username": user, "password": pw}).encode(),
                                        {"Content-Type": "application/json"}, method="POST")
             try:
-                urllib.request.urlopen(r, timeout=30).read()
+                urllib.request.urlopen(r, timeout=max(1.0, min(30.0, left(self.READY_WAIT)))).read()
                 break
             except urllib.error.HTTPError as e:
                 code, reg = e.code, f"{e.code} {e.read()[:300]!r}"
@@ -101,7 +107,7 @@ class Runtipi:
                 code, reg = None, f"{type(e).__name__}: {e}"
             if code in (400, 403, 409) and "ALREADY_EXISTS" in reg:
                 return self._operator_exists(ans, reg)
-            if not self._starting(code) or waited >= self.READY_WAIT:
+            if not self._starting(code) or not left(self.READY_WAIT):
                 raise RuntipiError(f"Runtipi has no usable operator and register failed: {reg}") from None
             self.sleep(self.STEP)
             waited += self.STEP
@@ -117,6 +123,7 @@ class Runtipi:
     READY_WAIT = 120
     AUTH_TRIES = 5
     EXISTS_WAIT = 60
+    PROBE_TIMEOUT = 10
     sleep = staticmethod(time.sleep)
 
     @staticmethod
@@ -124,10 +131,10 @@ class Runtipi:
         """No answer, a missing proxy route (404) or a server error: Runtipi is (re)starting."""
         return code is None or code == 404 or code >= 500
 
-    def _probe(self) -> tuple[int | None, str]:
+    def _probe(self, timeout: float = 10) -> tuple[int | None, str]:
         """(HTTP status or None when nothing answered, what it said) for GET /marketplace/all with the CLI token."""
         try:
-            self.req("GET", "/marketplace/all")
+            self.req("GET", "/marketplace/all", timeout=timeout)
             return 200, "200"
         except RuntipiError as e:
             m = re.search(r"-> (\d{3})", str(e))
@@ -137,12 +144,13 @@ class Runtipi:
 
     def _operator_exists(self, first: str, reg: str) -> bool:
         """Register says the operator exists, so the 401s came from a Runtipi still starting: wait for it."""
-        waited = 0
+        waited, t0 = 0, time.monotonic()
         while True:
-            code, ans = self._probe()
+            left = max(0.0, min(self.EXISTS_WAIT - waited, self.EXISTS_WAIT - (time.monotonic() - t0)))
+            code, ans = self._probe(max(1.0, min(self.PROBE_TIMEOUT, left)))
             if code == 200:
                 return False
-            if waited >= self.EXISTS_WAIT:
+            if not left:
                 raise RuntipiError(f"Runtipi refuses the CLI token ({first}; after {self.EXISTS_WAIT} s: {ans}) "
                                    f"although register says an operator exists ({reg})")
             self.sleep(self.STEP)
