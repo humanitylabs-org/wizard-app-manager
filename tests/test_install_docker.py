@@ -1,5 +1,6 @@
 """Execute install.sh only in an allowlisted PATH with fake privileged/provider commands."""
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -359,7 +360,8 @@ def test_one_dropped_connection_no_longer_fails_a_fresh_install(tmp_path):
         (home / "runtipi/docker-compose.yml").unlink()
     p, home, root, calls, outcome = sandbox(tmp_path, before=no_base, DROP_SETUP="2")
     assert p.returncode == 0, p.stdout + p.stderr
-    downloads = [l for l in calls.read_text().splitlines() if "https://setup.runtipi.io" in l.split()]
+    download = re.compile(r"^curl -fsSL https://setup[.]runtipi[.]io -o ")
+    downloads = [l for l in calls.read_text().splitlines() if download.match(l)]
     assert len(downloads) == 3, downloads
     assert "try 1 of 5" in p.stderr and "try 2 of 5" in p.stderr
     assert (root / ".env").is_file()
