@@ -490,7 +490,7 @@ NOW = 1_800_000_000.0
 
 
 def test_a_crashed_runs_lock_on_this_box_is_removed():
-    repo = LockRepo([_lk(1, pid=111)])
+    repo = LockRepo([_lk(1, pid=111, age=20 * 3600)])
     res = schedule.clear_stale_locks(repo, hostname="box", alive=lambda pid: False, now=NOW)
     assert repo.unlocked == 1 and [r["pid"] for r in res["removed"]] == [111] and res["left"] == []
 
@@ -523,10 +523,22 @@ def test_a_reused_pid_does_not_keep_an_old_lock():
 
 def test_another_machines_abandoned_lock_stops_the_unlock():
     # `restic unlock` would also drop the other machine's old lock: that box decides, so nothing is unlocked
-    repo = LockRepo([_lk(1, pid=111), _lk(2, host="laptop", pid=9, age=2 * 3600)])
+    repo = LockRepo([_lk(1, pid=111, age=3 * 3600), _lk(2, host="laptop", pid=9, age=2 * 3600)])
     res = schedule.clear_stale_locks(repo, hostname="box", alive=lambda pid: False, now=NOW)
     assert repo.unlocked == 0 and res["removed"] == [] and len(res["left"]) == 2
     assert any("restic unlock" in r["why"] for r in res["left"])
+
+
+def test_a_young_lock_with_a_gone_pid_waits_for_restics_stale_limit():
+    # it may be a box with the same hostname sharing the repository (restic can't tell): `restic unlock` would
+    # remove it, so nothing is unlocked, also not an old one of ours next to it, until it is 30 minutes old
+    repo = LockRepo([_lk(1, pid=111, age=5 * 60), _lk(2, pid=112, age=3 * 3600)])
+    res = schedule.clear_stale_locks(repo, hostname="box", alive=lambda pid: False, now=NOW)
+    assert repo.unlocked == 0 and res["removed"] == [] and len(res["left"]) == 2
+    assert "less than 30 minutes" in {r["pid"]: r["why"] for r in res["left"]}[111]
+    repo = LockRepo([_lk(1, pid=111, age=31 * 60)])
+    res = schedule.clear_stale_locks(repo, hostname="box", alive=lambda pid: False, now=NOW)
+    assert repo.unlocked == 1 and [r["pid"] for r in res["removed"]] == [111]
 
 
 def test_a_lock_listing_failure_never_fails_the_run():
@@ -570,13 +582,19 @@ def _hold_lock(world):
 
 
 @needs_restic
-def test_a_run_after_a_crashed_run_clears_its_lock_and_passes(world):
+def test_a_run_after_a_crashed_run_clears_its_lock_and_passes(world, monkeypatch):
     assert _set(world)[0] == 0
     p = _hold_lock(world)
     p.kill()            # the crash: restic dies holding its lock
     p.wait()
     with _repo_env(world) as repo:
         assert [lk["pid"] for lk in repo.locks()] == [p.pid]
+    # right after the crash it is left (it could be a same-named box's); restic's own stale limit is 30 minutes
+    code, r = _cli(_box(world["old"]), "run", "--scheduled")
+    assert not r["ok"] and r["kind"] == "Locked" and [x["pid"] for x in r["locks"]["left"]] == [p.pid], r
+    # the next day's run (the crash in #870 was a day earlier) removes it and passes
+    sweep = schedule.clear_stale_locks
+    monkeypatch.setattr(schedule, "clear_stale_locks", lambda repo, **k: sweep(repo, now=time.time() + 20 * 3600))
     code, r = _cli(_box(world["old"]), "run", "--scheduled")
     assert code == 0 and r["ok"], r
     assert [x["pid"] for x in r["locks"]["removed"]] == [p.pid] and r["retention"]["ok"] and r["check"]["ok"]
