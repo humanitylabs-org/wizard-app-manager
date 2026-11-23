@@ -554,7 +554,9 @@ def test_agent_zip_carries_only_what_the_size_check_counted(world, monkeypatch):
 
 def test_scheduled_stream_agent_zip_is_stored_and_filtered(world, monkeypatch):
     home = world["old"].home / "agents/research/home"
-    (home / "logs/agent.log.1").write_bytes(os.urandom(1 << 20))
+    # just under the size whose files are read straight from the home (#960): Hermes writes it into its zip
+    log_size = capture.DEFER_FILES_MIN - 1
+    (home / "logs/agent.log.1").write_bytes(os.urandom(log_size))
     asks = _space_asks(monkeypatch)
     stream = io.BytesIO()
     res = capture.export(world["old"].box(), plain_stream=stream)
@@ -567,7 +569,7 @@ def test_scheduled_stream_agent_zip_is_stored_and_filtered(world, monkeypatch):
     kept = capture._du(home, capture._agent_skip)
     work = [need for _p, need, what in asks if what == "the work folder"][0]
     # every agent's zip as Hermes wrote it (logs included; the stream drops them) beside one agent's databases
-    assert work - capture.MARGIN >= kept + (1 << 20)
+    assert work - capture.MARGIN >= kept + log_size
 
 
 def test_work_folder_budget_counts_only_the_largest_raw_agent_zip(world, monkeypatch):

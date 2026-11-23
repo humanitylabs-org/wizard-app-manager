@@ -405,13 +405,36 @@ try:
 
     _orig_entries = _hb._write_zip_entries
 
-    def _entries(*a, on_error=None, **k):
+    # The zip `hermes backup` writes, but a plain file of at least `least` bytes goes in as an empty member whose
+    # comment names it (#960): wam reads it straight into the restic stream when the agent's turn comes, so the
+    # agent's big files are never staged in the work folder. Everything else passes through.
+    class _DeferFiles:
+        def __init__(self, zf, least):
+            self._zf, self._least = zf, least
+
+        def __getattr__(self, name):
+            return getattr(self._zf, name)
+
+        def write(self, filename, arcname=None, *a, **k):
+            import stat as _st, zipfile as _zf
+            st = _o.stat(filename)
+            if a or k or not _st.S_ISREG(st.st_mode) or st.st_size < self._least or str(filename).endswith(".db"):
+                return self._zf.write(filename, arcname, *a, **k)
+            _o.close(_o.open(filename, _o.O_RDONLY))      # unreadable: fails here, as the stock write would
+            info = _zf.ZipInfo.from_file(filename, arcname)
+            info.comment = ("wam-defer-file:" + str(_P(filename).absolute())).encode("utf-8", "surrogateescape")
+            self._zf.writestr(info, b"")
+
+    def _entries(zf, *a, on_error=None, **k):
         def _err(rel, exc):
             if isinstance(exc, FileNotFoundError):
                 return                     # deleted after the scan: there is nothing left to save
             if on_error:
                 on_error(rel, exc)
-        return _orig_entries(*a, on_error=_err, **k)
+        least = _o.environ.get("WAM_BACKUP_DEFER_FILES", "")
+        if least.isdigit() and _o.environ.get("WAM_BACKUP_DEFER_DBS") == "1":
+            zf = _DeferFiles(zf, int(least))
+        return _orig_entries(zf, *a, on_error=_err, **k)
 
     if callable(getattr(_hb, "_safe_copy_db", None)) and callable(_orig_entries):
         _hb._safe_copy_db = _one_step_copy
@@ -453,6 +476,8 @@ if _o.environ.get("WAM_BACKUP_SNAPSHOT_DBS") == "1":
     _s.exit(0)
 """
 DEFER_DB_MARK = b"wam-defer-db:"          # the comment of a database member HERMES_BACKUP_PATCH deferred
+DEFER_FILE_MARK = b"wam-defer-file:"      # ... and of a big plain file it deferred (#960)
+DEFER_FILES_MIN = 1 << 20                 # files this big or bigger are read straight into the stream
 HERMES_MAIN = "from hermes_cli.main import main\nsys.argv[0] = 'hermes'\nsys.exit(main())\n"
 
 
@@ -707,12 +732,16 @@ class HermesRunner:
         return {**self.box.child_env, "HERMES_HOME": str(agent.home)}
 
     # ---- the three operations
-    def backup(self, agent: Agent, out_zip: Path, defer_dbs: bool = False) -> None:
+    def backup(self, agent: Agent, out_zip: Path, defer_dbs: bool = False, defer_files: int | None = None) -> None:
         """Stock `hermes backup` (SQLite backup API, Hermes' own excludes) into out_zip. defer_dbs: each SQLite
         database becomes an empty member whose comment names it (DEFER_DB_MARK), for `snapshot_dbs` to copy just
-        before the zip is streamed (#771). A Hermes the patch does not fit backs them up as usual."""
+        before the zip is streamed (#771); with defer_files too, so does each other file of at least that many bytes
+        (DEFER_FILE_MARK), read from the home as it streams (#960). A Hermes the patch does not fit backs them up
+        as usual."""
         out_zip.parent.mkdir(parents=True, exist_ok=True)
         defer = {"WAM_BACKUP_DEFER_DBS": "1"} if defer_dbs else {}
+        if defer_dbs and defer_files is not None:
+            defer["WAM_BACKUP_DEFER_FILES"] = str(int(defer_files))
         if agent.runtime == "host":
             argv = hermes_backup_argv(Path(self.host_binary()).resolve()) or [self.host_binary()]
             self._run([*argv, "backup", "-o", str(out_zip)], env={**self._host_env(agent), **defer})

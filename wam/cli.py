@@ -1207,7 +1207,38 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         write_registry(c, rt)
     except (RuntipiError, OSError) as e:
         out["note"] = f"App Manager not reachable yet ({str(e)[:120]}); settings are saved and apply on install"
+    room = alongside_backup_room(c)
+    if room:
+        out["backup"] = room
+        if not room["fits"]:
+            print("note: " + room["note"], file=sys.stderr)
     return out
+
+
+def alongside_backup_room(c: Config) -> dict | None:
+    """With nightly backups on, the work space the next one needs now that the host Hermes is the main agent, in
+    plain words (#960): a host Hermes too big for this disk is left out of the backup, never the whole backup."""
+    try:
+        from .backup import capture
+        from .backup.box import Box, human
+        box = Box(c.home, c.runtipi_root)
+        if not capture.schedule_on(box):
+            return None
+        r = capture.stream_room(box)
+    except Exception as e:  # noqa: BLE001 - an estimate: never stops alongside mode
+        return {"note": f"could not estimate the nightly backup's disk space ({str(e)[:120]})", "fits": True}
+    need, free = human(r["need"]), human(r["free"])
+    if r["fits"]:
+        note = f"the nightly backup includes the main agent: it needs about {need} of free disk, {free} is free"
+    elif r["host_left_out"]:
+        note = (f"not enough disk to back up the main agent: the nightly backup needs about {need} of free disk "
+                f"with it and {free} is free, so it backs up everything else and leaves the main agent out until "
+                "you free up disk space")
+    else:
+        note = (f"not enough disk for the nightly backup: it needs about {need} of free disk and {free} is free; "
+                "free up disk space")
+    return {"need_bytes": r["need"], "free_bytes": r["free"], "fits": r["fits"],
+            "main_agent_left_out": r["host_left_out"], "note": note}
 
 
 def _shares_session_files(st: dict | None) -> bool:

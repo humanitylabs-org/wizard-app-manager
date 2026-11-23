@@ -237,21 +237,28 @@ back a share of the data within the last week. One run at a time; a second run e
 what an `ok` run left out that the owner expects in it: today `main agent not in backup: <path> (…)` when the box
 has no `hermes-agent` app and no `alongside.json` but a host Hermes home (a box older than alongside mode, #885); the
 file export and its manifest carry the same list, and `wam doctor` shows it as a warning row. `wam alongside` makes
-that Hermes the box's main agent, and the next backup includes it. A low-disk stop records
+that Hermes the box's main agent, and the next backup includes it. A scheduled run that has no room for the host
+Hermes (alongside) leaves it out of that run and keeps everything else, with `main agent not in this backup (not
+enough disk): <path> needs about … and … is free …` (#960); with nightly backups on, `wam alongside` prints the same
+estimate as `backup` (`need_bytes`, `free_bytes`, `fits`, `main_agent_left_out`, a plain `note`). A low-disk stop records
 `ok: false`, `verified: false`, `error: "stopped: free disk below floor"`, `stopped_low_disk: true`, `free_bytes`
 (the free space when stopped), `min_free_bytes` (the floor on that filesystem), and a plain `message` saying how to
 retry. `last_success_at` still refers to the previous successful run.
 
 **Disk.** No copy of the capture is staged: the tar is streamed into restic. What a run writes on the box: each
-agent's `hermes backup` archive **without its SQLite databases** (the scheduled run asks Hermes, through wam's
-one-run patch, to put an empty member naming each `*.db` in their place), then, one agent at a time just before that
+agent's `hermes backup` archive **without its SQLite databases and without its files of 1 MiB or more** (the
+scheduled run asks Hermes, through wam's one-run patch, to put an empty member naming each `*.db` and each big file
+in their place; the big files are read straight from the agent's home into the stream when its turn comes, #960;
+one that changed size meanwhile is cut or padded and listed in `changed_while_reading`), then, one agent at a time just before that
 agent streams, a consistent snapshot of its databases (the same one-step SQLite backup copy, made by the agent's own
 Hermes as the home's owner). The agent's archive is built while it streams: a stored zip of the Hermes members (minus
 per-machine entries) and the snapshots, read straight into the stream, with no second, uncompressed copy on disk;
 the snapshots are deleted right after (#771). Each app's data archive (made with the app stopped, as for an export)
 follows, one app at a time, deleted right after it is read. So the peak is about the larger of one agent's
-databases and the largest single app archive, plus the agents' small database-free archives: for a box whose agent
-has a 41.7 GB `state.db`, about 42 GB rather than about twice that. On a test box whose transcriber app holds
+databases and the largest single app archive, plus the agents' small files: for a box whose agent has a 41.7 GB
+`state.db`, about 42 GB rather than about twice that, and a host Hermes with 66 GiB of other files no longer adds
+them (#960). The size estimate never enters the folders `hermes backup` skips (`__pycache__`, `.git`, ...) and passes
+over entries it cannot look at. On a test box whose transcriber app holds
 ~0.97 GB of model files the peak was 0.99 GB for a 1.08 GB capture: that one app dominates. The run samples this and
 records the peak as `peak_extra_disk_bytes`; restic's local cache (`~/.cache/wizard-backup/restic`,
 `restic_cache_bytes`, tens of KB on that box) comes on top. A Hermes the patch does not fit backs its databases up
