@@ -16,6 +16,8 @@ DeFleur was running (release 0.2.2 end-to-end test). This is the same three-part
      the agent's Claude subscription provider uses (and the one that sets the agent's model).
   4. A restart of the agent when the mount, plugin or config changed, then one live `initialize` from the agent's
      container to the gateway.
+  5. The owner's Files folders the plugin's Importer engine reads and writes (Inbox, Downloads read-only, Imported)
+     mounted at /opt/wizard-files with `WIZARD_FILES_ROOT` set there (same override, wizard-importer#12).
 
 Hermes' files are edited inside its own container as its own user (uid 1000), so host ownership of the app
 data never matters. An existing `mcp_servers.wizard` that is not a Wizard gateway is left alone and reported.
@@ -312,6 +314,92 @@ def add_skills_mount(c, store='wizardapps'):
     return True
 
 
+# The owner's Files folders the wizard-os plugin's Importer engine (bring_data.py) uses, mounted into the agent's
+# engine under FILES_TARGET with WIZARD_FILES_ROOT pointing there (wizard-importer#12). Without them the plugin's
+# Files root defaulted to ~/runtipi/media inside the agent's own home (/opt/data): every upload and export counted as
+# "this Wizard's own agent" and imported History stayed in the agent's home instead of Files › Imported.
+# Only these three: the import needs nothing else from Files.
+FILES_TARGET = '/opt/wizard-files'
+FILES_FOLDERS = (('Inbox', False), ('Downloads', True), ('Imported', False))   # (folder, read_only)
+FILES_ENV = 'WIZARD_FILES_ROOT'
+
+
+def files_mounts(c):
+    """The bind mounts for this box's Files folders (host paths under ${ROOT_FOLDER_HOST}/media)."""
+    from .alongside import host_media_root
+    media = host_media_root(c.runtipi_root)
+    return [{'type': 'bind', 'source': str(media / name), 'target': f'{FILES_TARGET}/{name}', 'read_only': ro}
+            for name, ro in FILES_FOLDERS]
+
+
+def _vol_target(v):
+    if isinstance(v, dict):
+        return v.get('target') or ''
+    parts = str(v).split(':')
+    return parts[1] if len(parts) > 1 else ''
+
+
+def _untag(x):
+    from .network import _Tagged
+    return x.value if isinstance(x, _Tagged) else x
+
+
+def _env_get(env, key):
+    if isinstance(env, dict):
+        return env.get(key)
+    for row in env or []:
+        k, _, val = str(row).partition('=')
+        if k == key:
+            return val
+    return None
+
+
+def add_files_mount(c, store='wizardapps'):
+    """Mount the owner's Files folders into the agent's engine and set WIZARD_FILES_ROOT (additive user-config
+    override, next to the skills mount). True when the override changed. A box without a Files folder is left alone
+    (False). An owner's own WIZARD_FILES_ROOT or another mount at these paths is never replaced (ValueError)."""
+    from .builder_bundle import _atomic
+    from .network import dump_yaml, load_yaml
+    mounts = files_mounts(c)
+    media = Path(mounts[0]['source']).parent
+    if not media.is_dir():
+        return False
+    override = Path(c.runtipi_root) / 'user-config' / store / AGENT_APP / 'docker-compose.yml'
+    doc = (load_yaml(override.read_text()) or {}) if override.exists() else {}
+    service = doc.setdefault('services', {}).setdefault(AGENT_APP + '-engine', {})
+    # `volumes: !override` / `environment: !override` load as network._Tagged: edit the value inside the tag
+    vols = _untag(service.setdefault('volumes', []))
+    env = _untag(service.get('environment'))
+    if not isinstance(vols, list) or not isinstance(env, (dict, list, type(None))):
+        raise ValueError(f'unexpected volumes/environment shape in {override}; preserving override')
+    have = _env_get(env, FILES_ENV)
+    if have not in (None, FILES_TARGET):
+        raise ValueError(f'{FILES_ENV} is already set to {have} in {override}; preserving override')
+    for v in vols:
+        target = _vol_target(v)
+        if (target == FILES_TARGET or target.startswith(FILES_TARGET + '/')) and v not in mounts:
+            raise ValueError(f'{target} mount collision in {override}; preserving override')
+    missing = [m for m in mounts if m not in vols]
+    if not missing and have == FILES_TARGET:
+        return False
+    # A missing source folder would be made by Docker as root, and the agent (uid 1000) could not write it.
+    for m in mounts:
+        try:
+            Path(m['source']).mkdir(exist_ok=True)
+        except OSError as e:
+            raise ValueError(f"can't create {m['source']} ({e.strerror or e})") from None
+    vols.extend(missing)
+    if have is None:
+        if isinstance(env, list):
+            env.append(f'{FILES_ENV}={FILES_TARGET}')
+        elif isinstance(env, dict):
+            env[FILES_ENV] = FILES_TARGET
+        else:
+            service['environment'] = {FILES_ENV: FILES_TARGET}
+    _atomic(override, dump_yaml(doc))
+    return True
+
+
 def ensure_plugin(docker, engine):
     """Install the pinned wizard-os plugin into the agent's data (stock `hermes plugins install`, as uid 1000).
     Returns {plugin: installed|refreshed|current|owner-managed|owner-modified, changed}. Raises ValueError."""
@@ -338,7 +426,11 @@ def link(c, store='wizardapps', restart=True):
     token = p.stdout.strip()
     if p.returncode or not token:
         raise ValueError('the Agent Service has no gateway token yet (start it once, then retry)')
-    mount_changed = add_skills_mount(c, store)
+    try:   # the Importer's Files folders (wizard-importer#12); the gateway link never waits on them
+        files_changed, files_error = add_files_mount(c, store), None
+    except Exception as e:  # noqa: BLE001 - an odd override is reported, never stops the gateway link
+        files_changed, files_error = False, str(e)[:200]
+    mount_changed = add_skills_mount(c, store) or files_changed
     try:   # the ChatGPT app's sign-ins; the gateway link above never waits on it
         plugin = ensure_plugin(docker, _container(docker, AGENT_APP + '-engine')[0])
     except (ValueError, OSError, subprocess.SubprocessError) as e:
@@ -368,7 +460,8 @@ def link(c, store='wizardapps', restart=True):
         rt.wait_status(urn, {'running'}, timeout=900)
         restarted = True
     check = edit(probe=True)
-    return {'gateway': url, 'skills_dir': SKILLS_TARGET, 'mount_changed': mount_changed, 'plugin': plugin['plugin'],
+    return {'gateway': url, 'skills_dir': SKILLS_TARGET, 'mount_changed': mount_changed, 'files_changed': files_changed,
+            **({'files_error': files_error} if files_error else {}), 'plugin': plugin['plugin'],
             **({'plugin_error': plugin['error']} if plugin.get('error') else {}),
             'config_changed': first['config_changed'], 'env_changed': first['env_changed'],
             'restart_required': changed and not restarted, 'restarted': restarted,
