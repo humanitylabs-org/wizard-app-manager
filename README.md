@@ -67,6 +67,8 @@ Existing apps, app data and settings stay where they are.
 Every `runtipi-cli` command works through `wam` (app ids may drop the `:store` suffix):
 `wam app start|stop|update|reset|uninstall|backup|restore|list-backups|delete-backup <app>`, `wam app start-all|stop-all|available-updates`, `wam installed`, `wam appstore add|list|remove|update`, `wam start|stop|restart|prepare|update|version|debug|reset-password`.
 
+To start or stop an app, use `wam app start|stop <app>` (as the box's user, not root): it goes through the App Manager's API and reports the real result on every box. Don't rely on the stock `~/runtipi/runtipi-cli app start|stop` on WizardOS: a fresh install gets the CLI matching the App Manager's Runtipi, so it no longer answers 401 (WAM#867) and the app does stop or start, but it still prints `dial tcp [::1]:5672: connect: connection refused` and exits 1, because the queue port it waits on is never published (#53). A 4.12 CLI against an older, 4.10-based App Manager (WizardOS before 0.3.308) answers 401 and does nothing.
+
 Wizard additions:
 
 | Command | What it does |

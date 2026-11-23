@@ -343,3 +343,61 @@ def test_a_failed_runtipi_base_says_why_and_stops(tmp_path):
     assert "WizardOS install failed: the Runtipi base (v4." in p.stderr
     assert "stopped with exit code 1" in p.stderr
     assert "wam -m wam bootstrap" not in calls.read_text(), "nothing past the base runs"
+
+
+def _setup_version(tmp_path, **env):
+    def no_base(home):
+        (home / "runtipi/.env").unlink()
+        (home / "runtipi/docker-compose.yml").unlink()
+    p, home, root, calls, outcome = sandbox(tmp_path, before=no_base, **env)
+    assert p.returncode == 0, p.stdout + p.stderr
+    setup = next(l for l in calls.read_text().splitlines() if l.startswith("sudo bash ") and "runtipi-setup.sh" in l)
+    return setup.split(" --version ", 1)[1].split()[0]
+
+
+@pytest.mark.parametrize("image,want", [
+    ("ghcr.io/humanitylabs-org/wizard-app-manager:v4.10.2-wizard.1477-c81ff5b", "v4.10.2"),
+    ("ghcr.io/humanitylabs-org/wizard-app-manager:v4.12.0-wizard.1610-8a32ed51@sha256:" + "7" * 64, "v4.12.0"),
+])
+def test_the_base_runtipi_cli_matches_the_app_manager_image(tmp_path, image, want):
+    """wizard-app-manager#867: the installer pinned runtipi-cli 4.12 while the release's App Manager image was still
+    4.10-based. A 4.12 CLI signs its tokens with 4.12's CLI key, which that backend rejects, so every stock
+    `runtipi-cli app stop/start` answered 401 on fresh boxes (wam, signing with JWT_SECRET, worked). The base is now
+    the Runtipi the image is built on."""
+    assert _setup_version(tmp_path, WAM_IMAGE=image) == want
+
+
+def test_the_base_falls_back_to_the_runtipi_the_image_workflow_builds(tmp_path):
+    """`:latest` names no base: use the one .github/workflows/image.yml tags today, so the two never drift apart."""
+    import re
+    built = set(re.findall(r"tag=(v\d+\.\d+\.\d+)-wizard\.", (REPO / ".github/workflows/image.yml").read_text()))
+    assert len(built) == 1, built
+    assert _setup_version(tmp_path) == built.pop()
+    assert _setup_version(tmp_path / "x", WIZARD_RUNTIPI_VERSION="v4.12.1",
+                          WAM_IMAGE="ghcr.io/humanitylabs-org/wizard-app-manager:v4.10.2-wizard.1-abc") == "v4.12.1"
+
+
+def test_a_release_install_reads_the_base_from_the_manifest_tag(tmp_path):
+    """Codex P1 on #950: get.sh hands install.sh the release image as `repo@sha256:...` (no tag), so the base comes
+    from the release manifest in WIZARD_RELEASE_PINS whose digest is the one being installed."""
+    latest = (REPO / "releases/latest").read_text().strip()
+    rel = json.loads((REPO / f"releases/{latest}.json").read_text())
+    im = rel["images"]["wizard-app-manager"]
+    im["ref"] = "ghcr.io/humanitylabs-org/wizard-app-manager:v4.10.2-wizard.1477-c81ff5b"
+    pins = tmp_path / "release-pins.json"
+    pins.write_text(json.dumps(rel))
+    digest_only = "ghcr.io/humanitylabs-org/wizard-app-manager@" + im["digest"]
+    assert _setup_version(tmp_path / "a", WAM_IMAGE=digest_only, WIZARD_RELEASE_PINS=str(pins)) == "v4.10.2"
+    # Another image than the release's (a WAM_IMAGE override) never borrows the release's tag.
+    other = "ghcr.io/humanitylabs-org/wizard-app-manager@sha256:" + "0" * 64
+    assert _setup_version(tmp_path / "b", WAM_IMAGE=other, WIZARD_RELEASE_PINS=str(pins)) == "v4.12.0"
+
+
+def test_runtipi_base_names_the_image_s_runtipi():
+    from wam.release_pins import runtipi_base
+    doc = {"images": {"wizard-app-manager": {"ref": "ghcr.io/x/wam:v4.10.2-wizard.9-abc", "digest": "sha256:" + "a" * 64}}}
+    assert runtipi_base("ghcr.io/x/wam:v4.12.0-wizard.1610-8a32ed51") == "v4.12.0"
+    assert runtipi_base("ghcr.io/x/wam@sha256:" + "a" * 64, doc) == "v4.10.2"
+    assert runtipi_base("ghcr.io/x/wam@sha256:" + "b" * 64, doc) is None
+    assert runtipi_base("ghcr.io/x/wam:latest", doc) is None
+    assert runtipi_base("", None) is None

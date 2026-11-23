@@ -214,7 +214,7 @@ You are installing the Wizard App Manager. It uses stock Runtipi to run apps. Do
 3. **Clone this repo** to `~/wizard-app-manager` and run `./install.sh`.
 4. **Verify:** `wam doctor` must show only PASS lines.
 5. **Prove the chain:** `wam install transcriber`, then call its MCP at the `mcp.url` shown in `wam apps --json` (`tools/list` should list `transcribe` and `transcriber_status`).
-6. **Install what the owner asks for** with `wam search` and `wam install <id>`. Generated passwords are in `~/.wizard-os/secrets/<id>.json`; tell the owner where, never print them.
+6. **Install what the owner asks for** with `wam search` and `wam install <id>`. Generated passwords are in `~/.wizard-os/secrets/<id>.json`; tell the owner where, never print them. Start and stop apps with `wam app start|stop <id>` (as the box's user), never the stock `runtipi-cli`: it reports a `[::1]:5672` connection error and exits 1 even when the app did stop or start (#53), and a 4.12 CLI against a 4.10-based App Manager answers 401 (WAM#867).
 7. **Report** the Runtipi address, `wam doctor` output, and the installed apps.
 
 Rules:

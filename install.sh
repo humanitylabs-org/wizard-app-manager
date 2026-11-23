@@ -44,7 +44,13 @@ YML
   # latest one without a token (60 calls an hour per IP). When that limit is used up it gets nothing back, exits 1
   # after printing only "Installing runtipi..." and the whole install failed with no reason. With a version it never
   # calls the API; the download itself comes from github.com releases, which that limit does not cover.
-  RUNTIPI_BASE_VERSION="${WIZARD_RUNTIPI_VERSION:-v4.12.0}"
+  # The base's runtipi-cli must be the Runtipi the App Manager image is built on (wizard-app-manager#867): a 4.12
+  # runtipi-cli signs its tokens with 4.12's CLI key, which a 4.10-based App Manager rejects, so every stock
+  # `runtipi-cli app stop/start` answered 401 on boxes whose image was older than the CLI. A Wizard image tag names
+  # its base (`v4.12.0-wizard.<n>-<sha>`; a release's digest-only image is looked up in WIZARD_RELEASE_PINS); the
+  # fallback is the base .github/workflows/image.yml builds today.
+  RUNTIPI_BASE_VERSION="${WIZARD_RUNTIPI_VERSION:-$(cd "$HERE" && python3 -m wam.release_pins --runtipi-base "$IMAGE" 2>/dev/null || true)}"
+  RUNTIPI_BASE_VERSION="${RUNTIPI_BASE_VERSION:-v4.12.0}"
   base_failed() {
     rm -rf "$ENVF" "$SETUP_DIR"
     echo "WizardOS install failed: the Runtipi base ($RUNTIPI_BASE_VERSION) did not install: $1." >&2
