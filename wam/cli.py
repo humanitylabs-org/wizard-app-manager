@@ -374,6 +374,15 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         if dep in external_apps:   # alongside mode: the host's own Hermes fills this spot
             print(f"skipping dependency {dep}: its spot is filled by the host (alongside mode)", file=sys.stderr)
             continue
+        capable = capability_providers(c, dep)
+        if capable is not None:
+            # `uses` may also name a capability other apps declare in `provides:` (wizard-mail#38: mail-calendar,
+            # served by wizard-google and wizard-microsoft). It is not an app: covered when a provider is installed
+            # or is itself named in `uses` (installed by its own id); otherwise say which apps can provide it.
+            if not any(p in have or p in _seen or p in (rec.get("uses") or []) for p in capable):
+                print(f"note: {app_id} can use '{dep}' from {', '.join(capable)}; none is installed "
+                      f"(install one with `wam install <app>` when you want it)", file=sys.stderr)
+            continue
         try:
             print(f"installing dependency {dep}", file=sys.stderr)
             install(c, dep, None, wait, _seen)
@@ -1488,6 +1497,25 @@ def store_data_cmd(c: Config, apply: bool = True) -> dict:
         else:
             out.update(store_data.publish_routes(ts["host"], shell_port))
     return out
+
+
+def capability_providers(c: Config, name: str) -> list[str] | None:
+    """The listed apps whose `provides:` holds `name`, when `name` is a capability and no app id (wizard-mail#38:
+    Mail `uses: [mail-calendar]`, which wizard-google and wizard-microsoft provide). None when `name` is an app
+    any route of `resolve_any` knows, when nothing provides it, or when the index can't be asked: the caller then
+    treats it as an app id, as before."""
+    from . import test_catalog
+    if "/" in name or name in c.private_apps or release_pins.resolve(name) or test_catalog.resolve(name) \
+            or slots.repo_for(name):
+        return None
+    try:
+        if index.search(c.index, id=name):
+            return None
+        listed = index.all_listed(c.index)
+    except index.IndexError_:
+        return None
+    found = [str(a["id"]) for a in listed if name in (a.get("provides") or []) and a.get("id") and a["id"] != name]
+    return list(dict.fromkeys(found)) or None
 
 
 def resolve_any(c: Config, ref: str) -> dict:
