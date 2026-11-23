@@ -2711,13 +2711,16 @@ JOB_ENDED = {"succeeded", "failed", "cancelled"}
 
 
 def update_job(rt, urn: str, request, timeout: float, *, sleep=time.sleep, clock=time.monotonic) -> dict | None:
-    """Follow Runtipi's update job (Runtipi 4.12 AppJobService) to its end and return it; None when it can't be followed.
+    """Follow Runtipi's update job (Runtipi 4.12 AppJobService) to its end and return it.
 
     #971: an update job can wait for one of Runtipi's three job slots while the app still shows its old status, and a
     job that fails (e.g. its backup could not copy the app data) puts the old files back and the old status. Read by
-    status alone, "not started yet", "done" and "rolled back" all look like `running`, and the reason was lost. A
-    Runtipi without the job route (pre-4.12 queue), a request without an id, or a job Runtipi forgot gives None: the
-    caller then reads the app's status as before."""
+    status alone, "not started yet", "done" and "rolled back" all look like `running`, and the reason was lost.
+
+    None only when the job can't be followed at all: no request id, a Runtipi without the job route (it answers 404:
+    pre-4.12, which runs updates through its queue), or a job Runtipi no longer knows (it restarted, or a newer job
+    replaced it). The caller then reads the app's status as before. A job still active at `timeout`, or a Runtipi that
+    stopped answering, comes back as the last job seen (`status` not ended), never as None (Codex P1s)."""
     rid = request.get("requestId") if isinstance(request, dict) else None
     if not isinstance(rid, str) or not rid:
         return None
@@ -2727,17 +2730,19 @@ def update_job(rt, urn: str, request, timeout: float, *, sleep=time.sleep, clock
     while True:
         try:
             job = (rt.req("GET", path) or {}).get("job")
-        except (RuntipiError, OSError, ValueError, AttributeError):
-            if seen is None:
+            if not isinstance(job, dict):
+                return None   # Runtipi no longer knows this job
+            seen = job
+            if job.get("status") in JOB_ENDED:
+                return job
+        except RuntipiError as e:
+            if seen is None and " -> 404:" in str(e):
                 return None   # no job route on this Runtipi
-            job = seen        # a busy Runtipi missed one answer: ask again
-        if not isinstance(job, dict):
-            return None       # Runtipi no longer knows this job (restarted, or a newer job replaced it)
-        seen = job
-        if job.get("status") in JOB_ENDED:
-            return job
+        except (OSError, ValueError, AttributeError):
+            pass              # a busy Runtipi missed one answer: ask again
         if clock() >= deadline:
-            return None
+            return seen or {"status": "unknown", "phase": "unknown",
+                            "message": "Runtipi did not answer about its update job"}
         sleep(2)
 
 
@@ -2877,7 +2882,10 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
         request = rt.update(urn, perform_backup=backup)
         time.sleep(3)
         job = update_job(rt, urn, request, timeout)   # #971: the job's own end and reason, when Runtipi has jobs
-        status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
+        if job is not None and job.get("status") not in JOB_ENDED:   # still busy past the wait: never wait twice
+            status = ((rt.app(urn) or {}).get("app") or {}).get("status") or "missing"
+        else:
+            status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
     except BaseException as e:
         if was_running:   # #730: if this left it stopped, the next update or recover starts it again
             update_strand.mark(getattr(c, "home", None), urn, f"{type(e).__name__}: {e}")
@@ -2900,12 +2908,17 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
         update_strand.mark(getattr(c, "home", None), urn, f"update ended {status}")
     elif status == "running":
         update_strand.clear(getattr(c, "home", None), urn)
-    if job and job.get("status") in ("failed", "cancelled"):
-        # #971: Runtipi put the previous version back; say why instead of reporting a finished update
+    if job and job.get("status") != "succeeded":
+        # #971: Runtipi put the previous version back (or is still busy with it); say so instead of reporting an update
         why = " ".join(str(job.get("message") or "no reason given").split())[:300]
-        out["job"] = {"status": job["status"], "message": why}
-        kept = "; the installed version was kept" if status in ("running", "stopped") else ""
-        out["error"] = f"Runtipi did not update {app_id}: {why}{kept}" + (f"; {out['error']}" if out.get("error") else "")
+        out["job"] = {"status": job.get("status"), "phase": job.get("phase"), "message": why}
+        if job.get("status") in ("failed", "cancelled"):
+            kept = "; the installed version was kept" if status in ("running", "stopped") else ""
+            problem = f"Runtipi did not update {app_id}: {why}{kept}"
+        else:
+            problem = (f"Runtipi's update of {app_id} did not finish in {timeout // 60} min (job {job.get('status')}, "
+                       f"{job.get('phase')}); `wam app update {app_id}` again once it has")
+        out["error"] = problem + (f"; {out['error']}" if out.get("error") else "")
     if store == STORE:   # the update may change what it declares (uses:) or its services
         out["networks"] = _net_brief(network_step(c, rt))
     if backup and status in ("running", "stopped") and not out.get("error"):
@@ -3135,6 +3148,8 @@ def main(argv: list[str] | None = None) -> int:
     if argv[:2] == ["app", "update"] and len(argv) >= 3 and not argv[2].startswith("-"):
         res = app_update(Config(), argv[2], backup="--no-backup" not in argv, allow_host_access="--allow-host-access" in argv)
         print(json.dumps(res, indent=2))
+        if res.get("job"):   # #971: Runtipi's update job failed or did not finish: the app kept its version
+            return 1
         return 0 if res["status"] == "running" or not res.get("error") else 1
     if argv and argv[0] in RUNTIPI_COMMANDS:
         routed = _graceful_passthrough(argv)

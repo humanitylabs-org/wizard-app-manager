@@ -70,7 +70,7 @@ def test_a_failed_update_job_is_reported_with_runtipis_reason(tmp_path, monkeypa
     assert out["status"] == "running" and calls["start"] == 0
     assert out["error"] == ("Runtipi did not update wizard-agent-service: Failed to copy app data for backup; "
                             "the installed version was kept")
-    assert out["job"] == {"status": "failed", "message": "Failed to copy app data for backup"}
+    assert out["job"] == {"status": "failed", "phase": "finished", "message": "Failed to copy app data for backup"}
     assert len(calls["job_paths"]) == 3   # followed the job to its end, not the first `running` status
 
 
@@ -96,11 +96,61 @@ def test_the_reason_comes_first_when_the_app_also_did_not_come_back(tmp_path, mo
                                    "the installed version was kept; the app did not come back")
 
 
-def test_update_job_waits_through_the_queue_and_gives_up_at_its_timeout():
+def test_update_job_waits_through_the_queue_and_returns_the_busy_job_at_its_timeout():
     clock = Clock()
     rt, _ = _rt([{"status": "queued", "phase": "queued"}])
-    assert cli.update_job(rt, "x:wizardapps", {"requestId": "req-1"}, 30, sleep=clock.sleep, clock=clock) is None
-    assert clock.t >= 30
+    job = cli.update_job(rt, "x:wizardapps", {"requestId": "req-1"}, 30, sleep=clock.sleep, clock=clock)
+    assert job == {"status": "queued", "phase": "queued"} and clock.t >= 30
+
+
+def test_an_update_still_queued_at_the_end_is_an_error_not_a_success(tmp_path, monkeypatch):
+    """Codex P1: the old app still says `running` while its job waits, so the wait must not read that as done."""
+    rt, calls = _rt([{"status": "queued", "phase": "queued"}])
+    monkeypatch.setattr(cli, "update_job", lambda *a, **k: {"status": "queued", "phase": "queued"})
+    out = _update(tmp_path, monkeypatch, rt)
+    assert calls["waits"] == 0 and calls["start"] == 0
+    assert out["error"].startswith("Runtipi's update of wizard-agent-service did not finish")
+    assert out["job"]["status"] == "queued"
+
+
+def test_a_first_poll_that_fails_for_another_reason_is_asked_again():
+    """Codex P1: only a 404 (no job route) means a Runtipi without jobs; a reset or a 500 is asked again."""
+    clock = Clock()
+    answers = [OSError("connection reset"), RuntipiError("GET /app-lifecycle/x/job -> 500: b'busy'"),
+               {"job": {"status": "succeeded", "phase": "finished", "message": "ok"}}]
+
+    class RT:
+        def req(self, method, path, body=None, timeout=60):
+            a = answers.pop(0)
+            if isinstance(a, Exception):
+                raise a
+            return a
+
+    job = cli.update_job(RT(), "x:wizardapps", {"requestId": "req-1"}, 60, sleep=clock.sleep, clock=clock)
+    assert job["status"] == "succeeded"
+
+
+def test_a_runtipi_that_never_answers_about_the_job_is_an_error():
+    clock = Clock()
+
+    class RT:
+        def req(self, method, path, body=None, timeout=60):
+            raise OSError("connection refused")
+
+    job = cli.update_job(RT(), "x:wizardapps", {"requestId": "req-1"}, 10, sleep=clock.sleep, clock=clock)
+    assert job["status"] == "unknown" and "did not answer" in job["message"]
+
+
+def test_wam_app_update_exits_nonzero_when_runtipi_kept_the_old_version(monkeypatch, capsys):
+    """Codex P2: the direct command used to exit 0 whenever the app was `running`."""
+    monkeypatch.setattr(cli, "Config", lambda: object())
+    monkeypatch.setattr(cli, "_older_updates", lambda c, ids: {})
+    monkeypatch.setattr(cli, "rename_instead_of_update", lambda c, t: None)
+    monkeypatch.setattr(cli, "app_update", lambda *a, **k: {
+        "status": "running", "error": "Runtipi did not update x: boom", "job": {"status": "failed"}})
+    assert cli.main(["app", "update", "x"]) == 1
+    monkeypatch.setattr(cli, "app_update", lambda *a, **k: {"status": "running"})
+    assert cli.main(["app", "update", "x"]) == 0
 
 
 def test_update_job_without_a_request_id_or_a_forgotten_job_is_unknown():
