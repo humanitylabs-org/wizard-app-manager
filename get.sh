@@ -1143,9 +1143,9 @@ fetch_release() {  # fetch_release <name> <dest>: 0 = fetched, 4 = not published
     file://*) [ -f "${url#file://}" ] || return 4; cp "${url#file://}" "$2"; return ;;
   esac
   local i
-  for i in 1 2 3 4; do   # a dropped connection (no code) or a 5xx is tried again; 200 and 404 are answers (#868)
+  for i in 1 2 3 4; do   # no answer (a dropped connection), 408, 429 and 5xx are tried again; the rest are answers (#868)
     code="$(curl -sSL -o "$2" -w '%{http_code}' "$url" 2>/dev/null)" || true
-    case "$code" in 200|4??) break ;; esac
+    case "$code" in ''|000|408|429|5??) ;; *) break ;; esac
     if [ "$i" -lt 4 ]; then sleep "$((i * 2))"; fi
   done
   case "$code" in 200) return 0 ;; 404) return 4 ;; *) echo "fetching $url failed (HTTP ${code:-none})" >&2; return 1 ;; esac

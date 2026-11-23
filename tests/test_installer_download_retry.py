@@ -20,7 +20,7 @@ COPIES = ["install.sh", "get.sh", "scripts/ensure-base-docker.sh", "scripts/prep
 def block(path, name):
     """The text of shell function <name> in <path>."""
     text = (REPO / path).read_text()
-    m = re.search(r"^" + name + r"\(\) \{\n.*?^\}\n", text, re.M | re.S)
+    m = re.search(r"^" + name + r"\(\) \{[^\n]*\n.*?^\}\n", text, re.M | re.S)
     assert m, f"{path} has no {name}()"
     return m.group(0)
 
@@ -131,3 +131,28 @@ def test_the_curl_config_makes_a_third_party_scripts_plain_curl_retry(tmp_path):
     assert p.returncode == 0, p.stderr
     assert (tmp_path / "b").read_text() == "ok\n"
     assert srv.seen == 2
+
+
+@pytest.mark.parametrize("codes,want_rc,want_tries", [
+    (["000", "429", "200"], 0, 3),     # a reset, then rate-limited, then the file
+    (["503", "408", "200"], 0, 3),
+    (["404"], 4, 1),                   # not published is an answer: never retried
+    (["403"], 1, 1),
+    (["000", "000", "000", "000"], 1, 4),
+])
+def test_release_metadata_is_tried_again_only_on_transient_answers(tmp_path, codes, want_rc, want_tries):
+    calls = tmp_path / "calls"
+    (tmp_path / "codes").write_text("\n".join(codes) + "\n")
+    bin_dir = fake_bin(tmp_path, '''echo "curl $*" >> "$CALLS"
+n=$(grep -c '^curl' "$CALLS")
+code=$(sed -n "${n}p" "$CODES")
+[ "$code" = 000 ] && exit 35
+printf '%s' "$code"
+''')
+    script = ('set -euo pipefail\nRELEASE_BASE=https://raw.example.test/releases\n' + block("get.sh", "fetch_release")
+              + 'rc=0; fetch_release stable "$OUT" || rc=$?; echo "rc=$rc"\n')
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "CALLS": str(calls), "OUT": str(tmp_path / "out"),
+           "CODES": str(tmp_path / "codes")}
+    p = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=20)
+    assert f"rc={want_rc}" in p.stdout, p.stdout + p.stderr
+    assert len([c for c in calls.read_text().splitlines() if c.startswith("curl")]) == want_tries
