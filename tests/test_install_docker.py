@@ -47,6 +47,11 @@ case "$*" in
     if [ -f "$HOME/stale-release-index" ]; then echo 'Conflict: runtipi-wizard-release-index-1' >&2; exit 1; fi;;
 esac
 case "$*" in *"status = 'running'"*) printf '%s' "${RUNNING_ROWS:-}";; esac
+# `docker ps --filter name=^runtipi$`: the base's main container runs unless BASE_DOWN=n says the first n checks fail
+if [ "$1" = ps ]; then
+  n=$(grep -c "^docker sudo=.* ps " "$CALLS" || true)
+  [ "$n" -le "${BASE_DOWN:-0}" ] || echo runtipi
+fi
 ''')
     for name in ("systemctl", "loginctl", "chown"):  # chown: the stand-in id says uid 1000, which the runner isn't
         tool(name, f'printf "{name} %s\\n" "$*" >> "$CALLS"\n')
@@ -366,6 +371,35 @@ def test_one_dropped_connection_no_longer_fails_a_fresh_install(tmp_path):
     assert "try 1 of 5" in p.stderr and "try 2 of 5" in p.stderr
     assert (root / ".env").is_file()
     assert outcome["status"] == "ok"
+
+
+def _no_base_with_cli(home):
+    (home / "runtipi/.env").unlink()
+    (home / "runtipi/docker-compose.yml").unlink()
+    cli = home / "runtipi/runtipi-cli"          # what Runtipi's setup leaves in the base folder
+    cli.write_text('#!/bin/bash\nprintf "runtipi-cli %s CURL_HOME=%s\\n" "$*" "${CURL_HOME:-}" >> "$CALLS"\n')
+    cli.chmod(0o755)
+
+
+def test_a_base_whose_image_pull_failed_is_started_again(tmp_path):
+    """wizard-app-manager#868, seen on a clean Debian 13 box with a flaky network: `runtipi-cli start` printed
+    "Failed to pull images" (one refused connection to ghcr.io), started nothing and still exited 0, so the install
+    went on to a half-started base whose proxy had no config and ended install-failed."""
+    p, home, root, calls, outcome = sandbox(tmp_path, before=_no_base_with_cli, BASE_DOWN="1")
+    assert p.returncode == 0, p.stdout + p.stderr
+    log = calls.read_text().splitlines()
+    starts = [l for l in log if l.startswith("runtipi-cli start --env-file ")]
+    assert len(starts) == 1 and "CURL_HOME=" + str(tmp_path) in starts[0], starts
+    assert "starting it again (try 1 of 3)" in p.stderr
+    assert outcome["status"] == "ok"
+
+
+def test_a_base_that_never_starts_stops_the_install_with_the_reason(tmp_path):
+    p, home, root, calls, outcome = sandbox(tmp_path, before=_no_base_with_cli, BASE_DOWN="99")
+    assert p.returncode == 1
+    assert len([l for l in calls.read_text().splitlines() if l.startswith("runtipi-cli start ")]) == 3
+    assert "its containers did not start" in p.stderr
+    assert "wam -m wam bootstrap" not in calls.read_text(), "nothing past the base runs"
 
 
 def _setup_version(tmp_path, **env):

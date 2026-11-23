@@ -85,6 +85,17 @@ YML
     --env-file "$ENVF") || rc=$?
   [ "$rc" -eq 0 ] || base_failed "its setup script stopped with exit code $rc"
   [ -f "$RUNTIPI_ROOT/.env" ] || base_failed "its setup script finished but left no $RUNTIPI_ROOT/.env"
+  # runtipi-cli start exits 0 (and so does the setup) when it could not pull its images: one dropped connection
+  # (wizard-app-manager#868) left a base with nothing started, and starting it piecemeal later raced its proxy config.
+  # Start it again, as Runtipi's own setup does, until its main container runs.
+  base_running() { [ "$(sudo docker ps --filter name='^runtipi$' --filter status=running --format '{{.Names}}' 2>/dev/null)" = runtipi ]; }
+  for i in 1 2 3; do
+    base_running && break
+    echo "The Runtipi base did not start (an image download failed?); starting it again (try $i of 3)." >&2
+    sleep "$((i * 5))"
+    (cd "$RUNTIPI_ROOT" && sudo env CURL_HOME="$SETUP_DIR" ./runtipi-cli start --env-file "$ENVF") || true
+  done
+  base_running || base_failed "its containers did not start (the lines above show why, often an image download)"
   rm -rf "$ENVF" "$SETUP_DIR"
   # Runtipi's setup runs as root; hand the install to this user (not data/, the database's own files).
   sudo chown "$(id -u):$(id -g)" "$RUNTIPI_ROOT"
