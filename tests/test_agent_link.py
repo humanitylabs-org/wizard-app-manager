@@ -577,3 +577,22 @@ def test_link_restarts_the_agent_once_for_the_files_mount_and_survives_a_refusal
         assert ('files_error' in out) is refused
         if not refused:
             assert agent_link.link(c)['restarted'] is False, 'a second run changes nothing'
+
+
+def test_files_mount_edits_inside_override_tags(tmp_path):
+    """`environment: !override` / `volumes: !override` are valid Compose: keep the tag, add inside it (Codex P2)."""
+    c = _cfg(tmp_path)
+    _media(c)
+    ov = c.runtipi_root / 'user-config/wizardapps/hermes-agent/docker-compose.yml'
+    ov.parent.mkdir(parents=True)
+    ov.write_text('services:\n  hermes-agent-engine:\n    environment: !override\n      A: b\n'
+                  '    volumes: !override\n      - /x:/opt/x\n')
+    assert agent_link.add_files_mount(c) is True
+    text = ov.read_text()
+    assert text.count('!override') == 2
+    from wam.network import load_yaml
+    engine = load_yaml(text)['services']['hermes-agent-engine']
+    assert engine['environment'].value == {'A': 'b', 'WIZARD_FILES_ROOT': '/opt/wizard-files'}
+    assert [agent_link._vol_target(v) for v in engine['volumes'].value][0] == '/opt/x'
+    assert len(engine['volumes'].value) == 4
+    assert agent_link.add_files_mount(c) is False

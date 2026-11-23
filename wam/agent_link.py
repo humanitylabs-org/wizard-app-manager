@@ -339,6 +339,11 @@ def _vol_target(v):
     return parts[1] if len(parts) > 1 else ''
 
 
+def _untag(x):
+    from .network import _Tagged
+    return x.value if isinstance(x, _Tagged) else x
+
+
 def _env_get(env, key):
     if isinstance(env, dict):
         return env.get(key)
@@ -362,8 +367,11 @@ def add_files_mount(c, store='wizardapps'):
     override = Path(c.runtipi_root) / 'user-config' / store / AGENT_APP / 'docker-compose.yml'
     doc = (load_yaml(override.read_text()) or {}) if override.exists() else {}
     service = doc.setdefault('services', {}).setdefault(AGENT_APP + '-engine', {})
-    vols = service.setdefault('volumes', [])
-    env = service.get('environment')
+    # `volumes: !override` / `environment: !override` load as network._Tagged: edit the value inside the tag
+    vols = _untag(service.setdefault('volumes', []))
+    env = _untag(service.get('environment'))
+    if not isinstance(vols, list) or not isinstance(env, (dict, list, type(None))):
+        raise ValueError(f'unexpected volumes/environment shape in {override}; preserving override')
     have = _env_get(env, FILES_ENV)
     if have not in (None, FILES_TARGET):
         raise ValueError(f'{FILES_ENV} is already set to {have} in {override}; preserving override')
@@ -384,8 +392,10 @@ def add_files_mount(c, store='wizardapps'):
     if have is None:
         if isinstance(env, list):
             env.append(f'{FILES_ENV}={FILES_TARGET}')
+        elif isinstance(env, dict):
+            env[FILES_ENV] = FILES_TARGET
         else:
-            service['environment'] = {**(env or {}), FILES_ENV: FILES_TARGET}
+            service['environment'] = {FILES_ENV: FILES_TARGET}
     _atomic(override, dump_yaml(doc))
     return True
 
@@ -418,7 +428,7 @@ def link(c, store='wizardapps', restart=True):
         raise ValueError('the Agent Service has no gateway token yet (start it once, then retry)')
     try:   # the Importer's Files folders (wizard-importer#12); the gateway link never waits on them
         files_changed, files_error = add_files_mount(c, store), None
-    except (ValueError, OSError) as e:
+    except Exception as e:  # noqa: BLE001 - an odd override is reported, never stops the gateway link
         files_changed, files_error = False, str(e)[:200]
     mount_changed = add_skills_mount(c, store) or files_changed
     try:   # the ChatGPT app's sign-ins; the gateway link above never waits on it
