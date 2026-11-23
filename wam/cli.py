@@ -63,7 +63,7 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import yaml
 
@@ -2707,6 +2707,40 @@ def update_wait_s(c: "Config") -> int:
     return 2 * max(minutes, LONG_COMMAND_MINUTES) * 60 + 100
 
 
+JOB_ENDED = {"succeeded", "failed", "cancelled"}
+
+
+def update_job(rt, urn: str, request, timeout: float, *, sleep=time.sleep, clock=time.monotonic) -> dict | None:
+    """Follow Runtipi's update job (Runtipi 4.12 AppJobService) to its end and return it; None when it can't be followed.
+
+    #971: an update job can wait for one of Runtipi's three job slots while the app still shows its old status, and a
+    job that fails (e.g. its backup could not copy the app data) puts the old files back and the old status. Read by
+    status alone, "not started yet", "done" and "rolled back" all look like `running`, and the reason was lost. A
+    Runtipi without the job route (pre-4.12 queue), a request without an id, or a job Runtipi forgot gives None: the
+    caller then reads the app's status as before."""
+    rid = request.get("requestId") if isinstance(request, dict) else None
+    if not isinstance(rid, str) or not rid:
+        return None
+    path = f"/app-lifecycle/{urn}/job?requestId={quote(rid, safe='')}"
+    deadline = clock() + timeout
+    seen = None
+    while True:
+        try:
+            job = (rt.req("GET", path) or {}).get("job")
+        except (RuntipiError, OSError, ValueError, AttributeError):
+            if seen is None:
+                return None   # no job route on this Runtipi
+            job = seen        # a busy Runtipi missed one answer: ask again
+        if not isinstance(job, dict):
+            return None       # Runtipi no longer knows this job (restarted, or a newer job replaced it)
+        seen = job
+        if job.get("status") in JOB_ENDED:
+            return job
+        if clock() >= deadline:
+            return None
+        sleep(2)
+
+
 def rename_instead_of_update(c: "Config", app_id: str) -> dict | None:
     """`wam app update <old>` for an app its publisher renamed (wizard.md renamed_from, #832): move it to its new id
     (data, settings, connections; the old app is retired) instead of updating it in place, and finish a move an
@@ -2840,8 +2874,9 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
     if timeout is None:
         timeout = update_wait_s(c)
     try:
-        rt.update(urn, perform_backup=backup)
+        request = rt.update(urn, perform_backup=backup)
         time.sleep(3)
+        job = update_job(rt, urn, request, timeout)   # #971: the job's own end and reason, when Runtipi has jobs
         status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
     except BaseException as e:
         if was_running:   # #730: if this left it stopped, the next update or recover starts it again
@@ -2865,6 +2900,12 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
         update_strand.mark(getattr(c, "home", None), urn, f"update ended {status}")
     elif status == "running":
         update_strand.clear(getattr(c, "home", None), urn)
+    if job and job.get("status") in ("failed", "cancelled"):
+        # #971: Runtipi put the previous version back; say why instead of reporting a finished update
+        why = " ".join(str(job.get("message") or "no reason given").split())[:300]
+        out["job"] = {"status": job["status"], "message": why}
+        kept = "; the installed version was kept" if status in ("running", "stopped") else ""
+        out["error"] = f"Runtipi did not update {app_id}: {why}{kept}" + (f"; {out['error']}" if out.get("error") else "")
     if store == STORE:   # the update may change what it declares (uses:) or its services
         out["networks"] = _net_brief(network_step(c, rt))
     if backup and status in ("running", "stopped") and not out.get("error"):
