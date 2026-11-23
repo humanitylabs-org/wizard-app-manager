@@ -288,3 +288,81 @@ def test_doctor_row_turns_green_once_every_asking_app_has_its_token(host_box):
 def test_doctor_lists_the_inbox_token_row():
     src = Path(cli.__file__).read_text()
     assert "out.extend(doctor_inbox_tokens(c, json.loads(regp.read_text())))" in src
+
+
+# #931 (kicked back): on owner boxes Runtipi's user-config is root:root 755 (app.env root 644) and wam runs as the
+# owner's own user. The lock moves to the Wizard home and app.env is read/written as root through the runtipi
+# container (faked here by a helper that lifts the permissions only while it runs).
+
+def _lock_user_config(uc, locked):
+    for d in [uc, *[x for x in uc.iterdir() if x.is_dir()]]:
+        for f in d.glob("app.env"):
+            os.chmod(f, 0o000 if locked else 0o600)
+        os.chmod(d, 0o555 if locked else 0o755)
+
+
+def test_root_owned_user_config_gets_the_token_as_root_and_settles(host_box, monkeypatch, capsys):
+    if os.geteuid() == 0:
+        pytest.skip("root reads and writes anything: the refusal cannot happen")
+    uc = host_box.root / "user-config" / "wizardapps"
+    (uc / "messenger").mkdir(parents=True)
+    (uc / "messenger" / "app.env").write_text("MESSENGER_LANG=en\n")            # wizard-mail has no folder yet
+    privileged = []
+
+    def as_root(fn):
+        _lock_user_config(uc, False)
+        try:
+            return fn()
+        finally:
+            _lock_user_config(uc, True)
+
+    def rt_read(root, p):
+        privileged.append(("read", p.parent.name))
+        return as_root(lambda: p.read_bytes() if p.is_file() else None)
+
+    def rt_write(root, p, data):
+        privileged.append(("write", p.parent.name))
+
+        def w():
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(data)
+            os.chmod(p, 0o600)
+        as_root(w)
+    monkeypatch.setattr(it, "_rt_read", rt_read)
+    monkeypatch.setattr(it, "_rt_write", rt_write)
+    _lock_user_config(uc, True)
+    try:
+        rt = FakeRt({"wizard-mail": "running", "messenger": "running"})
+        c = SimpleNamespace(runtipi_root=host_box.root, home=host_box.home)
+        r = reg("wizard-mail", "messenger", "wizard-notes")
+        res = it.sync_registry(c, rt, r)
+        assert {i: res["apps"][i].get("token") for i in ("messenger", "wizard-mail")} == {
+            "messenger": "created", "wizard-mail": "created"}, res
+        assert sorted(rt.restarts) == ["messenger:wizardapps", "wizard-mail:wizardapps"]
+        assert sorted(w for w in privileged if w[0] == "write") == [("write", "messenger"), ("write", "wizard-mail")]
+        assert (host_box.home / "inbox-tokens.lock").is_file() and not (uc / ".wam-inbox-tokens.lock").exists()
+        privileged.clear()
+        it.sync_registry(c, rt, r)                                              # second sync: nothing to do
+        assert len(rt.restarts) == 2 and not [w for w in privileged if w[0] == "write"]
+        assert it.check(r, host_box.root, host_box.home) == (it.LABEL, True, "messenger, wizard-mail")
+        _lock_user_config(uc, False)
+        for app_id, var in (("messenger", "MESSENGER_AGENT_INBOX_TOKEN"), ("wizard-mail", "MAIL_AGENT_INBOX_TOKEN")):
+            env = uc / app_id / "app.env"
+            held = (host_box.tokens / app_id).read_text().strip()
+            assert it.TOKEN.fullmatch(held) and user_env(SimpleNamespace(root=host_box.root), app_id)[var] == held
+            assert stat.S_IMODE(env.stat().st_mode) == 0o600
+            assert held not in capsys.readouterr().err
+        assert user_env(SimpleNamespace(root=host_box.root), "messenger")["MESSENGER_LANG"] == "en"
+    finally:
+        _lock_user_config(uc, False)
+
+
+def test_a_lock_file_someone_else_made_is_still_used(host_box):
+    lock = host_box.home / "inbox-tokens.lock"
+    lock.write_text("")
+    os.chmod(lock, 0o444)
+    try:
+        with it._lock(host_box.root, "wizardapps", host_box.home) as fh:
+            assert Path(fh.name) == lock
+    finally:
+        os.chmod(lock, 0o644)
