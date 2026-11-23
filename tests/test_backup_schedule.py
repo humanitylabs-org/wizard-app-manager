@@ -469,9 +469,12 @@ def test_storage_refusals_become_refused_with_a_short_reason(tmp_path):
 class LockRepo:
     """Stands in for restic.Repo: a list of locks; `unlock` drops the ones restic would call stale."""
 
-    def __init__(self, locks, restic_stale=None):
-        self._locks, self.unlocked = list(locks), 0
+    def __init__(self, locks, restic_stale=None, started=()):
+        self._locks, self.unlocked, self.started = list(locks), 0, set(started)
         self.restic_stale = restic_stale or (lambda lk: True)
+
+    def started_here(self, pid, at):
+        return pid in self.started
 
     def locks(self):
         return [dict(lk) for lk in self._locks]
@@ -541,6 +544,23 @@ def test_a_young_lock_with_a_gone_pid_waits_for_restics_stale_limit():
     assert repo.unlocked == 1 and [r["pid"] for r in res["removed"]] == [111]
 
 
+def test_a_young_lock_of_a_restic_this_box_started_is_removed_at_once():
+    repo = LockRepo([_lk(1, pid=111, age=60)], started={111})
+    res = schedule.clear_stale_locks(repo, hostname="box", alive=lambda pid: False, now=NOW)
+    assert repo.unlocked == 1 and [r["pid"] for r in res["removed"]] == [111]
+
+
+def test_started_here_reads_the_boxs_own_restic_starts(tmp_path):
+    r = restic.Repo.__new__(restic.Repo)
+    r.box = type("B", (), {"env": {"WAM_RESTIC_CACHE": str(tmp_path / "c" / "restic")}})()
+    for pid in range(1000, 1000 + restic.STARTED_KEEP + 5):
+        r._note_started(pid)
+    at = time.time()
+    assert r.started_here(1000 + restic.STARTED_KEEP + 4, at) and not r.started_here(1000, at)   # oldest dropped
+    assert not r.started_here(1000 + restic.STARTED_KEEP + 4, at - 3600)    # a lock older than the start: not it
+    assert not r.started_here(7, at) and (tmp_path / "c" / "restic-started.jsonl").is_file()
+
+
 def test_a_lock_listing_failure_never_fails_the_run():
     class Broken(LockRepo):
         def locks(self):
@@ -563,8 +583,9 @@ def _repo_env(world):
     return schedule.open_repo(bx, {"kind": "path", "path": str(world["repo"])}, world["key"])
 
 
-def _hold_lock(world):
-    """A real `restic backup --stdin` that holds its repository lock until the caller ends it."""
+def _hold_lock(world, noted=False):
+    """A real `restic backup --stdin` that holds its repository lock until the caller ends it (`noted`: as if this
+    box's Repo had started it)."""
     with _repo_env(world) as repo:
         env = repo.env()
         env["TMPDIR"] = str(world["tmp"])
@@ -573,6 +594,8 @@ def _hold_lock(world):
         env["RESTIC_PASSWORD_FILE"] = str(pw)
         p = subprocess.Popen([RESTIC, "backup", "--stdin", "--stdin-filename", "x", "--host", "elsewhere"],
                              stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+        if noted:
+            repo._note_started(p.pid)
         for _ in range(100):
             if repo.locks():
                 return p
@@ -598,6 +621,19 @@ def test_a_run_after_a_crashed_run_clears_its_lock_and_passes(world, monkeypatch
     code, r = _cli(_box(world["old"]), "run", "--scheduled")
     assert code == 0 and r["ok"], r
     assert [x["pid"] for x in r["locks"]["removed"]] == [p.pid] and r["retention"]["ok"] and r["check"]["ok"]
+    with _repo_env(world) as repo:
+        assert repo.locks() == []
+
+
+@needs_restic
+def test_the_next_run_clears_the_lock_of_a_crashed_run_of_this_box(world):
+    assert _set(world)[0] == 0
+    p = _hold_lock(world, noted=True)
+    p.kill()
+    p.wait()
+    code, r = _cli(_box(world["old"]), "run", "--scheduled")
+    assert code == 0 and r["ok"] and [x["pid"] for x in r["locks"]["removed"]] == [p.pid], r
+    assert r["retention"]["ok"] and r["check"]["ok"]
     with _repo_env(world) as repo:
         assert repo.locks() == []
 

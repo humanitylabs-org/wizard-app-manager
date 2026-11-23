@@ -218,8 +218,10 @@ pack, index and snapshot (AES-256-CTR + Poly1305) before upload.
 
 **One run** (`wam backup run`, what the systemd `--user` timer runs with `--scheduled`): lock → restic present →
 open (or create) the repository → **stale locks**: a restic lock made on this box by a process that no longer
-runs (a crashed earlier run) is removed with `restic unlock`, which only removes stale locks; a lock held by a live
-process or made on another machine is left alone and listed in `locks.left` (#870) → **capture**: the same entries as a file export (manifest first, agents via stock
+runs (a crashed earlier run) is removed with `restic unlock`, which only removes stale locks, when this box noted
+starting that restic (`~/.cache/wizard-backup/restic-started.jsonl`) or the lock is older than restic's 30-minute
+stale limit; a lock held by a live process, made on another machine, or young and not started here (a box with the
+same hostname on a shared repository) is left alone and listed in `locks.left` (#870) → **capture**: the same entries as a file export (manifest first, agents via stock
 `hermes backup`, apps' packages + data + pins (each app's data archived as for an export), the Wizard home, the files tree,
 `checksums.json` last) written as one plain tar straight into `restic backup --stdin` as `/wizard.tar`, restic
 host `wizard-<box-id>` → **retention** `restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune`

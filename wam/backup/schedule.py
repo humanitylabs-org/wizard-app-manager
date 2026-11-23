@@ -470,9 +470,9 @@ def clear_stale_locks(repo: restic.Repo, *, hostname: str | None = None, alive=_
                       now: float | None = None) -> dict:
     """A crashed run leaves its restic lock in the repository, and the next `forget --prune` (which needs the
     repository to itself) then fails with "already locked" (#870). Called while this box's backup lock is held, so
-    no restic of ours is running: a lock made on this host by a PID that no longer runs, older than restic's
-    30-minute stale limit (a live restic refreshes its lock every 5 minutes), is ours and stale, and `restic unlock`
-    (which removes only stale locks) clears it. A lock held by a live process, or made on another host, is left
+    no restic of ours is running: a lock made on this host by a PID that no longer runs is stale and ours when this
+    box noted starting that restic (Repo.started_here) or when it is older than restic's 30-minute stale limit (a
+    live restic refreshes its lock every 5 minutes), and `restic unlock` (which removes only stale locks) clears it. A lock held by a live process, or made on another host, is left
     alone and reported. `restic unlock` also drops any young same-hostname lock whose PID is gone here (it may be
     another box with the same name on a shared repository) and any other host's lock that stopped refreshing, so
     while either is there nothing is unlocked."""
@@ -493,12 +493,15 @@ def clear_stale_locks(repo: restic.Repo, *, hostname: str | None = None, alive=_
                 ours.append(lk)       # no live restic anywhere leaves its lock unrefreshed this long
             elif alive(lk.get("pid")):
                 others.append({**lk, "why": "held by a process that is still running on this box"})
+            elif age is not None and getattr(repo, "started_here", lambda *a: False)(lk.get("pid"), now - age):
+                ours.append(lk)       # a restic this box started (restic-started.jsonl) that is gone: its crash
             else:
                 # a run here that just died, or another box with the same name on a shared repository: restic
                 # can't tell them apart, and `restic unlock` would remove it, so nothing is unlocked until it is old
                 blocking = True
-                others.append({**lk, "why": "its process is gone, but it is less than 30 minutes old; a later run "
-                                            "removes it once restic counts it as stale"})
+                others.append({**lk, "why": "its process is gone, but this box did not start it and it is less "
+                                            "than 30 minutes old (it may be another box with the same name); a "
+                                            "later run removes it once restic counts it as stale"})
         else:
             stale_there = age is None or age > RESTIC_STALE_AFTER
             blocking = blocking or stale_there
