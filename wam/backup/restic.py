@@ -43,6 +43,7 @@ MIN_VERSION = (0, 17, 0)
 
 # restic exit codes (0.17+)
 RC_NO_REPO, RC_LOCKED, RC_WRONG_KEY = 10, 11, 12
+STARTED_KEEP = 200        # restic starts remembered in restic-started.jsonl (a run makes about ten)
 
 
 class ResticError(RuntimeError):
@@ -55,6 +56,10 @@ class WrongKey(ResticError):
 
 class NoRepo(ResticError):
     pass
+
+
+class Locked(ResticError):
+    """Another restic run (live, or on another machine) holds the repository; never cleared by the box (#870)."""
 
 
 class Refused(ResticError):
@@ -255,19 +260,59 @@ class Repo:
             m = re.search(r"\"message\":\s*\"([^\"\\]+)", first)
             first = (m.group(1) if m else first).strip()[:200]
             return Refused(f"restic {what}: the storage refused a delete or overwrite ({first})")
+        if rc == RC_LOCKED or "already locked" in tail:
+            m = re.search(r"locked (?:exclusively )?by PID (\d+) on (\S+)", tail)
+            who = f" (PID {m.group(1)} on {m.group(2)})" if m else ""
+            return Locked(f"restic {what}: the backup repository is in use by another restic run{who}, so its "
+                          f"lock was left alone; the next run tries again (exit {rc}: {tail[-300:]})")
         return ResticError(f"restic {what} failed (exit {rc}): {tail}")
+
+    # ---- every restic this box starts is noted (pid, time), so a lock its crash leaves can be told from a lock
+    # made by another box with the same hostname on a shared repository (#870)
+    def started_log(self) -> Path:
+        return self.cache_dir().parent / "restic-started.jsonl"
+
+    def _note_started(self, pid: int) -> None:
+        try:
+            p = self.started_log()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            lines = p.read_text().splitlines()[-(STARTED_KEEP - 1):] if p.exists() else []
+            lines.append(json.dumps({"pid": pid, "at": round(time.time(), 3)}))
+            tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+            tmp.write_text("\n".join(lines) + "\n")
+            os.replace(tmp, p)
+        except OSError:
+            pass
+
+    def started_here(self, pid, at: float) -> bool:
+        """True when this box started restic `pid` shortly before `at` (the lock's time)."""
+        try:
+            rows = [json.loads(ln) for ln in self.started_log().read_text().splitlines() if ln.strip()]
+        except (OSError, ValueError):
+            return False
+        return any(isinstance(r, dict) and r.get("pid") == pid and 0 <= at - float(r.get("at") or 0) + 60 < 30 * 86400
+                   for r in rows)
 
     def run(self, args: list[str], *, timeout: int = 6 * 3600, what: str | None = None) -> str:
         try:
-            p = subprocess.run(self._argv(args), capture_output=True, text=True, timeout=timeout, env=self.env(),
-                               stdin=subprocess.DEVNULL)
+            p = subprocess.Popen(self._argv(args), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True, env=self.env())
         except FileNotFoundError:
             raise ResticError(f"restic is not installed at {self.binary}") from None
+        self._note_started(p.pid)
+        try:
+            out, err = p.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
+            p.kill()
+            p.communicate()
             raise ResticError(f"restic {what or args[0]} timed out") from None
+        except BaseException:
+            p.kill()
+            p.wait()
+            raise
         if p.returncode:
-            raise self._fail(what or args[0], p.returncode, p.stderr or p.stdout)
-        return p.stdout
+            raise self._fail(what or args[0], p.returncode, err or out)
+        return out
 
     def run_json(self, args: list[str], **kw):
         out = self.run([*args, "--json"], **kw)
@@ -306,6 +351,7 @@ class Repo:
                            *sum((["--tag", t] for t in tags), []), "--json"])
         p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              env=self.env())
+        self._note_started(p.pid)
         got: dict = {"summary": None, "err": []}
 
         def read_out():
@@ -388,6 +434,23 @@ class Repo:
         kept = sum(len(g.get("keep") or []) for g in out) if isinstance(out, list) else None
         return {"removed": removed, "kept": kept, "pruned": prune}
 
+    def locks(self) -> list[dict]:
+        """Every lock in the repository: {id, time, exclusive, hostname, username, pid}. Read with --no-lock, so
+        looking adds no lock of its own. A lock that vanishes between list and cat (its run just ended) is skipped."""
+        out = []
+        for lid in self.run(["list", "locks", "--no-lock"], what="list locks", timeout=900).split():
+            try:
+                d = json.loads(self.run(["cat", "lock", lid, "--no-lock"], what="cat lock", timeout=600) or "{}")
+            except (ResticError, ValueError):
+                continue
+            if isinstance(d, dict):
+                out.append({"id": lid, **{k: d.get(k) for k in ("time", "exclusive", "hostname", "username", "pid")}})
+        return out
+
+    def unlock(self) -> None:
+        """`restic unlock`: removes only locks restic itself considers stale (never --remove-all)."""
+        self.run(["unlock"], what="unlock", timeout=900)
+
     def check(self, read_data_subset: str | None = None, read_data: bool = False) -> dict:
         args = ["check"]
         if read_data:
@@ -411,6 +474,7 @@ class Repo:
         """`restic dump <snapshot> <path>` as a readable stream. On leaving: restic must have exited 0."""
         p = subprocess.Popen(self._argv(["dump", snapshot, path]), stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env())
+        self._note_started(p.pid)
         err: list[str] = []
 
         def read_err():
@@ -442,4 +506,4 @@ class Repo:
 
 
 __all__ = ["VERSION", "PINS", "ensure", "install", "find", "Repo", "ResticError", "WrongKey", "NoRepo", "Refused",
-           "repo_url"]
+           "Locked", "repo_url"]

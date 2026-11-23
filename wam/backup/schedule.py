@@ -10,6 +10,7 @@ Config:
 ({url: "sftp:user@host:/path"}). The repository password is this box's recovery key (its WZRK-… text), given to
 restic only as a 0600 password file (wam/backup/restic.py). A systemd --user timer runs `wam backup run --scheduled`:
   lock → restic present (installed and checksum-checked if missing) → repository opened (or created)
+       → a crashed run's stale restic lock on this box removed (`restic unlock`; live/other-host locks left, #870)
        → capture streamed into `restic backup --stdin` (snapshot.py; only changed chunks upload)
        → retention: `forget --keep-daily D --keep-weekly W --keep-monthly M --prune` (defaults 7/4/6)
        → `restic check` every run, `restic check --read-data-subset=N%` weekly → status file.
@@ -23,11 +24,13 @@ import getpass
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 from . import crypto, keys as keylib, restic, snapshot
@@ -39,6 +42,7 @@ EVERY = {"hourly": "hourly", "daily": "*-*-* {at}:00", "weekly": "Mon *-*-* {at}
 RETENTION = {"daily": 7, "weekly": 4, "monthly": 6}
 VERIFY = {"read_data_subset": "10%", "every_days": 7}
 PRUNE_BY = ("box", "owner")
+RESTIC_STALE_AFTER = 30 * 60      # restic refreshes a live lock every 5 min; older than this it calls it stale
 
 
 class ScheduleError(RuntimeError):
@@ -426,6 +430,105 @@ def _note_skipped(box: Box, reason: str) -> None:
         pass
 
 
+def _pid_alive(pid) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True          # another user's live process
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return True
+
+
+def _lock_age(t, now: float) -> float | None:
+    """Seconds since a restic lock's `time` (RFC 3339 with nanoseconds), None when it can't be read."""
+    m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)$", str(t or ""))
+    if not m:
+        return None
+    tz = "+00:00" if m.group(3) == "Z" else m.group(3)
+    try:
+        at = datetime.fromisoformat(f"{m.group(1)}.{(m.group(2) or '0')[:6].ljust(6, '0')}{tz}").timestamp()
+    except ValueError:
+        return None
+    return now - at
+
+
+def _lock_words(lk: dict, now: float) -> str:
+    age = _lock_age(lk.get("time"), now)
+    since = f", {human_age(age)} old" if age is not None else ""
+    return f"lock {str(lk.get('id'))[:8]} (PID {lk.get('pid')} on {lk.get('hostname')}{since})"
+
+
+def human_age(s: float) -> str:
+    s = max(0, int(s))
+    return f"{s // 3600} h {s % 3600 // 60} min" if s >= 3600 else f"{s // 60} min"
+
+
+def clear_stale_locks(repo: restic.Repo, *, hostname: str | None = None, alive=_pid_alive,
+                      now: float | None = None) -> dict:
+    """A crashed run leaves its restic lock in the repository, and the next `forget --prune` (which needs the
+    repository to itself) then fails with "already locked" (#870). Called while this box's backup lock is held, so
+    no restic of ours is running: a lock made on this host by a PID that no longer runs is stale and ours when this
+    box noted starting that restic (Repo.started_here) or when it is older than restic's 30-minute stale limit (a
+    live restic refreshes its lock every 5 minutes), and `restic unlock` (which removes only stale locks) clears it. A lock held by a live process, or made on another host, is left
+    alone and reported. `restic unlock` also drops any young same-hostname lock whose PID is gone here (it may be
+    another box with the same name on a shared repository) and any other host's lock that stopped refreshing, so
+    while either is there nothing is unlocked."""
+    now = time.time() if now is None else now
+    host = hostname or socket.gethostname()
+    res: dict = {"removed": [], "left": []}
+    try:
+        found = repo.locks()
+    except Exception as e:  # noqa: BLE001 - looking for stale locks never fails the run itself
+        res["error"] = f"could not list the repository's locks: {e}"[:300]
+        return res
+    ours, others, blocking = [], [], False
+    for lk in found:
+        age = _lock_age(lk.get("time"), now)
+        old = age is not None and age > RESTIC_STALE_AFTER
+        if lk.get("hostname") == host:
+            if old:
+                ours.append(lk)       # no live restic anywhere leaves its lock unrefreshed this long
+            elif alive(lk.get("pid")):
+                others.append({**lk, "why": "held by a process that is still running on this box"})
+            elif age is not None and getattr(repo, "started_here", lambda *a: False)(lk.get("pid"), now - age):
+                ours.append(lk)       # a restic this box started (restic-started.jsonl) that is gone: its crash
+            else:
+                # a run here that just died, or another box with the same name on a shared repository: restic
+                # can't tell them apart, and `restic unlock` would remove it, so nothing is unlocked until it is old
+                blocking = True
+                others.append({**lk, "why": "its process is gone, but this box did not start it and it is less "
+                                            "than 30 minutes old (it may be another box with the same name); a "
+                                            "later run removes it once restic counts it as stale"})
+        else:
+            stale_there = age is None or age > RESTIC_STALE_AFTER
+            blocking = blocking or stale_there
+            others.append({**lk, "why": "made by another machine" + (
+                " and no longer refreshed; run `restic unlock` yourself once that machine is not backing up"
+                if stale_there else "")})
+    if ours and not blocking:
+        try:
+            repo.unlock()
+            still = {lk.get("id") for lk in repo.locks()}
+        except Exception as e:  # noqa: BLE001
+            res["error"] = f"could not remove a stale lock: {e}"[:300]
+            still = {lk.get("id") for lk in ours}
+        for lk in ours:
+            if lk.get("id") in still:
+                others.append({**lk, "why": "restic did not remove it"})
+            else:
+                res["removed"].append({k: lk.get(k) for k in ("id", "time", "hostname", "pid")})
+                log(f"removed the stale restic {_lock_words(lk, now)}: the run that made it is no longer running")
+    elif ours:
+        others += [{**lk, "why": "stale, but left until another machine's lock is cleared"} for lk in ours]
+    for lk in others:
+        res["left"].append({**{k: lk.get(k) for k in ("id", "time", "hostname", "pid")}, "why": lk["why"]})
+        log(f"left the restic {_lock_words(lk, now)} alone: {lk['why']}")
+    return res
+
+
 def apply_retention(repo: restic.Repo, cfg: dict, host: str | None, *, owner: bool = False) -> dict:
     """forget + prune by the retention policy. On an Object Lock bucket the box prunes only fully unused packs
     (`--max-unused unlimited`: nothing is rewritten, so nothing new is locked) and a delete the storage refuses is
@@ -467,6 +570,7 @@ def _run(box: Box, cfg: dict, now: float | None = None) -> dict:
             raise ScheduleError("this box has no stored recovery key (`wam backup key new`)")
         with open_repo(box, t, key) as repo:
             st["repository_created"] = repo.open_or_init()["initialized"]
+            st["locks"] = clear_stale_locks(repo)     # a crashed run's lock would fail forget (#870)
             log("capturing into the repository (only changed data is uploaded)")
             bk = snapshot.backup(box, repo, host, min_free_bytes=floor)
             st.update({k: bk[k] for k in ("snapshot", "short_id", "data_added", "data_added_packed", "capture_bytes",
@@ -538,10 +642,11 @@ def prune_now(box: Box, *, creds_file: str | None = None) -> dict:
         raise ScheduleError("this box has no stored recovery key")
     with lock(box):
         with repo_for(box, key=key, creds_file=creds_file) as repo:
+            locks = clear_stale_locks(repo)
             res = apply_retention(repo, cfg, snapshot.host_name(cfg.get("box_id") or "box"), owner=True)
             res["check"] = repo.check()
-    return {"ok": True, **res}
+    return {"ok": True, **res, "locks": locks}
 
 
 __all__ = ["set_schedule", "show", "off", "run", "enable", "after_restore", "lock", "Busy", "ScheduleError",
-           "retention", "repo_for", "prune_now", "read_s3_secret"]
+           "retention", "repo_for", "prune_now", "read_s3_secret", "clear_stale_locks"]

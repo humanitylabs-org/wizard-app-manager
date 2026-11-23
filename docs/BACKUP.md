@@ -217,7 +217,11 @@ both a repository and a `.wizardbackup` file. Nothing readable leaves the box: r
 pack, index and snapshot (AES-256-CTR + Poly1305) before upload.
 
 **One run** (`wam backup run`, what the systemd `--user` timer runs with `--scheduled`): lock → restic present →
-open (or create) the repository → **capture**: the same entries as a file export (manifest first, agents via stock
+open (or create) the repository → **stale locks**: a restic lock made on this box by a process that no longer
+runs (a crashed earlier run) is removed with `restic unlock`, which only removes stale locks, when this box noted
+starting that restic (`~/.cache/wizard-backup/restic-started.jsonl`) or the lock is older than restic's 30-minute
+stale limit; a lock held by a live process, made on another machine, or young and not started here (a box with the
+same hostname on a shared repository) is left alone and listed in `locks.left` (#870) → **capture**: the same entries as a file export (manifest first, agents via stock
 `hermes backup`, apps' packages + data + pins (each app's data archived as for an export), the Wizard home, the files tree,
 `checksums.json` last) written as one plain tar straight into `restic backup --stdin` as `/wizard.tar`, restic
 host `wizard-<box-id>` → **retention** `restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune`
@@ -228,7 +232,8 @@ back a share of the data within the last week. One run at a time; a second run e
 
 `backup-status.json`: `ok`, `snapshot`, `data_added` (new bytes this run, before restic's compression),
 `data_added_packed`, `capture_bytes`, `repository_bytes`, `snapshots`, `retention`, `check`, `read_data`,
-`peak_extra_disk_bytes`, `restic_cache_bytes`, `seconds`, `error`, `last_success_at`, `warnings`. `warnings` lists
+`peak_extra_disk_bytes`, `restic_cache_bytes`, `seconds`, `error`, `last_success_at`, `warnings`, `locks`
+(`removed` / `left` stale-lock sweep). `warnings` lists
 what an `ok` run left out that the owner expects in it: today `main agent not in backup: <path> (…)` when the box
 has no `hermes-agent` app and no `alongside.json` but a host Hermes home (a box older than alongside mode, #885); the
 file export and its manifest carry the same list, and `wam doctor` shows it as a warning row. `wam alongside` makes
