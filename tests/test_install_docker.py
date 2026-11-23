@@ -1,5 +1,6 @@
 """Execute install.sh only in an allowlisted PATH with fake privileged/provider commands."""
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -21,7 +22,7 @@ def sandbox(tmp_path, docker_access=True, before=None, **extra_env):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name in ("bash", "sh", "cat", "mkdir", "cp", "chmod", "rm", "date", "dirname", "seq", "grep", "cut", "sed",
-                 "mv", "mktemp", "find"):
+                 "mv", "mktemp", "find", "env"):
         (bin_dir / name).symlink_to(shutil.which(name))
     calls = tmp_path / "calls"
 
@@ -46,6 +47,11 @@ case "$*" in
     if [ -f "$HOME/stale-release-index" ]; then echo 'Conflict: runtipi-wizard-release-index-1' >&2; exit 1; fi;;
 esac
 case "$*" in *"status = 'running'"*) printf '%s' "${RUNNING_ROWS:-}";; esac
+# `docker ps --filter name=^runtipi$`: the base's main container runs unless BASE_DOWN=n says the first n checks fail
+if [ "$1" = ps ]; then
+  n=$(grep -c "^docker sudo=.* ps " "$CALLS" || true)
+  [ "$n" -le "${BASE_DOWN:-0}" ] || echo runtipi
+fi
 ''')
     for name in ("systemctl", "loginctl", "chown"):  # chown: the stand-in id says uid 1000, which the runner isn't
         tool(name, f'printf "{name} %s\\n" "$*" >> "$CALLS"\n')
@@ -53,9 +59,12 @@ case "$*" in *"status = 'running'"*) printf '%s' "${RUNNING_ROWS:-}";; esac
     # The Runtipi setup download: write a stand-in setup script (creates the base's .env) to curl's -o target.
     tool("curl", '''printf "curl %s\\n" "$*" >> "$CALLS"
 case "$*" in *setup.runtipi.io*)
+  # DROP_SETUP=n: the first n downloads lose the connection, like the TLS reset in wizard-app-manager#868.
+  if [ "$(grep -c setup.runtipi.io "$CALLS")" -le "${DROP_SETUP:-0}" ]; then
+    echo "curl: (35) TLS connect error: error:0A0000F4:SSL routines::unexpected message" >&2; exit 35; fi
   out=""; prev=""; for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
   if [ -n "${SETUP_RC:-}" ]; then printf '#!/bin/bash\\necho Installing runtipi...\\nexit %s\\n' "$SETUP_RC" > "$out"; exit 0; fi
-  printf '#!/bin/bash\\nmkdir -p runtipi && echo NGINX_PORT=8480 > runtipi/.env && echo "services: {}" > runtipi/docker-compose.yml\\n' > "$out"
+  printf '#!/bin/bash\\ncp "$CURL_HOME/.curlrc" "$HOME/seen-curlrc"\\nmkdir -p runtipi && echo NGINX_PORT=8480 > runtipi/.env && echo "services: {}" > runtipi/docker-compose.yml\\n' > "$out"
   exit 0;; esac
 [ "${HEALTH:-up}" = up ]
 ''')
@@ -311,9 +320,12 @@ def test_first_install_downloads_runtipi_setup_to_a_private_temp_dir(tmp_path):
     target = dl.split(" -o ", 1)[1]
     assert not target.startswith("/tmp/runtipi-setup.sh")
     assert target.startswith(str(tmp_path)), target          # mktemp -d under this run's TMPDIR
-    assert any(l.startswith("sudo bash " + target) for l in log)
+    # wizard-app-manager#868: the setup script's own downloads (runtipi-cli) use a curl config that retries.
+    run = "sudo env CURL_HOME=" + str(Path(target).parent) + " bash " + target
+    assert any(l.startswith(run) for l in log), log
+    assert "retry = 5" in (home / "seen-curlrc").read_text()
     # wizard-app-manager#808: a pinned version, so the setup never asks api.github.com (anonymous rate limit).
-    setup = next(l for l in log if l.startswith("sudo bash " + target))
+    setup = next(l for l in log if l.startswith(run))
     assert " --version v4." in setup and "--version latest" not in setup, setup
     assert any(l.startswith("chown 1000:1000 ") for l in log), "the base is handed to the owner"
     assert (root / ".env").is_file()
@@ -345,13 +357,59 @@ def test_a_failed_runtipi_base_says_why_and_stops(tmp_path):
     assert "wam -m wam bootstrap" not in calls.read_text(), "nothing past the base runs"
 
 
+def test_one_dropped_connection_no_longer_fails_a_fresh_install(tmp_path):
+    """wizard-app-manager#868: on a fresh Hostinger box the Runtipi setup download hit one TLS reset (curl exit 35)
+    and the whole install ended install-failed; the same command a minute later installed cleanly."""
+    def no_base(home):
+        (home / "runtipi/.env").unlink()
+        (home / "runtipi/docker-compose.yml").unlink()
+    p, home, root, calls, outcome = sandbox(tmp_path, before=no_base, DROP_SETUP="2")
+    assert p.returncode == 0, p.stdout + p.stderr
+    download = re.compile(r"^curl -fsSL https://setup[.]runtipi[.]io -o ")
+    downloads = [l for l in calls.read_text().splitlines() if download.match(l)]
+    assert len(downloads) == 3, downloads
+    assert "try 1 of 5" in p.stderr and "try 2 of 5" in p.stderr
+    assert (root / ".env").is_file()
+    assert outcome["status"] == "ok"
+
+
+def _no_base_with_cli(home):
+    (home / "runtipi/.env").unlink()
+    (home / "runtipi/docker-compose.yml").unlink()
+    cli = home / "runtipi/runtipi-cli"          # what Runtipi's setup leaves in the base folder
+    cli.write_text('#!/bin/bash\nprintf "runtipi-cli %s CURL_HOME=%s\\n" "$*" "${CURL_HOME:-}" >> "$CALLS"\n')
+    cli.chmod(0o755)
+
+
+def test_a_base_whose_image_pull_failed_is_started_again(tmp_path):
+    """wizard-app-manager#868, seen on a clean Debian 13 box with a flaky network: `runtipi-cli start` printed
+    "Failed to pull images" (one refused connection to ghcr.io), started nothing and still exited 0, so the install
+    went on to a half-started base whose proxy had no config and ended install-failed."""
+    p, home, root, calls, outcome = sandbox(tmp_path, before=_no_base_with_cli, BASE_DOWN="1")
+    assert p.returncode == 0, p.stdout + p.stderr
+    log = calls.read_text().splitlines()
+    starts = [l for l in log if l.startswith("runtipi-cli start --env-file ")]
+    assert len(starts) == 1 and "CURL_HOME=" + str(tmp_path) in starts[0], starts
+    assert "starting it again (try 1 of 3)" in p.stderr
+    assert outcome["status"] == "ok"
+
+
+def test_a_base_that_never_starts_stops_the_install_with_the_reason(tmp_path):
+    p, home, root, calls, outcome = sandbox(tmp_path, before=_no_base_with_cli, BASE_DOWN="99")
+    assert p.returncode == 1
+    assert len([l for l in calls.read_text().splitlines() if l.startswith("runtipi-cli start ")]) == 3
+    assert "its containers did not start" in p.stderr
+    assert "wam -m wam bootstrap" not in calls.read_text(), "nothing past the base runs"
+
+
 def _setup_version(tmp_path, **env):
     def no_base(home):
         (home / "runtipi/.env").unlink()
         (home / "runtipi/docker-compose.yml").unlink()
     p, home, root, calls, outcome = sandbox(tmp_path, before=no_base, **env)
     assert p.returncode == 0, p.stdout + p.stderr
-    setup = next(l for l in calls.read_text().splitlines() if l.startswith("sudo bash ") and "runtipi-setup.sh" in l)
+    setup = next(l for l in calls.read_text().splitlines()
+                 if l.startswith("sudo env CURL_HOME=") and "runtipi-setup.sh" in l)
     return setup.split(" --version ", 1)[1].split()[0]
 
 

@@ -8,6 +8,26 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RUNTIPI_ROOT="${RUNTIPI_ROOT:-$HOME/runtipi}"
 IMAGE="${WAM_IMAGE:-ghcr.io/humanitylabs-org/wizard-app-manager:latest}"
+# wizard_fetch <url> <file>: download to a file, and try again when the connection drops (wizard-app-manager#868:
+# one TLS reset, curl exit 35, failed a fresh install outright). Always into a file, never `curl | sh`: a retry
+# rewrites the file from the start, while a retried pipe would feed the script twice. Same text in every installer.
+wizard_fetch() {
+  local n="${WIZARD_FETCH_TRIES:-5}" i=1 rc
+  while :; do
+    rc=0; curl -fsSL "$1" -o "$2" || rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    [ "$i" -ge "$n" ] && return "$rc"
+    echo "Download of $1 failed (curl exit $rc, try $i of $n); trying again in $((i * 3))s." >&2
+    sleep "$((i * 3))"; i=$((i + 1))
+  done
+}
+# retry_curlrc <dir>: a curl config in <dir> (run a third-party installer with CURL_HOME=<dir>) so that its own
+# downloads also try again after a dropped connection. retry-all-errors only where this curl knows it (7.71+).
+retry_curlrc() {
+  { printf 'retry = 5\nretry-delay = 3\nretry-connrefused\n'
+    case "$(curl --help all 2>/dev/null || true)" in *--retry-all-errors*) echo retry-all-errors ;; esac
+  } > "$1/.curlrc"
+}
 
 # Fail before private access, Docker, files or services change. Validation needs no YAML dependency.
 (cd "$HERE" && python3 -m wam.release_pins)
@@ -57,13 +77,25 @@ YML
     echo "Some host setup (Tailscale, Docker) may already be done. Run the same install command again: it picks up from here; if it repeats, the lines above show why." >&2
     exit 1
   }
-  curl -fsSL https://setup.runtipi.io -o "$SETUP_DIR/runtipi-setup.sh" \
+  wizard_fetch https://setup.runtipi.io "$SETUP_DIR/runtipi-setup.sh" \
     || base_failed "its setup script could not be downloaded from setup.runtipi.io (no network, or the site is down)"
+  retry_curlrc "$SETUP_DIR"   # the setup script downloads runtipi-cli itself, with a plain curl
   rc=0
-  (cd "$(dirname "$RUNTIPI_ROOT")" && sudo bash "$SETUP_DIR/runtipi-setup.sh" --version "$RUNTIPI_BASE_VERSION" \
+  (cd "$(dirname "$RUNTIPI_ROOT")" && sudo env CURL_HOME="$SETUP_DIR" bash "$SETUP_DIR/runtipi-setup.sh" --version "$RUNTIPI_BASE_VERSION" \
     --env-file "$ENVF") || rc=$?
   [ "$rc" -eq 0 ] || base_failed "its setup script stopped with exit code $rc"
   [ -f "$RUNTIPI_ROOT/.env" ] || base_failed "its setup script finished but left no $RUNTIPI_ROOT/.env"
+  # runtipi-cli start exits 0 (and so does the setup) when it could not pull its images: one dropped connection
+  # (wizard-app-manager#868) left a base with nothing started, and starting it piecemeal later raced its proxy config.
+  # Start it again, as Runtipi's own setup does, until its main container runs.
+  base_running() { [ "$(sudo docker ps --filter name='^runtipi$' --filter status=running --format '{{.Names}}' 2>/dev/null)" = runtipi ]; }
+  for i in 1 2 3; do
+    base_running && break
+    echo "The Runtipi base did not start (an image download failed?); starting it again (try $i of 3)." >&2
+    sleep "$((i * 5))"
+    (cd "$RUNTIPI_ROOT" && sudo env CURL_HOME="$SETUP_DIR" ./runtipi-cli start --env-file "$ENVF") || true
+  done
+  base_running || base_failed "its containers did not start (the lines above show why, often an image download)"
   rm -rf "$ENVF" "$SETUP_DIR"
   # Runtipi's setup runs as root; hand the install to this user (not data/, the database's own files).
   sudo chown "$(id -u):$(id -g)" "$RUNTIPI_ROOT"
@@ -104,7 +136,9 @@ OVR="$RUNTIPI_ROOT/user-config/tipi-compose.yml"
 RUNNING_APPS="$("${DOCKER[@]}" exec runtipi-db psql -U tipi -d tipi -Atc "SELECT app_name || ':' || app_store_slug FROM app WHERE status = 'running'" 2>/dev/null || true)"
 # Point the existing Wizard store at the index (older installs had a local git store here).
 "${DOCKER[@]}" exec runtipi-db psql -U tipi -d tipi -qc "UPDATE app_store SET url='https://apps.aiwizards.com', hash=encode(sha256('https://apps.aiwizards.com'::bytea),'hex'), name='Wizard Apps', enabled=true WHERE slug='wizardapps'" >/dev/null 2>&1 || true
-if ! "${DOCKER[@]}" image inspect "$IMAGE" >/dev/null 2>&1; then "${DOCKER[@]}" pull "$IMAGE"; fi
+if ! "${DOCKER[@]}" image inspect "$IMAGE" >/dev/null 2>&1; then   # a dropped connection is tried again (#868)
+  for i in 1 2 3 4; do "${DOCKER[@]}" pull "$IMAGE" && break; [ "$i" -lt 4 ] || exit 1; sleep "$((i * 3))"; done
+fi
 RECREATE=()
 if [ -n "${WIZARD_RELEASE_PINS:-}" ]; then
   # The released manager image consumes its usual index protocol; start the local pin view first.

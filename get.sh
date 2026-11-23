@@ -55,6 +55,30 @@ case "$MODE" in auto|alongside|fresh) ;; *) echo "WIZARD_MODE must be auto, alon
 REF="${WAM_REF:-main}"
 # Raw files come straight from raw.githubusercontent.com: github.com/<repo>/raw/ is only a redirect to it, and that
 # redirect can 504 for minutes while raw itself serves (Update now failed on a 504 from the redirect). Retried too.
+# wizard_fetch <url> <file>: download to a file, and try again when the connection drops (wizard-app-manager#868:
+# one TLS reset, curl exit 35, failed a fresh install outright). Always into a file, never `curl | sh`: a retry
+# rewrites the file from the start, while a retried pipe would feed the script twice. Same text in every installer.
+wizard_fetch() {
+  local n="${WIZARD_FETCH_TRIES:-5}" i=1 rc
+  while :; do
+    rc=0; curl -fsSL "$1" -o "$2" || rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    [ "$i" -ge "$n" ] && return "$rc"
+    echo "Download of $1 failed (curl exit $rc, try $i of $n); trying again in $((i * 3))s." >&2
+    sleep "$((i * 3))"; i=$((i + 1))
+  done
+}
+# wizard_retry <command...>: run a network command (git clone/fetch) up to 3 times, a short pause between tries.
+wizard_retry() {
+  local i=1 rc
+  while :; do
+    rc=0; "$@" || rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    [ "$i" -ge 3 ] && return "$rc"
+    echo "$* failed (exit $rc, try $i of 3); trying again in $((i * 3))s." >&2
+    sleep "$((i * 3))"; i=$((i + 1))
+  done
+}
 repo_raw() {  # repo_raw <path>: the raw URL of <path> at $REF in $REPO
   case "$REPO" in
     https://github.com/*) printf 'https://raw.githubusercontent.com/%s/%s/%s' "${REPO#https://github.com/}" "$REF" "$1" ;;
@@ -375,7 +399,7 @@ as_user() {
   enable_linger "$u" >/dev/null 2>&1 || true   # user units (API, dashboard) need the user's manager
   for _ in $(seq 1 "${WIZARD_BUS_WAIT:-30}"); do [ -S "/run/user/$uid/bus" ] && break; sleep 1; done
   t="$(mktemp "${TMPDIR:-/tmp}/wizard-os-get.XXXXXX")"
-  if ! curl -fsSL --retry 4 --retry-delay 2 -o "$t" "$(repo_raw get.sh)"; then
+  if ! wizard_fetch "$(repo_raw get.sh)" "$t"; then
     rm -f "$t"; echo "Could not download the installer ($(repo_raw get.sh)); run the same command again." >&2; exit 1
   fi
   exec 3<"$t"; rm -f "$t"
@@ -391,7 +415,9 @@ prepare_server() {  # root only: base packages and Docker (Docker is left alone 
   apt-get -o DPkg::Lock::Timeout=600 update -qq
   apt-get -o DPkg::Lock::Timeout=600 install -y -qq ca-certificates curl git python3 python3-yaml gh sudo >/dev/null
   if ! command -v docker >/dev/null || [ "$(docker version --format '{{.Server.Version}}' 2>/dev/null | cut -d. -f1)" -lt 28 ] 2>/dev/null; then
-    curl -fsSL https://get.docker.com | sh >/dev/null
+    local ds; ds="$(mktemp)"
+    wizard_fetch https://get.docker.com "$ds" || { rm -f "$ds"; echo "Could not download Docker's installer; run the same command again." >&2; exit 1; }
+    sh "$ds" >/dev/null; rm -f "$ds"
   fi
   systemctl enable --now docker >/dev/null 2>&1 || true
 }
@@ -688,7 +714,7 @@ install_start() {
   # This exact installer runs detached: this file when run from a file, else the same source the command came from.
   local src="${BASH_SOURCE[0]:-}"
   if [ -n "$src" ] && [ -f "$src" ]; then cp "$src" "$WOS_DIR/get.sh.tmp"
-  else curl -fsSL --retry 4 --retry-delay 2 "${WIZARD_GET_SH_URL:-$(repo_raw get.sh)}" -o "$WOS_DIR/get.sh.tmp"; fi
+  else wizard_fetch "${WIZARD_GET_SH_URL:-$(repo_raw get.sh)}" "$WOS_DIR/get.sh.tmp"; fi
   mv "$WOS_DIR/get.sh.tmp" "$WOS_DIR/get.sh"
   # The settings this command was given, for the runner only (0600, deleted once read; never printed).
   # Detached is for agents: the Hermes restart is always deferred (WIZARD_AGENT_SAFE=0 still forces it off).
@@ -985,7 +1011,7 @@ if [ "$(id -u)" -eq 0 ] && [ "$MODE" != fresh ]; then
       # One administrator-run host phase replaces the former requirement for permanent NOPASSWD sudo.
       # Fetch from the same official bootstrap source; the ordinary user phase still selects stable pins.
       helper="$(mktemp)"
-      curl -fsSL --retry 4 --retry-delay 2 "$(repo_raw scripts/prepare-named-user.sh)" -o "$helper"
+      wizard_fetch "$(repo_raw scripts/prepare-named-user.sh)" "$helper"
       bash "$helper" "$ALONG_USER"
       rm -f "$helper"
       if [ "${WIZARD_HOST_PREP_ONLY:-0}" = 1 ]; then   # the owner-approved root step: the owner's runner continues
@@ -1116,7 +1142,12 @@ fetch_release() {  # fetch_release <name> <dest>: 0 = fetched, 4 = not published
   case "$url" in
     file://*) [ -f "${url#file://}" ] || return 4; cp "${url#file://}" "$2"; return ;;
   esac
-  code="$(curl -sSL --retry 3 --retry-delay 2 -o "$2" -w '%{http_code}' "$url" 2>/dev/null)" || true
+  local i
+  for i in 1 2 3 4; do   # no answer (a dropped connection), 408, 429 and 5xx are tried again; the rest are answers (#868)
+    code="$(curl -sSL -o "$2" -w '%{http_code}' "$url" 2>/dev/null)" || true
+    case "$code" in ''|000|408|429|5??) ;; *) break ;; esac
+    if [ "$i" -lt 4 ]; then sleep "$((i * 2))"; fi
+  done
   case "$code" in 200) return 0 ;; 404) return 4 ;; *) echo "fetching $url failed (HTTP ${code:-none})" >&2; return 1 ;; esac
 }
 if [ -z "${WAM_REF:-}" ]; then
@@ -1311,7 +1342,7 @@ if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then   # a pinned commit: fetch exactly it, d
       exit 1
     fi
   else
-    git clone -q "$REPO" "$DIR"
+    wizard_retry git clone -q "$REPO" "$DIR"
   fi
   if [ -n "$PINS" ] && [ -z "${WAM_REF:-}" ]; then
     managed_checkout begin
@@ -1319,7 +1350,7 @@ if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then   # a pinned commit: fetch exactly it, d
     # bypasses EXIT and leaves durable proof for the next pinned retry.
     trap 'sync -f "$DIR" && managed_checkout finish' EXIT
   fi
-  git -C "$DIR" -c core.fsync=all fetch -q origin "$REF"
+  wizard_retry git -C "$DIR" -c core.fsync=all fetch -q origin "$REF"
   if [ "${RECOVERED:-0}" = 1 ]; then
     # The interrupted checkout's half-written new files are untracked now and would abort a plain
     # checkout forever. -f replaces only paths in the target tree; other untracked/ignored files stay.
@@ -1330,10 +1361,10 @@ if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then   # a pinned commit: fetch exactly it, d
   [ "$(git -C "$DIR" rev-parse HEAD)" = "$REF" ] || { echo "App Manager checkout is not $REF" >&2; exit 1; }
 elif [ -d "$DIR/.git" ]; then
   # (an `a && b` list doesn't trip set -e: without this a bad WAM_REF ran whatever was checked out and exited 0)
-  git -C "$DIR" fetch -q origin "$REF" || { echo "App Manager ref '$REF' not found in $REPO" >&2; exit 1; }
+  wizard_retry git -C "$DIR" fetch -q origin "$REF" || { echo "App Manager ref '$REF' not found in $REPO" >&2; exit 1; }
   git -C "$DIR" checkout -q -B "$REF" FETCH_HEAD
 else
-  git clone -q --branch "$REF" "$REPO" "$DIR"
+  wizard_retry git clone -q --branch "$REF" "$REPO" "$DIR"
 fi
 # Started by a Hermes agent: the gateway restart that linking needs must come after this run, never during it (it
 # would kill the agent running this). install.sh defers it itself (its defers-hermes-restart marker). An older install.sh (a
