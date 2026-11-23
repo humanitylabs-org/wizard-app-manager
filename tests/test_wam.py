@@ -1231,3 +1231,57 @@ def test_cli_install_does_not_retry_other_errors_and_reports_a_second_failure(mo
     with pytest.raises(SystemExit, match="install failed"):
         cli.install_with_retry(None, "wisdom")
     assert calls == ["wisdom", "wisdom"]
+
+
+def test_install_treats_a_capability_in_uses_as_its_providers(monkeypatch, capsys):
+    """wizard-mail#38: Mail `uses: [mail-calendar, wizard-google, wizard-microsoft]`. mail-calendar is a capability
+    the Google and Microsoft apps provide, not an app: no failed lookup and no "may need it" note; the providers
+    install by their own ids. A capability none of the app's uses provides gets one plain line naming who can."""
+    from wam import cli, index
+    calls = []
+
+    class RT:
+        def app(self, urn): return {"info": {"id": urn.split(":")[0]}}
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+    monkeypatch.setattr(cli, "ensure_store", lambda c, rt: None)
+    monkeypatch.setattr(cli, "installed_ids", lambda rt: set())
+    monkeypatch.setattr(cli, "drop_stale_selection", lambda *a, **k: None)
+    monkeypatch.setattr(cli.alongside, "external_slots", lambda h: {})
+    listed = [{"id": "wizard-google", "provides": ["google-connection", "mail-calendar"], "uses": []},
+              {"id": "wizard-microsoft", "provides": ["microsoft-connection", "mail-calendar"], "uses": []},
+              {"id": "wizard-youtube-music", "provides": ["music-source"], "uses": []},
+              {"id": "wizard-mail", "provides": ["mail"], "uses": ["mail-calendar", "wizard-google", "wizard-microsoft"]},
+              {"id": "wizard-music", "provides": ["music"], "uses": ["music-source"]}]
+    recs = {a["id"]: a for a in listed}
+    monkeypatch.setattr(index, "search", lambda ix, q="", **f: [a for a in listed if a["id"] == f.get("id")])
+    monkeypatch.setattr(index, "all_listed", lambda ix, **k: list(listed))
+
+    def resolve(c, ref):
+        if ref not in recs:
+            raise index.IndexError_(f"no app with id '{ref}' in the index; try `wam search {ref}`")
+        return recs[ref]
+    monkeypatch.setattr(cli, "resolve_any", resolve)
+
+    def stop(c, app_id, *a, **k):
+        calls.append(app_id); raise SystemExit("stop here")
+    monkeypatch.setattr(cli, "build_form", stop)
+    real = cli.install
+
+    def install(c, app_id, *a, **k):
+        try:
+            return real(c, app_id, *a, **k)
+        except SystemExit as e:
+            if str(e) != "stop here":
+                raise
+    monkeypatch.setattr(cli, "install", install)
+    cli.install(cli.Config(), "wizard-mail")
+    err = capsys.readouterr().err
+    assert calls == ["wizard-google", "wizard-microsoft", "wizard-mail"]
+    assert "mail-calendar" not in err and "may need it" not in err
+    calls.clear()
+    cli.install(cli.Config(), "wizard-music")
+    err = capsys.readouterr().err
+    assert calls == ["wizard-music"]
+    assert "can use 'music-source' from wizard-youtube-music" in err and "may need it" not in err
+    assert cli.capability_providers(cli.Config(), "wizard-google") is None   # an app id stays an app
+    assert cli.capability_providers(cli.Config(), "nothing-at-all") is None  # unknown: today's note
