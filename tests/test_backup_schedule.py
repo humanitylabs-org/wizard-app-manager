@@ -462,3 +462,138 @@ def test_storage_refusals_become_refused_with_a_short_reason(tmp_path):
     assert isinstance(err, restic.Refused) and "Access Denied" in str(err) and "main.init" not in str(err)
     assert isinstance(repo._fail("open", 12, "Fatal: wrong password or no key found"), restic.WrongKey)
     assert isinstance(repo._fail("open", 10, "Fatal: repository does not exist"), restic.NoRepo)
+
+
+# ---------------------------------------------------------------- stale repository locks (#870)
+
+class LockRepo:
+    """Stands in for restic.Repo: a list of locks; `unlock` drops the ones restic would call stale."""
+
+    def __init__(self, locks, restic_stale=None):
+        self._locks, self.unlocked = list(locks), 0
+        self.restic_stale = restic_stale or (lambda lk: True)
+
+    def locks(self):
+        return [dict(lk) for lk in self._locks]
+
+    def unlock(self):
+        self.unlocked += 1
+        self._locks = [lk for lk in self._locks if not self.restic_stale(lk)]
+
+
+def _lk(i, host="box", pid=100, age=60.0, now=1_800_000_000.0):
+    t = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now - age)) + ".123456789Z"
+    return {"id": f"{i:064x}", "time": t, "exclusive": False, "hostname": host, "username": "o", "pid": pid}
+
+
+NOW = 1_800_000_000.0
+
+
+def test_a_crashed_runs_lock_on_this_box_is_removed():
+    repo = LockRepo([_lk(1, pid=111)])
+    res = schedule.clear_stale_locks(repo, hostname="box", alive=lambda pid: False, now=NOW)
+    assert repo.unlocked == 1 and [r["pid"] for r in res["removed"]] == [111] and res["left"] == []
+
+
+def test_a_live_lock_and_another_machines_fresh_lock_are_left_alone():
+    live, theirs, dead = _lk(1, pid=222), _lk(2, host="laptop", pid=333), _lk(3, pid=444, age=3 * 3600)
+    # restic itself would remove only the dead one (the others are fresh and, here, alive)
+    repo = LockRepo([live, theirs, dead], restic_stale=lambda lk: lk["pid"] == 444)
+    res = schedule.clear_stale_locks(repo, hostname="box", alive=lambda pid: pid == 222, now=NOW)
+    assert [r["pid"] for r in res["removed"]] == [444]
+    left = {r["pid"]: r["why"] for r in res["left"]}
+    assert set(left) == {222, 333} and "still running" in left[222] and "another machine" in left[333]
+
+
+def test_nothing_to_clear_runs_no_unlock():
+    repo = LockRepo([_lk(1, pid=222)])
+    res = schedule.clear_stale_locks(repo, hostname="box", alive=lambda pid: True, now=NOW)
+    assert repo.unlocked == 0 and res["removed"] == [] and len(res["left"]) == 1
+    repo = LockRepo([])
+    assert schedule.clear_stale_locks(repo, hostname="box", now=NOW) == {"removed": [], "left": []}
+    assert repo.unlocked == 0
+
+
+def test_a_reused_pid_does_not_keep_an_old_lock():
+    # the PID now belongs to another process, but restic refreshes a live lock every 5 minutes: 3 h old = stale
+    repo = LockRepo([_lk(1, pid=555, age=3 * 3600)])
+    res = schedule.clear_stale_locks(repo, hostname="box", alive=lambda pid: True, now=NOW)
+    assert repo.unlocked == 1 and [r["pid"] for r in res["removed"]] == [555]
+
+
+def test_another_machines_abandoned_lock_stops_the_unlock():
+    # `restic unlock` would also drop the other machine's old lock: that box decides, so nothing is unlocked
+    repo = LockRepo([_lk(1, pid=111), _lk(2, host="laptop", pid=9, age=2 * 3600)])
+    res = schedule.clear_stale_locks(repo, hostname="box", alive=lambda pid: False, now=NOW)
+    assert repo.unlocked == 0 and res["removed"] == [] and len(res["left"]) == 2
+    assert any("restic unlock" in r["why"] for r in res["left"])
+
+
+def test_a_lock_listing_failure_never_fails_the_run():
+    class Broken(LockRepo):
+        def locks(self):
+            raise restic.ResticError("restic list locks failed (exit 1): boom")
+    res = schedule.clear_stale_locks(Broken([]), hostname="box", now=NOW)
+    assert res["removed"] == [] and "boom" in res["error"]
+
+
+def test_already_locked_reads_in_plain_words():
+    r = restic.Repo.__new__(restic.Repo)
+    r._password, r._creds, r.url = "pw", {}, "/r"
+    e = r._fail("forget", 11, "unable to create lock in backend: repository is already locked by PID 1353369 on "
+                              "box by o (UID 1000, GID 1000)\nthe `unlock` command can be used to remove stale locks")
+    assert isinstance(e, restic.Locked) and "in use by another restic run (PID 1353369 on box)" in str(e)
+    assert "left alone" in str(e)
+
+
+def _repo_env(world):
+    bx = _box(world["old"])
+    return schedule.open_repo(bx, {"kind": "path", "path": str(world["repo"])}, world["key"])
+
+
+def _hold_lock(world):
+    """A real `restic backup --stdin` that holds its repository lock until the caller ends it."""
+    with _repo_env(world) as repo:
+        env = repo.env()
+        env["TMPDIR"] = str(world["tmp"])
+        pw = world["tmp"] / "pw-copy"
+        pw.write_text(repo._password)
+        env["RESTIC_PASSWORD_FILE"] = str(pw)
+        p = subprocess.Popen([RESTIC, "backup", "--stdin", "--stdin-filename", "x", "--host", "elsewhere"],
+                             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+        for _ in range(100):
+            if repo.locks():
+                return p
+            time.sleep(0.1)
+    p.kill()
+    raise AssertionError("restic never took its lock")
+
+
+@needs_restic
+def test_a_run_after_a_crashed_run_clears_its_lock_and_passes(world):
+    assert _set(world)[0] == 0
+    p = _hold_lock(world)
+    p.kill()            # the crash: restic dies holding its lock
+    p.wait()
+    with _repo_env(world) as repo:
+        assert [lk["pid"] for lk in repo.locks()] == [p.pid]
+    code, r = _cli(_box(world["old"]), "run", "--scheduled")
+    assert code == 0 and r["ok"], r
+    assert [x["pid"] for x in r["locks"]["removed"]] == [p.pid] and r["retention"]["ok"] and r["check"]["ok"]
+    with _repo_env(world) as repo:
+        assert repo.locks() == []
+
+
+@needs_restic
+def test_a_live_restic_lock_is_left_alone_and_reported(world):
+    assert _set(world)[0] == 0
+    p = _hold_lock(world)
+    try:
+        code, r = _cli(_box(world["old"]), "run", "--scheduled")
+        assert not r["ok"] and r["kind"] == "Locked" and "in use by another restic run" in r["error"], r
+        assert [x["pid"] for x in r["locks"]["left"]] == [p.pid] and r["locks"]["removed"] == []
+        with _repo_env(world) as repo:
+            assert [lk["pid"] for lk in repo.locks()] == [p.pid]
+    finally:
+        p.kill()
+        p.wait()

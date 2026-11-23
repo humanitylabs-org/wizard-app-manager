@@ -57,6 +57,10 @@ class NoRepo(ResticError):
     pass
 
 
+class Locked(ResticError):
+    """Another restic run (live, or on another machine) holds the repository; never cleared by the box (#870)."""
+
+
 class Refused(ResticError):
     """The storage refused a delete or overwrite (Object Lock, or a policy without delete rights)."""
 
@@ -255,6 +259,11 @@ class Repo:
             m = re.search(r"\"message\":\s*\"([^\"\\]+)", first)
             first = (m.group(1) if m else first).strip()[:200]
             return Refused(f"restic {what}: the storage refused a delete or overwrite ({first})")
+        if rc == RC_LOCKED or "already locked" in tail:
+            m = re.search(r"locked (?:exclusively )?by PID (\d+) on (\S+)", tail)
+            who = f" (PID {m.group(1)} on {m.group(2)})" if m else ""
+            return Locked(f"restic {what}: the backup repository is in use by another restic run{who}, so its "
+                          f"lock was left alone; the next run tries again (exit {rc}: {tail[-300:]})")
         return ResticError(f"restic {what} failed (exit {rc}): {tail}")
 
     def run(self, args: list[str], *, timeout: int = 6 * 3600, what: str | None = None) -> str:
@@ -388,6 +397,23 @@ class Repo:
         kept = sum(len(g.get("keep") or []) for g in out) if isinstance(out, list) else None
         return {"removed": removed, "kept": kept, "pruned": prune}
 
+    def locks(self) -> list[dict]:
+        """Every lock in the repository: {id, time, exclusive, hostname, username, pid}. Read with --no-lock, so
+        looking adds no lock of its own. A lock that vanishes between list and cat (its run just ended) is skipped."""
+        out = []
+        for lid in self.run(["list", "locks", "--no-lock"], what="list locks", timeout=900).split():
+            try:
+                d = json.loads(self.run(["cat", "lock", lid, "--no-lock"], what="cat lock", timeout=600) or "{}")
+            except (ResticError, ValueError):
+                continue
+            if isinstance(d, dict):
+                out.append({"id": lid, **{k: d.get(k) for k in ("time", "exclusive", "hostname", "username", "pid")}})
+        return out
+
+    def unlock(self) -> None:
+        """`restic unlock`: removes only locks restic itself considers stale (never --remove-all)."""
+        self.run(["unlock"], what="unlock", timeout=900)
+
     def check(self, read_data_subset: str | None = None, read_data: bool = False) -> dict:
         args = ["check"]
         if read_data:
@@ -442,4 +468,4 @@ class Repo:
 
 
 __all__ = ["VERSION", "PINS", "ensure", "install", "find", "Repo", "ResticError", "WrongKey", "NoRepo", "Refused",
-           "repo_url"]
+           "Locked", "repo_url"]
