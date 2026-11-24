@@ -145,7 +145,7 @@ def test_an_existing_box_is_left_alone_when_it_should_be(tmp_path):
     assert _existing(tmp_path) == "the owner chose"
 
 
-def _bootstrap_existing(monkeypatch, tmp_path, live_commit="c0ffee", mac=False, extra_installed=frozenset()):
+def _bootstrap_existing(monkeypatch, tmp_path, live_commit="c0ffee", mac=False, extra_installed=frozenset(), mac_caps=None):
     from wam import release_pins, slots
     rt_root = tmp_path / "rt"
     for app in ("wizard-ux", "wizard-agent-service"):
@@ -158,6 +158,10 @@ def _bootstrap_existing(monkeypatch, tmp_path, live_commit="c0ffee", mac=False, 
     monkeypatch.delenv(bb.SWITCH, raising=False)
     monkeypatch.setattr(release_pins, "load", lambda: pins)
     monkeypatch.setattr(bb, "mac_guest", lambda: mac)
+    caps = tmp_path / "host-capabilities.json"
+    if mac_caps is not None:
+        caps.write_text(json.dumps(mac_caps))
+    monkeypatch.setattr(bb, "MAC_HOST_CAPS", str(caps))
     monkeypatch.setattr(cli, "settle_connection_mode", lambda c, rt: None)
     monkeypatch.setattr(cli, "installed_ids", lambda rt: {"wizard-ux", "wizard-agent-service", "files", *extra_installed})
     if not extra_installed:
@@ -194,6 +198,22 @@ def test_bootstrap_waits_while_the_shell_is_not_on_the_release(monkeypatch, tmp_
 def test_bootstrap_leaves_a_mac_guest_off(monkeypatch, tmp_path):
     out, c, recreated = _bootstrap_existing(monkeypatch, tmp_path, mac=True)
     assert "browser_boundary" not in out and not bb.state_path(c.home).exists() and not recreated
+
+
+def test_bootstrap_switches_a_mac_guest_on_once_its_mac_app_sends_the_token(monkeypatch, tmp_path):
+    # wizard-os#133: the guest update of a Mac app whose own owner calls carry the token says so
+    out, c, recreated = _bootstrap_existing(monkeypatch, tmp_path, mac=True, mac_caps={"shell_token": True})
+    assert out["browser_boundary"]["why"] == "existing box" and sorted(recreated) == ["wizard-agent-service", "wizard-ux"]
+
+
+def test_a_mac_guest_stays_off_without_a_clear_yes_from_its_mac_app(monkeypatch, tmp_path):
+    for i, caps in enumerate(({"shell_token": False}, {"shell_token": "yes"}, {}, [])):
+        (tmp_path / str(i)).mkdir()
+        out, c, recreated = _bootstrap_existing(monkeypatch, tmp_path / str(i), mac=True, mac_caps=caps)
+        assert "browser_boundary" not in out and not recreated, caps
+    assert bb.mac_host_sends_token(str(tmp_path / "missing.json")) is False
+    (tmp_path / "bad.json").write_text("{not json")
+    assert bb.mac_host_sends_token(str(tmp_path / "bad.json")) is False
 
 
 def test_bootstrap_switches_a_split_box_that_keeps_the_stopped_bundle_on(monkeypatch, tmp_path):

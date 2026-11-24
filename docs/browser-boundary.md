@@ -25,8 +25,8 @@ recorded (`<wam home>/browser-boundary/state.json` is missing), no shell / Agent
 installed and nothing but Wizard's own defaults is, it records `on` (`"why": "new box"`) and mints the token, so the
 shell and the Agent Service get their block as bootstrap installs them. `wam bootstrap` then restarts `wam serve`
 (`systemctl --user try-restart wizard-app-manager-api`) so its own routes follow; install.sh reports a failed restart. A box that already runs Wizard, or whose owner chose, is left as it is. `WIZARD_BROWSER_BOUNDARY=0`
-in the installer's environment (get.sh forwards it) keeps a new box off; the Mac guest build uses that until its
-setup page sends the token. `wam browser-boundary off` is the way back on any box.
+in the installer's environment (get.sh forwards it) keeps a new box off; the Mac guest build uses that, and its guest
+then follows like a box installed before (next section). `wam browser-boundary off` is the way back on any box.
 
 ## Boxes that already ran Wizard follow one release later
 
@@ -41,8 +41,10 @@ it is switched on, like `wam browser-boundary on` (token, blocks, the shell and 
   that keeps the stopped bundle as rollback material follows);
 - the shell and the Agent Service are on the release's own source commit now (an older shell sends no token; a box
   whose update did not move them is tried again on the next installer run);
-- it is not a Mac guest (try-wizard's VM: its Mac app still calls the guest's update lease and backups without the
-  token).
+- it is not a Mac guest whose Mac app does not send the token yet. try-wizard's VM is switched on only once
+  `/opt/wizard/host-capabilities.json` says `"shell_token": true` (`browser_boundary.mac_host_sends_token`). Only the
+  code-only guest update of a WizardOS for Mac release whose own owner calls (the update lease, dictation) carry the
+  token installs that file (wizard-os#133), so the guest of an older Mac app stays as it is.
 
 It records `{"on": true, "why": "existing box"}`, so it is decided once. An app's saved settings come along: the shell
 copies each key an app wrote while it was same-origin into the app's own copy on its first sandboxed start (wizard-ux
