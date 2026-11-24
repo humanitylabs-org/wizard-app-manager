@@ -22,10 +22,12 @@ folder and deleted again once they are in the file.
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import os
 import shutil
 import socket
+import stat
 import tempfile
 import time
 import zipfile
@@ -34,8 +36,9 @@ from . import filesystem as datafs
 
 from . import EXT, agents as agentlib, bundle, crypto, fmt, keys as keylib
 from .appdata import AppDataError
-from .box import (DEFER_DB_MARK, MAIN_AGENT, Agent, Box, HermesError, RuntipiError, SpaceError, human, log,
-                  main_agent_warning, need_space, need_spaces, skip_home_entry)
+from .box import (DEFER_DB_MARK, DEFER_FILE_MARK, DEFER_FILES_MIN, MAIN_AGENT, Agent, Box, HermesError, RuntipiError,
+                  SpaceError, _existing_parent, human, log, main_agent_warning, need_space, need_spaces,
+                  skip_home_entry)
 
 MARGIN = 256 << 20
 
@@ -210,7 +213,19 @@ def _stream_agent_zip(box: Box, bw, a: Agent, z: Path, work: Path) -> None:
         entries = []
         for i in infos:
             e = bundle.ZipEntry(i.filename, i.date_time, i.external_attr, i.create_system)
-            if i.filename in deferred:
+            if i.comment.startswith(DEFER_FILE_MARK) and not i.is_dir():
+                # a big file `hermes backup` only named (#960): read from the agent's home as it streams
+                p = _home_file(a, i.comment[len(DEFER_FILE_MARK):].decode("utf-8", "surrogateescape"))
+                try:
+                    st = datafs.lstat(p)
+                except FileNotFoundError:
+                    continue                       # deleted since `hermes backup` listed it: nothing to keep
+                if not stat.S_ISREG(st.st_mode):
+                    bw.skipped.append(f"agents/{a.id}/{i.filename}")
+                    continue
+                name = f"agents/{a.id}/hermes-backup.zip:{i.filename}"
+                e.size, e.open = st.st_size, (lambda p=p, n=st.st_size, name=name: _Exactly(p, n, bw.changed, name))
+            elif i.filename in deferred:
                 name = deferred[i.filename][1]
                 if done.get(name) == "gone":
                     continue                       # deleted since `hermes backup` listed it: nothing to keep
@@ -232,9 +247,87 @@ def _stream_agent_zip(box: Box, bw, a: Agent, z: Path, work: Path) -> None:
         z.unlink(missing_ok=True)
 
 
-def _db_skip(rel: str, is_dir: bool) -> bool:
-    # only the SQLite databases (and their -wal pages, which a snapshot folds in) of what `hermes backup` reads
-    return _hermes_skip(rel, is_dir) or (not is_dir and not rel.endswith((".db", ".db-wal")))
+def _home_file(a: Agent, src: str) -> Path:
+    """The path in the agent's home of a file its `hermes backup` named (the host's own path for the host Hermes,
+    /opt/data/... inside the agent's container). Anything outside the home is refused."""
+    roots = [str(a.home), str(Path(a.home).absolute().resolve())] + (["/opt/data"] if a.runtime != "host" else [])
+    for r in roots:
+        if src.startswith(r.rstrip("/") + "/"):
+            rel = src[len(r.rstrip("/")) + 1:]
+            parts = rel.split("/")
+            if rel and not any(x in ("", ".", "..") for x in parts):
+                return Path(a.home).joinpath(*parts)
+    raise ExportError(f"agent {a.id}: unexpected file entry {src[:120]}")
+
+
+class _Exactly:
+    """Exactly `n` bytes of the file at `p`, read as the zip streams. A file that changed size since it was planned
+    is cut or padded with zeros (the zip stays the planned size) and noted, as for the Wizard home's files."""
+
+    def __init__(self, p: Path, n: int, changed: list, name: str) -> None:
+        self.left, self.changed, self.name, self.noted = n, changed, name, False
+        try:
+            st = datafs.lstat(p)
+            self.f = datafs.open(p, "rb") if stat.S_ISREG(st.st_mode) else io.BytesIO()
+        except FileNotFoundError:
+            self.f = io.BytesIO()
+
+    def _note(self) -> None:
+        if not self.noted:
+            self.noted = True
+            self.changed.append(self.name)
+
+    def read(self, k: int = -1) -> bytes:
+        if self.left <= 0:
+            return b""
+        k = self.left if k is None or k < 0 else min(k, self.left)
+        b = self.f.read(k)
+        if len(b) < k:
+            self._note()
+            b += bytes(k - len(b))
+        self.left -= len(b)
+        return b
+
+    def close(self) -> None:
+        try:
+            if self.f.read(1):
+                self._note()
+        except OSError:
+            pass
+        self.f.close()
+
+
+def _agent_sizes(home: Path) -> dict:
+    """One walk of what `hermes backup` reads in an agent home; the folders it skips (__pycache__, .git, ...) are
+    never entered, and an entry that cannot be looked at is passed over (an estimate, #960). raw: all of it;
+    kept: what the backup keeps of it (no per-machine entries); dbs: its SQLite databases; small: its other files
+    under DEFER_FILES_MIN, the only ones a streamed run writes to the work folder."""
+    out = dict.fromkeys(("raw", "kept", "dbs", "small"), 0)
+    home = Path(home)
+    if not home.is_dir():
+        return out
+    for dirpath, dirnames, filenames in datafs.walk(home, skip_denied=True):
+        dp = Path(dirpath)
+        rel_dir = dp.relative_to(home).as_posix()
+        rel_of = (lambda n: n) if rel_dir == "." else (lambda n: f"{rel_dir}/{n}")
+        dirnames[:] = [d for d in dirnames if not _hermes_skip(rel_of(d), True) and not (dp / d).is_symlink()]
+        for fn in filenames:
+            rel = rel_of(fn)
+            try:
+                st = datafs.lstat(dp / fn)
+            except (FileNotFoundError, PermissionError):
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                continue
+            n = st.st_size
+            out["raw"] += n
+            if not _agent_skip(rel, False):
+                out["kept"] += n
+            if rel.endswith((".db", ".db-wal")):
+                out["dbs"] += n
+            elif n < DEFER_FILES_MIN:
+                out["small"] += n
+    return out
 
 
 def _du(path: Path, skip=None) -> int:
@@ -314,12 +407,20 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
     files_size = bundle.tree_size(files_root, _files_skip) if include_files else {"count": 0, "bytes": 0}
     home_size = bundle.tree_size(box.home, skip_home_entry)
     est = files_size["bytes"] + home_size["bytes"]
-    agents_bytes = sum(_du(a.home, _agent_skip) for a in agents)       # what the backup keeps of each agent
+    sizes = {a.id: _agent_sizes(a.home) for a in agents}
+    app_sizes = _app_sizes(box, installed, agent_urns)
+    if plain_stream is not None:
+        room = _room(box, agents, sizes, app_sizes)
+        if room["host_left_out"]:
+            # the host Hermes (alongside) is too big for this disk: back up everything else rather than nothing
+            for a in agents:
+                if a.runtime == "host":
+                    warnings.append(no_room_warning(str(a.home), room["need"], room["free"]))
+                    log("warning: " + warnings[-1])
+            agents = [a for a in agents if a.runtime != "host"]
+    agents_bytes = sum(sizes[a.id]["kept"] for a in agents)       # what the backup keeps of each agent
     # the zip `hermes backup` writes first: one agent's at a time (rewritten and removed before the next agent)
-    agents_raw = max((_du(a.home, _hermes_skip) for a in agents), default=0)
-    app_sizes = [_du(box.runtipi_root / "app-data" / info["store"] / info["id"])
-                 + _du(box.runtipi_root / "user-config" / info["store"] / info["id"])
-                 for urn, info in installed.items() if urn not in agent_urns]
+    agents_raw = max((sizes[a.id]["raw"] for a in agents), default=0)
     est += agents_bytes + sum(app_sizes)
     if plain_stream is None:
         # the work folder holds every agent's kept zip, plus, while one is rewritten, the zip `hermes backup` wrote
@@ -328,11 +429,7 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
         # filesystem
         work_need = agents_bytes + agents_raw + max(app_sizes, default=0) + MARGIN
     else:
-        # streamed (#771): every agent's zip without its databases, then, one agent at a time, that agent's
-        # database snapshots while it streams; the app archives come after, one at a time
-        dbs = [_du(a.home, _db_skip) for a in agents]
-        rest = sum(_du(a.home, _hermes_skip) for a in agents) - sum(dbs)
-        work_need = rest + max(max(dbs, default=0), max(app_sizes, default=0)) + MARGIN
+        work_need = _stream_need(agents, sizes, app_sizes)
     if plain_stream is None:
         need_spaces(box, [(out.parent, est + MARGIN, "the backup file"), (box.work_dir(), work_need, "the work folder")])
     else:
@@ -351,7 +448,7 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
             try:
                 # a stream leaves the databases out here and snapshots them when the agent streams (#771)
                 if plain_stream is not None:
-                    box.runner.backup(a, z, defer_dbs=True)
+                    box.runner.backup(a, z, defer_dbs=True, defer_files=DEFER_FILES_MIN)
                 else:
                     box.runner.backup(a, z)
             except HermesError as e:
@@ -521,6 +618,52 @@ def export(box: Box, out: Path | None = None, *, keys: fmt.Keys | None = None, p
         log(f"note: {len(app_skipped)} entries in app data were left out (sockets, devices, links leaving their "
             "folder): " + ", ".join(app_skipped[:5]))
     return res
+
+
+def _app_sizes(box: Box, installed: dict, agent_urns: set) -> list[int]:
+    return [_du(box.runtipi_root / "app-data" / info["store"] / info["id"])
+            + _du(box.runtipi_root / "user-config" / info["store"] / info["id"])
+            for urn, info in installed.items() if urn not in agent_urns]
+
+
+def _stream_need(agents: list[Agent], sizes: dict, app_sizes: list[int]) -> int:
+    """Work folder a streamed run needs (#771, #960): every agent's small files in its zip, then, one agent at a
+    time, that agent's database snapshots while it streams (its big files are read straight from its home); the
+    app archives come after, one at a time."""
+    return (sum(sizes[a.id]["small"] for a in agents)
+            + max(max((sizes[a.id]["dbs"] for a in agents), default=0), max(app_sizes, default=0)) + MARGIN)
+
+
+def _room(box: Box, agents: list[Agent], sizes: dict, app_sizes: list[int]) -> dict:
+    p = _existing_parent(box.work_dir())
+    free = box.disk_free(p)
+    need = _stream_need(agents, sizes, app_sizes)
+    others = [a for a in agents if a.runtime != "host"]
+    host = len(others) < len(agents)
+    return {"need": need, "free": free, "path": str(p), "fits": need <= free,
+            "host_left_out": host and need > free and _stream_need(others, sizes, app_sizes) <= free}
+
+
+@datafs.with_access
+def stream_room(box: Box) -> dict:
+    """The scheduled backup's work-space estimate for this box as it is now, the same one a streamed run makes
+    first (`wam alongside` shows it before the host Hermes joins the backup, #960)."""
+    rows = box.registry_rows()
+    found = box.installed()
+    agents = box.agents(found)
+    installed, _ = one_copy_per_app(found, rows, prefer={a.urn for a in agents if a.urn})
+    sizes = {a.id: _agent_sizes(a.home) for a in agents}
+    return _room(box, agents, sizes, _app_sizes(box, installed, {a.urn for a in agents if a.urn}))
+
+
+MAIN_AGENT_NO_ROOM = "main agent not in this backup (not enough disk): "
+
+
+def no_room_warning(path: str, need: int, free: int) -> str:
+    """The warning a streamed backup carries when it left the host Hermes out for lack of work space (#960)."""
+    return (f"{MAIN_AGENT_NO_ROOM}{path} needs about {human(need)} of free disk for the backup's work folder and "
+            f"{human(free)} is free, so this backup leaves it out and keeps everything else. Free up disk space "
+            "and the next backup includes it again")
 
 
 def one_copy_per_app(installed: dict[str, dict], rows: dict[str, dict],

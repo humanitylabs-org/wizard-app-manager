@@ -1,0 +1,11 @@
+{
+  "version": "0.3.332",
+  "latest_since": "2026-11-21T00:07:17Z",
+  "promoted_at": "2026-11-24T00:34:57Z",
+  "upgrade_test": {
+    "from": "0.3.240",
+    "to": "0.3.332",
+    "passed": true,
+    "evidence": "https://github.com/humanitylabs-org/wizard-os/blob/main/docs/acceptance/promote-0.3.332.md"
+  }
+}

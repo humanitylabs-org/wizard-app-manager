@@ -461,3 +461,138 @@ def test_undo_interrupted_after_restoring_is_replayed_safely(tmp_path):
     assert run_plugin(tmp_path, 'a' * 40) == {'plugin': 'current', 'changed': False, 'managed': True}
     assert 'ref: ' + 'a' * 40 in (tmp_path / 'plugins/wizard-os/plugin.yaml').read_text()
     assert not (tmp_path / 'plugins/.wizard-fresh-link.backup').exists()
+
+
+# wizard-importer#12: the Importer engine (wizard-os plugin bring_data.py) runs inside the agent's engine and finds the
+# owner's Files through WIZARD_FILES_ROOT. Without it every export counted as "this Wizard's own agent".
+def _media(c):
+    media = c.runtipi_root / 'media'
+    (media / 'Inbox').mkdir(parents=True)
+    return media
+
+
+def _engine(c):
+    ov = c.runtipi_root / 'user-config/wizardapps/hermes-agent/docker-compose.yml'
+    return ov, (yaml.safe_load(ov.read_text())['services']['hermes-agent-engine'] if ov.exists() else None)
+
+
+def test_files_mount_gives_the_engine_the_owners_import_folders(tmp_path):
+    c = _cfg(tmp_path)
+    media = _media(c)
+    assert agent_link.add_files_mount(c) is True
+    ov, engine = _engine(c)
+    assert engine['environment'] == {'WIZARD_FILES_ROOT': '/opt/wizard-files'}
+    assert engine['volumes'] == [
+        {'type': 'bind', 'source': str(media / 'Inbox'), 'target': '/opt/wizard-files/Inbox', 'read_only': False},
+        {'type': 'bind', 'source': str(media / 'Downloads'), 'target': '/opt/wizard-files/Downloads', 'read_only': True},
+        {'type': 'bind', 'source': str(media / 'Imported'), 'target': '/opt/wizard-files/Imported', 'read_only': False}]
+    # Docker would make a missing source as root, out of the agent's reach
+    assert all((media / n).is_dir() for n in ('Inbox', 'Downloads', 'Imported'))
+    before = ov.read_bytes()
+    assert agent_link.add_files_mount(c) is False and ov.read_bytes() == before
+
+
+def test_files_mount_sits_beside_the_skills_mount_and_owner_entries(tmp_path):
+    c = _cfg(tmp_path)
+    _media(c)
+    ov = c.runtipi_root / 'user-config/wizardapps/hermes-agent/docker-compose.yml'
+    ov.parent.mkdir(parents=True)
+    ov.write_text('services:\n  hermes-agent-engine:\n    networks: !override\n      wizard-app-hermes-agent:\n        gw_priority: 1\n'
+                  '    environment:\n      - WIZARD_BUILDER_ROOT=/opt/wizard-builder\n')
+    assert agent_link.add_skills_mount(c) is True and agent_link.add_files_mount(c) is True
+    text = ov.read_text()
+    assert 'networks: !override' in text
+    from wam.network import load_yaml
+    engine = load_yaml(text)['services']['hermes-agent-engine']
+    assert engine['environment'] == ['WIZARD_BUILDER_ROOT=/opt/wizard-builder', 'WIZARD_FILES_ROOT=/opt/wizard-files']
+    assert [v['target'] for v in engine['volumes']] == ['/opt/wizard-os/skills', '/opt/wizard-files/Inbox',
+                                                       '/opt/wizard-files/Downloads', '/opt/wizard-files/Imported']
+
+
+def test_files_mount_follows_root_folder_host(tmp_path):
+    c = _cfg(tmp_path)
+    host = tmp_path / 'host-root'
+    (host / 'media').mkdir(parents=True)
+    (c.runtipi_root / '.env').write_text(f'ROOT_FOLDER_HOST={host}\n')
+    assert agent_link.add_files_mount(c) is True
+    assert _engine(c)[1]['volumes'][0]['source'] == str(host / 'media/Inbox')
+
+
+def test_files_mount_leaves_a_box_without_files_alone(tmp_path):
+    c = _cfg(tmp_path)
+    assert agent_link.add_files_mount(c) is False
+    assert _engine(c)[1] is None
+
+
+@pytest.mark.parametrize('engine', [{'environment': {'WIZARD_FILES_ROOT': '/srv/files'}},
+                                    {'volumes': ['/elsewhere:/opt/wizard-files/Inbox']}])
+def test_files_mount_never_replaces_the_owners_choice(tmp_path, engine):
+    c = _cfg(tmp_path)
+    _media(c)
+    ov = c.runtipi_root / 'user-config/wizardapps/hermes-agent/docker-compose.yml'
+    ov.parent.mkdir(parents=True)
+    raw = yaml.safe_dump({'services': {'hermes-agent-engine': engine}})
+    ov.write_text(raw)
+    with pytest.raises(ValueError, match='preserving override'):
+        agent_link.add_files_mount(c)
+    assert ov.read_text() == raw
+
+
+def test_link_restarts_the_agent_once_for_the_files_mount_and_survives_a_refusal(tmp_path, monkeypatch):
+    from wam import alongside
+    monkeypatch.setattr(alongside, 'load', lambda home: None)
+    quiet = {'config_changed': False, 'env_changed': False, 'gateway_status': 200, 'skills_visible': []}
+    for refused in (False, True):
+        c = _cfg(tmp_path / str(refused))
+        _media(c)
+        ov = c.runtipi_root / 'user-config/wizardapps/hermes-agent/docker-compose.yml'
+        ov.parent.mkdir(parents=True)
+        engine = {'volumes': [agent_link.skills_mount(c)]}
+        if refused:
+            engine['environment'] = {'WIZARD_FILES_ROOT': '/srv/files'}
+        ov.write_text(yaml.safe_dump({'services': {'hermes-agent-engine': engine}}))
+        lifecycle = []
+
+        def fake_run(argv, **kw):
+            if argv[-2:] == ['ps', '-q']:
+                return SimpleNamespace(returncode=0, stdout='', stderr='')
+            if 'ps' in argv:
+                return SimpleNamespace(returncode=0, stdout='a1 wizard-agent-service\nb2 hermes-agent-engine\n', stderr='')
+            if 'sh' in argv:
+                return SimpleNamespace(returncode=0, stdout='svc-token', stderr='')
+            if agent_link.PLUGIN in argv:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({'plugin': 'current', 'changed': False}) + '\n', stderr='')
+            return SimpleNamespace(returncode=0, stdout=json.dumps(quiet) + '\n', stderr='')
+
+        class RT:
+            def req(self, method, path, body, timeout):
+                lifecycle.append(path)
+            def wait_status(self, urn, want, timeout):
+                pass
+        c.runtipi = lambda: RT()
+        monkeypatch.setattr(agent_link.subprocess, 'run', fake_run)
+        out = agent_link.link(c)
+        assert out['linked'] and out['files_changed'] is (not refused)
+        assert out['restarted'] is (not refused) and len(lifecycle) == (0 if refused else 2)
+        assert ('files_error' in out) is refused
+        if not refused:
+            assert agent_link.link(c)['restarted'] is False, 'a second run changes nothing'
+
+
+def test_files_mount_edits_inside_override_tags(tmp_path):
+    """`environment: !override` / `volumes: !override` are valid Compose: keep the tag, add inside it (Codex P2)."""
+    c = _cfg(tmp_path)
+    _media(c)
+    ov = c.runtipi_root / 'user-config/wizardapps/hermes-agent/docker-compose.yml'
+    ov.parent.mkdir(parents=True)
+    ov.write_text('services:\n  hermes-agent-engine:\n    environment: !override\n      A: b\n'
+                  '    volumes: !override\n      - /x:/opt/x\n')
+    assert agent_link.add_files_mount(c) is True
+    text = ov.read_text()
+    assert text.count('!override') == 2
+    from wam.network import load_yaml
+    engine = load_yaml(text)['services']['hermes-agent-engine']
+    assert engine['environment'].value == {'A': 'b', 'WIZARD_FILES_ROOT': '/opt/wizard-files'}
+    assert [agent_link._vol_target(v) for v in engine['volumes'].value][0] == '/opt/x'
+    assert len(engine['volumes'].value) == 4
+    assert agent_link.add_files_mount(c) is False

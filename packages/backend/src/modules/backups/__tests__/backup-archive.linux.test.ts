@@ -180,4 +180,57 @@ describe('BackupArchive Linux filesystem security', () => {
       await fs.promises.rm(rootDir, { recursive: true, force: true });
     }
   });
+
+  // wizard-app-manager#971: a running private agent keeps writing its home inside the Agent Service's app data while the
+  // Service is stopped for its update backup; a SQLite journal deleted between the folder listing and its open failed
+  // the whole backup ("Failed to copy app data for backup"), so the update rolled back.
+  it.runIf(process.platform === 'linux')('skips files and folders deleted while the backup walks the app data', async () => {
+    const rootDir = await fs.promises.mkdtemp('/tmp/runtipi-backup-source-');
+    const source = path.join(rootDir, 'source');
+    const home = path.join(source, 'data', 'wizard-os', 'agents', 'private-agent', 'home');
+    const destination = path.join(rootDir, 'backup', 'app-data');
+    const logger = createLogger();
+    const manager = new BackupArchive(new FilesystemService(logger), logger);
+    const originalOpen = fs.promises.open;
+    const gone = new Set(['state.db-journal', 'tmp-run', 'stale-link']);
+    const openSpy = vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags, mode) => {
+      const name = path.basename(String(file));
+      if (gone.has(name)) {
+        // the agent removes it right after the walk listed it
+        const real = await fs.promises.readlink(path.dirname(String(file))).catch(() => path.dirname(String(file)));
+        await fs.promises.rm(path.join(real, name), { recursive: true, force: true });
+      }
+      return originalOpen(file, flags, mode);
+    });
+
+    try {
+      await writeFile(path.join(home, 'state.db'), 'db');
+      await writeFile(path.join(home, 'state.db-journal'), 'journal');
+      await writeFile(path.join(home, 'tmp-run', 'part'), 'temp');
+      await fs.promises.symlink('state.db', path.join(home, 'stale-link'));
+
+      await manager.stageBackupDirectory(source, destination, 'app data');
+
+      const copied = path.join(destination, 'data', 'wizard-os', 'agents', 'private-agent', 'home');
+      await expect(fs.promises.readFile(path.join(copied, 'state.db'), 'utf8')).resolves.toBe('db');
+      await expect(fs.promises.readdir(copied)).resolves.toEqual(['state.db']);
+    } finally {
+      openSpy.mockRestore();
+      await fs.promises.rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === 'linux')('still fails when the app data folder itself is missing', async () => {
+    const rootDir = await fs.promises.mkdtemp('/tmp/runtipi-backup-source-');
+    const logger = createLogger();
+    const manager = new BackupArchive(new FilesystemService(logger), logger);
+
+    try {
+      await expect(manager.stageBackupDirectory(path.join(rootDir, 'missing'), path.join(rootDir, 'backup', 'app-data'), 'app data')).rejects.toThrow(
+        'Failed to copy app data for backup',
+      );
+    } finally {
+      await fs.promises.rm(rootDir, { recursive: true, force: true });
+    }
+  });
 });

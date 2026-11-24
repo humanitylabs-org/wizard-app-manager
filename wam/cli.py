@@ -63,7 +63,7 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import yaml
 
@@ -373,6 +373,15 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
             continue
         if dep in external_apps:   # alongside mode: the host's own Hermes fills this spot
             print(f"skipping dependency {dep}: its spot is filled by the host (alongside mode)", file=sys.stderr)
+            continue
+        capable = capability_providers(c, dep)
+        if capable is not None:
+            # `uses` may also name a capability other apps declare in `provides:` (wizard-mail#38: mail-calendar,
+            # served by wizard-google and wizard-microsoft). It is not an app: covered when a provider is installed
+            # or is itself named in `uses` (installed by its own id); otherwise say which apps can provide it.
+            if not any(p in have or p in _seen or p in (rec.get("uses") or []) for p in capable):
+                print(f"note: {app_id} can use '{dep}' from {', '.join(capable)}; none is installed "
+                      f"(install one with `wam install <app>` when you want it)", file=sys.stderr)
             continue
         try:
             print(f"installing dependency {dep}", file=sys.stderr)
@@ -1207,7 +1216,38 @@ def alongside_cmd(c: Config, detect_only: bool, off: bool, hermes_home: str | No
         write_registry(c, rt)
     except (RuntipiError, OSError) as e:
         out["note"] = f"App Manager not reachable yet ({str(e)[:120]}); settings are saved and apply on install"
+    room = alongside_backup_room(c)
+    if room:
+        out["backup"] = room
+        if not room["fits"]:
+            print("note: " + room["note"], file=sys.stderr)
     return out
+
+
+def alongside_backup_room(c: Config) -> dict | None:
+    """With nightly backups on, the work space the next one needs now that the host Hermes is the main agent, in
+    plain words (#960): a host Hermes too big for this disk is left out of the backup, never the whole backup."""
+    try:
+        from .backup import capture
+        from .backup.box import Box, human
+        box = Box(c.home, c.runtipi_root)
+        if not capture.schedule_on(box):
+            return None
+        r = capture.stream_room(box)
+    except Exception as e:  # noqa: BLE001 - an estimate: never stops alongside mode
+        return {"note": f"could not estimate the nightly backup's disk space ({str(e)[:120]})", "fits": True}
+    need, free = human(r["need"]), human(r["free"])
+    if r["fits"]:
+        note = f"the nightly backup includes the main agent: it needs about {need} of free disk, {free} is free"
+    elif r["host_left_out"]:
+        note = (f"not enough disk to back up the main agent: the nightly backup needs about {need} of free disk "
+                f"with it and {free} is free, so it backs up everything else and leaves the main agent out until "
+                "you free up disk space")
+    else:
+        note = (f"not enough disk for the nightly backup: it needs about {need} of free disk and {free} is free; "
+                "free up disk space")
+    return {"need_bytes": r["need"], "free_bytes": r["free"], "fits": r["fits"],
+            "main_agent_left_out": r["host_left_out"], "note": note}
 
 
 def _shares_session_files(st: dict | None) -> bool:
@@ -1456,6 +1496,25 @@ def store_data_cmd(c: Config, apply: bool = True) -> dict:
         else:
             out.update(store_data.publish_routes(ts["host"], shell_port))
     return out
+
+
+def capability_providers(c: Config, name: str) -> list[str] | None:
+    """The listed apps whose `provides:` holds `name`, when `name` is a capability and no app id (wizard-mail#38:
+    Mail `uses: [mail-calendar]`, which wizard-google and wizard-microsoft provide). None when `name` is an app
+    any route of `resolve_any` knows, when nothing provides it, or when the index can't be asked: the caller then
+    treats it as an app id, as before."""
+    from . import test_catalog
+    if "/" in name or name in c.private_apps or release_pins.resolve(name) or test_catalog.resolve(name) \
+            or slots.repo_for(name):
+        return None
+    try:
+        if index.search(c.index, id=name):
+            return None
+        listed = index.all_listed(c.index)
+    except index.IndexError_:
+        return None
+    found = [str(a["id"]) for a in listed if name in (a.get("provides") or []) and a.get("id") and a["id"] != name]
+    return list(dict.fromkeys(found)) or None
 
 
 def resolve_any(c: Config, ref: str) -> dict:
@@ -1997,6 +2056,13 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool | None, str]]:
         out.extend(registry.slot_choices(json.loads(regp.read_text())))
         out.extend(doctor_gateway_keys(c, json.loads(regp.read_text())))
         out.extend(doctor_inbox_tokens(c, json.loads(regp.read_text())))
+    try:   # wizard-ux#1768: a phone update feed that falls behind, or a mirror that stopped running, shows here
+        from . import phone_sync
+        row = phone_sync.doctor_row(c.home)
+        if row:
+            out.append(row)
+    except Exception as e:  # noqa: BLE001 - a doctor row, never a crash
+        out.append(("Phone update feed is current", None, str(e)[:120]))
     try:
         from . import network
         rep = network.report(c)
@@ -2726,6 +2792,45 @@ def update_wait_s(c: "Config") -> int:
     return 2 * max(minutes, LONG_COMMAND_MINUTES) * 60 + 100
 
 
+JOB_ENDED = {"succeeded", "failed", "cancelled"}
+
+
+def update_job(rt, urn: str, request, timeout: float, *, sleep=time.sleep, clock=time.monotonic) -> dict | None:
+    """Follow Runtipi's update job (Runtipi 4.12 AppJobService) to its end and return it.
+
+    #971: an update job can wait for one of Runtipi's three job slots while the app still shows its old status, and a
+    job that fails (e.g. its backup could not copy the app data) puts the old files back and the old status. Read by
+    status alone, "not started yet", "done" and "rolled back" all look like `running`, and the reason was lost.
+
+    None only when the job can't be followed at all: no request id, a Runtipi without the job route (it answers 404:
+    pre-4.12, which runs updates through its queue), or a job Runtipi no longer knows (it restarted, or a newer job
+    replaced it). The caller then reads the app's status as before. A job still active at `timeout`, or a Runtipi that
+    stopped answering, comes back as the last job seen (`status` not ended), never as None (Codex P1s)."""
+    rid = request.get("requestId") if isinstance(request, dict) else None
+    if not isinstance(rid, str) or not rid:
+        return None
+    path = f"/app-lifecycle/{urn}/job?requestId={quote(rid, safe='')}"
+    deadline = clock() + timeout
+    seen = None
+    while True:
+        try:
+            job = (rt.req("GET", path) or {}).get("job")
+            if not isinstance(job, dict):
+                return None   # Runtipi no longer knows this job
+            seen = job
+            if job.get("status") in JOB_ENDED:
+                return job
+        except RuntipiError as e:
+            if seen is None and " -> 404:" in str(e):
+                return None   # no job route on this Runtipi
+        except (OSError, ValueError, AttributeError):
+            pass              # a busy Runtipi missed one answer: ask again
+        if clock() >= deadline:
+            return seen or {"status": "unknown", "phase": "unknown",
+                            "message": "Runtipi did not answer about its update job"}
+        sleep(2)
+
+
 def rename_instead_of_update(c: "Config", app_id: str) -> dict | None:
     """`wam app update <old>` for an app its publisher renamed (wizard.md renamed_from, #832): move it to its new id
     (data, settings, connections; the old app is retired) instead of updating it in place, and finish a move an
@@ -2859,9 +2964,13 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
     if timeout is None:
         timeout = update_wait_s(c)
     try:
-        rt.update(urn, perform_backup=backup)
+        request = rt.update(urn, perform_backup=backup)
         time.sleep(3)
-        status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
+        job = update_job(rt, urn, request, timeout)   # #971: the job's own end and reason, when Runtipi has jobs
+        if job is not None and job.get("status") not in JOB_ENDED:   # still busy past the wait: never wait twice
+            status = ((rt.app(urn) or {}).get("app") or {}).get("status") or "missing"
+        else:
+            status = rt.wait_status(urn, {"running", "stopped", "update_error", "missing"}, timeout)
     except BaseException as e:
         if was_running:   # #730: if this left it stopped, the next update or recover starts it again
             update_strand.mark(getattr(c, "home", None), urn, f"{type(e).__name__}: {e}")
@@ -2884,6 +2993,17 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
         update_strand.mark(getattr(c, "home", None), urn, f"update ended {status}")
     elif status == "running":
         update_strand.clear(getattr(c, "home", None), urn)
+    if job and job.get("status") != "succeeded":
+        # #971: Runtipi put the previous version back (or is still busy with it); say so instead of reporting an update
+        why = " ".join(str(job.get("message") or "no reason given").split())[:300]
+        out["job"] = {"status": job.get("status"), "phase": job.get("phase"), "message": why}
+        if job.get("status") in ("failed", "cancelled"):
+            kept = "; the installed version was kept" if status in ("running", "stopped") else ""
+            problem = f"Runtipi did not update {app_id}: {why}{kept}"
+        else:
+            problem = (f"Runtipi's update of {app_id} did not finish in {timeout // 60} min (job {job.get('status')}, "
+                       f"{job.get('phase')}); `wam app update {app_id}` again once it has")
+        out["error"] = problem + (f"; {out['error']}" if out.get("error") else "")
     if store == STORE:   # the update may change what it declares (uses:) or its services
         out["networks"] = _net_brief(network_step(c, rt))
     if backup and status in ("running", "stopped") and not out.get("error"):
@@ -3113,6 +3233,8 @@ def main(argv: list[str] | None = None) -> int:
     if argv[:2] == ["app", "update"] and len(argv) >= 3 and not argv[2].startswith("-"):
         res = app_update(Config(), argv[2], backup="--no-backup" not in argv, allow_host_access="--allow-host-access" in argv)
         print(json.dumps(res, indent=2))
+        if res.get("job"):   # #971: Runtipi's update job failed or did not finish: the app kept its version
+            return 1
         return 0 if res["status"] == "running" or not res.get("error") else 1
     if argv and argv[0] in RUNTIPI_COMMANDS:
         routed = _graceful_passthrough(argv)
@@ -3258,7 +3380,7 @@ def main(argv: list[str] | None = None) -> int:
         c = Config()
         try:
             outcome = (phone_sync.ensure_timer(c.home, c.runtipi_root) if args.ensure_timer
-                       else phone_sync.sync(c.home, c.runtipi_root))
+                       else phone_sync.run(c.home, c.runtipi_root))
         except OSError:
             print("phone-sync failed:timer_setup")
             return 1

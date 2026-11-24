@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -64,26 +65,96 @@ class Runtipi:
         The password is random and saved 0600 next to apps.json so the owner can sign in to Runtipi's own
         dashboard if they ever need it. Returns True if an operator was created now.
         """
-        try:
-            self.req("GET", "/marketplace/all")
-            return False
-        except RuntipiError as e:
-            if "-> 401" not in str(e):
-                raise
+        # A Runtipi that is still starting (right after the installer recreates it, wam#937) answers 502/404 while
+        # its proxy route comes up, and 401 to the CLI token while its database is not ready: the auth middleware
+        # looks up the operator, swallows the error and serves the request unauthenticated. So wait out the first,
+        # and only call a 401 "no operator" once it repeats.
+        waited, unauth, t0 = 0, 0, time.monotonic()
+
+        def left(budget: int) -> float:
+            # Counted naps (tests nap instantly) and the clock both bound the wait: a Runtipi that accepts the
+            # connection but stalls must not stretch 2 minutes into 40 request timeouts (Codex P2).
+            return max(0.0, min(budget - waited, budget - (time.monotonic() - t0)))
+
+        while True:
+            code, ans = self._probe(max(1.0, min(self.PROBE_TIMEOUT, left(self.READY_WAIT))))
+            if code == 200:
+                return False
+            if code == 401:
+                unauth += 1
+                if unauth >= self.AUTH_TRIES:
+                    break
+            elif self._starting(code):
+                unauth = 0
+                if not left(self.READY_WAIT):
+                    raise RuntipiError(f"Runtipi did not answer within {self.READY_WAIT} s: {ans}")
+            else:
+                raise RuntipiError(ans)
+            self.sleep(self.STEP)
+            waited += self.STEP
         import secrets
         user = "owner@wizard.local"
         pw = secrets.token_urlsafe(24)
-        r = urllib.request.Request(f"{self.base}/auth/register", json.dumps({"username": user, "password": pw}).encode(),
-                                   {"Content-Type": "application/json"}, method="POST")
-        try:
-            urllib.request.urlopen(r, timeout=30).read()
-        except urllib.error.HTTPError as e:
-            raise RuntipiError(f"Runtipi has no usable operator and register failed: {e.code} {e.read()[:300]!r}") from None
+        while True:
+            r = urllib.request.Request(f"{self.base}/auth/register", json.dumps({"username": user, "password": pw}).encode(),
+                                       {"Content-Type": "application/json"}, method="POST")
+            try:
+                urllib.request.urlopen(r, timeout=max(1.0, min(30.0, left(self.READY_WAIT)))).read()
+                break
+            except urllib.error.HTTPError as e:
+                code, reg = e.code, f"{e.code} {e.read()[:300]!r}"
+            except OSError as e:  # URLError, refused, timeout: still starting
+                code, reg = None, f"{type(e).__name__}: {e}"
+            if code in (400, 403, 409) and "ALREADY_EXISTS" in reg:
+                return self._operator_exists(ans, reg)
+            if not self._starting(code) or not left(self.READY_WAIT):
+                raise RuntipiError(f"Runtipi has no usable operator and register failed: {reg}") from None
+            self.sleep(self.STEP)
+            waited += self.STEP
         cred_file.parent.mkdir(parents=True, exist_ok=True)
         cred_file.write_text(json.dumps({"username": user, "password": pw}) + "\n")
         cred_file.chmod(0o600)
         self.req("GET", "/marketplace/all")
         return True
+
+    # ensure_operator's waits (wam#937): 2 min for a starting Runtipi, a 401 must repeat 5 times (3 s apart), and
+    # 60 s for an operator that register says exists. Tests set `sleep` to a no-op.
+    STEP = 3
+    READY_WAIT = 120
+    AUTH_TRIES = 5
+    EXISTS_WAIT = 60
+    PROBE_TIMEOUT = 10
+    sleep = staticmethod(time.sleep)
+
+    @staticmethod
+    def _starting(code: int | None) -> bool:
+        """No answer, a missing proxy route (404) or a server error: Runtipi is (re)starting."""
+        return code is None or code == 404 or code >= 500
+
+    def _probe(self, timeout: float = 10) -> tuple[int | None, str]:
+        """(HTTP status or None when nothing answered, what it said) for GET /marketplace/all with the CLI token."""
+        try:
+            self.req("GET", "/marketplace/all", timeout=timeout)
+            return 200, "200"
+        except RuntipiError as e:
+            m = re.search(r"-> (\d{3})", str(e))
+            return (int(m.group(1)) if m else None), str(e)
+        except OSError as e:  # URLError (refused, reset), timeout
+            return None, f"GET /marketplace/all: {type(e).__name__}: {e}"
+
+    def _operator_exists(self, first: str, reg: str) -> bool:
+        """Register says the operator exists, so the 401s came from a Runtipi still starting: wait for it."""
+        waited, t0 = 0, time.monotonic()
+        while True:
+            left = max(0.0, min(self.EXISTS_WAIT - waited, self.EXISTS_WAIT - (time.monotonic() - t0)))
+            code, ans = self._probe(max(1.0, min(self.PROBE_TIMEOUT, left)))
+            if code == 200:
+                return False
+            if not left:
+                raise RuntipiError(f"Runtipi refuses the CLI token ({first}; after {self.EXISTS_WAIT} s: {ans}) "
+                                   f"although register says an operator exists ({reg})")
+            self.sleep(self.STEP)
+            waited += self.STEP
 
     def req(self, method: str, path: str, body: dict | None = None, timeout: int = 60):
         data = json.dumps(body).encode() if body is not None else None

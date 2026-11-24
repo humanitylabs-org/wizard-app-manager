@@ -15,6 +15,8 @@ Manager:
   2. writes it to the app's Runtipi user-config app.env under the recipe's variable name, which Runtipi merges into
      the app's env on every install, update, start and restart (so it is kept across updates; after a restore that
      brought back another token, the next sync writes that one).
+On owner boxes Runtipi's user-config is root-owned while wam runs as the owner's user (#931): app.env is then read
+and written as root through the runtipi container, and the sync lock lives in the Wizard home.
 The token opens only that app's own inbox routes and its delivery route, never the owner's. Nothing here prints a
 token. Bug lane (always on): without it every app call to the inbox answers 403 on a real box.
 """
@@ -133,25 +135,103 @@ def _own(p: Path, uid: int, gid: int) -> None:
 NO_SERVICE = "no Agent Service data folder on this box yet"
 
 
-def _user_env(runtipi_root: Path, app_id: str, store: str = STORE) -> dict[str, str]:
-    from .runtipi import read_env
+def _env_path(runtipi_root: Path, app_id: str, store: str = STORE) -> Path:
+    return Path(runtipi_root) / "user-config" / store / app_id / "app.env"
+
+
+def _parse_env(text: str) -> dict[str, str]:
+    """runtipi.read_env's parsing, for text read through the runtipi container."""
+    env: dict[str, str] = {}
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip().strip('"').strip("'")
+    return env
+
+
+def _rt_read(runtipi_root: Path, p: Path) -> bytes | None:
+    """A root-owned user-config file, read as root through the runtipi container (#931: on owner boxes Runtipi's
+    user-config is root:root and wam runs as the owner's own user)."""
+    from .gateway_keys import RuntipiFiles
+    return RuntipiFiles(Path(runtipi_root)).read(p)
+
+
+def _rt_write(runtipi_root: Path, p: Path, data: bytes) -> None:
+    """Replace a user-config file as root through the runtipi container: a 0600 temp file beside it, the old file's
+    owner kept, renamed into place. A missing app folder is made the way Runtipi makes it (root, 755)."""
+    from .app_rename import _ok, _sh
+    from .gateway_keys import RuntipiFiles
+    inner = RuntipiFiles(Path(runtipi_root))._inner(p)
+    _ok(_sh('d=$(dirname "$1"); [ -d "$d" ] || mkdir -p "$d" || exit 1; [ ! -L "$1" ] || exit 1; '
+            't="$1.wam-it.$$"; rm -f "$t"; (umask 077; cat > "$t") && chmod 600 "$t" '
+            '&& { [ ! -e "$1" ] || chown "$(stat -c %u:%g "$1")" "$t"; } && mv -f "$t" "$1" || { rm -f "$t"; exit 1; }',
+            inner, stdin=data), f"write {p}")
+
+
+def _user_env_text(runtipi_root: Path, app_id: str, store: str = STORE) -> str | None:
+    """The app's user-config app.env text (None when there is none). A file or folder the wam user may not read
+    (root-owned, or the 0600 file the privileged write left) is read through the runtipi container."""
+    p = _env_path(runtipi_root, app_id, store)
     try:
-        return read_env(Path(runtipi_root) / "user-config" / store / app_id / "app.env")
-    except OSError:
+        return p.read_text()
+    except FileNotFoundError:
+        return None
+    except PermissionError:
+        raw = _rt_read(runtipi_root, p)
+        return raw.decode("utf-8", "replace") if raw is not None else None
+
+
+def _user_env(runtipi_root: Path, app_id: str, store: str = STORE) -> dict[str, str]:
+    try:
+        return _parse_env(_user_env_text(runtipi_root, app_id, store) or "")
+    except Exception:  # noqa: BLE001 - unreadable counts as empty (the write then says what is wrong)
         return {}
 
 
 def _write_user_env(runtipi_root: Path, app_id: str, values: dict[str, str], store: str = STORE) -> None:
-    """Merge KEY=VALUE pairs into the app's user-config app.env, 0600 from the start (it holds a token)."""
-    p = Path(runtipi_root) / "user-config" / store / app_id / "app.env"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    keep = [l for l in (p.read_text().splitlines() if p.is_file() else []) if l.partition("=")[0].strip() not in values]
-    tmp = p.with_name(p.name + ".wam-tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    """Merge KEY=VALUE pairs into the app's user-config app.env, 0600 from the start (it holds a token). When the
+    wam user may not write there (Runtipi's user-config is root-owned on owner boxes, #931), the same merge is
+    written as root through the runtipi container."""
+    p = _env_path(runtipi_root, app_id, store)
+
+    def merged(text: str | None) -> str:
+        keep = [l for l in (text or "").splitlines() if l.partition("=")[0].strip() not in values]
+        return "\n".join(keep + [f"{k}={v}" for k, v in values.items()]) + "\n"
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        text = merged(p.read_text() if p.is_file() else None)
+        tmp = p.with_name(p.name + ".wam-tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    except PermissionError:
+        _rt_write(runtipi_root, p, merged(_user_env_text(runtipi_root, app_id, store)).encode())
+        return
     with os.fdopen(fd, "w") as f:
-        f.write("\n".join(keep + [f"{k}={v}" for k, v in values.items()]) + "\n")
+        f.write(text)
     os.chmod(tmp, 0o600)
     tmp.replace(p)
+
+
+def _lock(runtipi_root: Path, store: str, home: Path | None):
+    """The open file the box-wide sync lock is taken on: in the Wizard home (wam's own folder, always writable by
+    it), else beside user-config as before. An existing lock file another user made is opened read-only (flock
+    works on any open file)."""
+    places = [Path(home).expanduser() / "inbox-tokens.lock"] if home else []
+    places.append(Path(runtipi_root) / "user-config" / store / ".wam-inbox-tokens.lock")
+    last: OSError | None = None
+    for lock in places:
+        try:
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            return open(lock, "a")
+        except PermissionError as e:
+            last = e
+            try:
+                return open(lock, "r")
+            except OSError:
+                continue
+        except OSError as e:
+            last = e
+    raise last or OSError("no place for the inbox token lock")
 
 
 def sync_app(runtipi_root: Path, app_id: str, *, store: str = STORE, prefer: str = "installed", files=None,
@@ -168,9 +248,7 @@ def sync_app(runtipi_root: Path, app_id: str, *, store: str = STORE, prefer: str
         return {"skipped": "its recipe takes no agent inbox token"}   # nothing written for any other app
     if service_home(runtipi_root, store, home) is None:
         return {"vars": names, "skipped": NO_SERVICE}
-    lock = Path(runtipi_root) / "user-config" / store / ".wam-inbox-tokens.lock"
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock, "a") as fh:
+    with _lock(runtipi_root, store, home) as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
         try:
             return _sync_app(runtipi_root, app_id, store=store, prefer=prefer, files=files, mint=mint, home=home)

@@ -169,7 +169,13 @@ export class BackupArchive {
     }
   }
 
-  private async copySourceToQuarantine(source: string, destination: string, filter?: fs.CopyOptions['filter'], filterSource = source): Promise<void> {
+  private async copySourceToQuarantine(
+    source: string,
+    destination: string,
+    filter?: fs.CopyOptions['filter'],
+    filterSource = source,
+    child = false,
+  ): Promise<void> {
     if (process.platform !== 'linux') {
       await this.copySourceToQuarantineOutsideLinux(source, destination, filter, filterSource);
       return;
@@ -190,12 +196,27 @@ export class BackupArchive {
       if (code === 'ENXIO' && (await this.socketOrGone(source))) {
         return;
       }
+      // Wizard (wizard-app-manager#971): an entry deleted after its folder was listed (a running agent's SQLite journal,
+      // a temp file) is no longer data. Skipping it keeps one live writer from failing the whole backup, and with it
+      // the app's update. The top folder itself missing still fails.
+      if (code === 'ENOENT' && child) {
+        return;
+      }
       if (code !== 'ELOOP') {
         throw error;
       }
 
+      let target: string;
+      try {
+        target = await fs.promises.readlink(source);
+      } catch (linkError) {
+        if ((linkError as NodeJS.ErrnoException).code === 'ENOENT' && child) {
+          return;
+        }
+        throw linkError;
+      }
       await fs.promises.mkdir(path.dirname(destination), { recursive: true });
-      await fs.promises.symlink(await fs.promises.readlink(source), destination);
+      await fs.promises.symlink(target, destination);
       return;
     }
 
@@ -227,6 +248,7 @@ export class BackupArchive {
           path.join(destination, entry.name),
           filter,
           path.join(filterSource, entry.name),
+          true,
         );
       }
       // Wizard: keep a folder's own mode (e.g. an app's 0700 private folder), as `cp -r` did before 4.11.

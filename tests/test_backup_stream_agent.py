@@ -190,7 +190,7 @@ def test_stream_falls_back_when_hermes_keeps_the_databases(old, monkeypatch):
     monkeypatch.setattr(capture, "need_space", lambda *a, **k: None)
     box = old.box()
     real = box.runner.backup
-    monkeypatch.setattr(box.runner, "backup", lambda a, z, defer_dbs=False: real(a, z))
+    monkeypatch.setattr(box.runner, "backup", lambda a, z, defer_dbs=False, defer_files=None: real(a, z))
     monkeypatch.setattr(box.runner, "snapshot_dbs", lambda *a: pytest.fail("nothing was deferred"))
     stream = io.BytesIO()
     assert capture.export(box, plain_stream=stream)["ok"]
