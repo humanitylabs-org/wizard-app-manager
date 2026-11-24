@@ -1703,7 +1703,8 @@ def settle_existing_browser_boundary(c: Config, rt, before) -> dict | None:
         apps = sorted(_alongside_apps(c, rt))
         if not apps:
             return None
-        why_not = bb.existing_box_reason(c.home, before, core, alongside.LEGACY_BUNDLE, _on_release_commit(c, apps),
+        why_not = bb.existing_box_reason(c.home, before, core, alongside.LEGACY_BUNDLE,
+                                         _on_release_commit(c, [a for a in apps if a in core]),
                                          mac=bb.mac_guest())
         if why_not:
             return None

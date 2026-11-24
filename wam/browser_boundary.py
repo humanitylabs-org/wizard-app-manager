@@ -148,8 +148,8 @@ def existing_box_reason(home, installed_before, core, legacy, current, mac=False
     else why it is left as it is (tried again on the next installer run).
 
     On only when: the owner never chose (no state file) and the installer was not told WIZARD_BROWSER_BOUNDARY=0; the
-    box ran a shell or Agent Service before this run (a new box is settle_new_box's); no pre-split bundle (its shell
-    never sends the token); every shell/Agent Service app it has is on the release's own commit now (`current`: an
+    box ran the split shell or Agent Service before this run (a new box is settle_new_box's; a pre-split box runs the
+    bundle's own shell, which never sends the token); every shell/Agent Service app it has is on the release's own commit now (`current`: an
     older shell sends no token, so it must have moved first); and it is not a Mac guest (mac_guest)."""
     env = os.environ if env is None else env
     installed_before = set(installed_before)
@@ -157,10 +157,10 @@ def existing_box_reason(home, installed_before, core, legacy, current, mac=False
         return "the owner chose"
     if (env.get(SWITCH) or "1") != "1":
         return f"{SWITCH}={env.get(SWITCH)} in the installer's environment"
-    if legacy in installed_before:
-        return "the pre-split Wizard shell bundle is installed"
     if not installed_before & set(core):
-        return "not a box that already ran Wizard"
+        # a pre-split box runs the bundle's own shell, which never sends the token (a split box keeps the stopped
+        # bundle only as rollback material, beside the shell and Agent Service that run)
+        return "the pre-split Wizard shell bundle runs" if legacy in installed_before else "not a box that already ran Wizard"
     if not current:
         return "the shell or Agent Service is not on this release yet"
     if mac:

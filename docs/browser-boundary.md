@@ -36,8 +36,9 @@ it is switched on, like `wam browser-boundary on` (token, blocks, the shell and 
 `wam serve` restarted), when all of these hold:
 
 - the owner never chose (no `state.json`) and the installer was not given `WIZARD_BROWSER_BOUNDARY=0`;
-- a shell or Agent Service was installed before this run (a new box is decided above);
-- no pre-split `wizard-shell` bundle is installed (its shell never sends the token);
+- the split shell or Agent Service was installed before this run (a new box is decided above; a pre-split box that
+  runs only the `wizard-shell` bundle stays off, because the bundle's shell never sends the token, while a split box
+  that keeps the stopped bundle as rollback material follows);
 - the shell and the Agent Service are on the release's own source commit now (an older shell sends no token; a box
   whose update did not move them is tried again on the next installer run);
 - it is not a Mac guest (try-wizard's VM: its Mac app still calls the guest's update lease and backups without the
