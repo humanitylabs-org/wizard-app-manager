@@ -29,7 +29,7 @@ def test_links_cli_shares_final_urls_on_first_install(tmp_path, monkeypatch, cap
     assert cli.main(['links', '--json']) == 0
     for path in (home / 'apps.json', root / 'app-data/wizard-os/apps.json'):
         data = json.loads(path.read_text())
-        assert data['apps'][0]['view'] == {'url': '/files/', 'local': 'http://127.0.0.1:8794/files/'}
+        assert data['apps'][0]['view'] == {'url': '/files/', 'local': 'http://127.0.0.1:8794/files/', 'internal': 'http://files:8794/files/'}
     for base in (home, root / 'app-data/wizard-os'):
         assert (base / 'skills/files/SKILL.md').read_text() == 'Files skill survives both registry writes'
     assert calls == [True]
