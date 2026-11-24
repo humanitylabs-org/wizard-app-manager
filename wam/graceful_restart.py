@@ -37,6 +37,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from . import browser_boundary
+
 SWITCH = "wizard/graceful-restart"
 APP = "wizard-agent-service"
 ROUTE = "/wizard/v1/restart"
@@ -84,7 +86,8 @@ def http(method: str, url: str, body: dict | None = None, timeout: float = 10) -
     """(status, json). 0 when the service does not answer at all."""
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers={
-        "Accept": "application/json", **({"Content-Type": "application/json"} if data is not None else {})})
+        "Accept": "application/json", **browser_boundary.owner_headers(),
+        **({"Content-Type": "application/json"} if data is not None else {})})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 - loopback origin from the registry
             code, raw = r.status, r.read(262144)

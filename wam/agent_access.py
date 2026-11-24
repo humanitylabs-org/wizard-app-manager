@@ -31,6 +31,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from . import browser_boundary
+
 AGENT_ID = re.compile(r"[a-z][a-z0-9-]{0,30}")
 APP_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 MAIN = "hermes"   # the Agent Service's id for the main agent (its gateway token is the gateway's own)
@@ -53,7 +55,7 @@ def service_origin(home: Path | None) -> str | None:
 def _req(origin: str, method: str, path: str, body: dict | None = None, timeout: float = 10):
     data = json.dumps(body).encode() if body is not None else None
     r = urllib.request.Request(f"{origin}{path}", data=data, method=method,
-                               headers={"Accept": "application/json",
+                               headers={"Accept": "application/json", **browser_boundary.owner_headers(),
                                         **({"Content-Type": "application/json"} if data is not None else {})})
     try:
         with urllib.request.urlopen(r, timeout=timeout) as resp:

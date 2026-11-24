@@ -73,8 +73,9 @@ def refusal(headers, env=None) -> str | None:
 # (<home>/browser-boundary/shell-token, the folder 0700) and hands it, read-only, to the apps that must agree on it:
 # the Agent Service and the shell (wizard-ux, or the pre-split wizard-shell bundle), through a block of their stock
 # Runtipi user-config override marked `x-wizard-browser-boundary` (only that block is ever rewritten or removed).
-# `wam serve` reads the same file (apply_box_state at start). Off (the default) means no file, no block, no change.
-# Turning it on for anyone is Miguel's call after the hostile-app browser test (release stop on wizard-os#133).
+# `wam serve` reads the same file (apply_box_state at start). No state file means no token, no block, no change.
+# A new box starts with it on (settle_new_box, Miguel 23 Nov on wizard-os#133, after the automated hostile-app check
+# on a real box, wizard-ux tools/boundary-box.sh); a box installed before keeps it off for now (one release later).
 
 MARK = "x-wizard-browser-boundary"
 MOUNT = "/run/wizard-shell/token"
@@ -99,6 +100,61 @@ def box_on(home) -> bool:
         return json.loads(state_path(home).read_text()).get("on") is True
     except (OSError, ValueError, AttributeError):
         return False
+
+
+def settle_new_box(home, installed, core, defaults, env=None) -> dict | None:
+    """Every installer run (`wam bootstrap`, before anything is installed): a new box starts with the boundary on.
+
+    New box: the owner never chose (no state file), no shell / Agent Service / pre-split bundle is installed yet and
+    nothing but Wizard's own defaults is. Then the choice is recorded as on and the token minted, so the shell and the
+    Agent Service get their block when bootstrap installs them. A box that already runs Wizard is left alone (it follows
+    one release later: apps that keep data in the browser move it over first). An owner's choice is never changed, and
+    WIZARD_BROWSER_BOUNDARY=0 in the installer's environment keeps a new box off. `wam browser-boundary off` is the way
+    back. Returns what it decided, or None when it changed nothing."""
+    import json
+    import time
+    env = os.environ if env is None else env
+    if state_path(home).exists() or (env.get(SWITCH) or "1") != "1":
+        return None
+    installed = set(installed)
+    if installed & set(core) or installed - set(defaults):
+        return None
+    sp = state_path(home)
+    sp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(sp.parent, 0o700)
+    ensure_token(home)
+    sp.write_text(json.dumps({"on": True, "why": "new box", "at": int(time.time())}) + "\n")
+    return {"on": True, "why": "new box"}
+
+
+API_UNIT = "wizard-app-manager-api.service"
+
+
+def restart_serve(run=None) -> str:
+    """`wam serve` gates its own routes only from its next start (apply_box_state): restart its user unit if it runs
+    (try-restart: a box without the unit is left alone). "restarted", or "error: ..." for the caller to report."""
+    import subprocess
+    run = run or (lambda *a: subprocess.run(["systemctl", "--user", *a], capture_output=True, text=True, timeout=60))
+    try:
+        r = run("try-restart", API_UNIT)
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"error: {str(e)[:160]}"
+    return "restarted" if r.returncode == 0 else f"error: {(r.stderr or '').strip()[:160] or r.returncode}"
+
+
+def owner_headers(home=None) -> dict:
+    """The shell token header for this box's own programs that call the owner API on its loopback (`wam` agent
+    access, feature switches and agent restarts; `wizard contact`), or {} when the box has no token. The boundary
+    walls off app pages in the browser, not programs on the box: those are the owner on every box today (wizard-os
+    spec/OWNER_PROOF.md) and can read this file anyway. The token never leaves the box this way."""
+    if home is None:
+        from . import registry
+        home = registry.home()
+    try:
+        got = token_path(home).read_text().strip()
+    except (OSError, UnicodeError):
+        return {}
+    return {HEADER: got} if _HEX64.fullmatch(got) else {}
 
 
 def ensure_token(home, minted: list | None = None) -> "Path":

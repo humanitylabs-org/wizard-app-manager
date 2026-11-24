@@ -12,7 +12,26 @@ the device, not that the shell asked. The shell-only token proves the shell aske
 
 Off unless `WIZARD_BROWSER_BOUNDARY=1` (environment of the `wam serve` process). Off means no change at all.
 Do not turn it on alone: the shell must first send the token (wizard-ux) and the box must provision the token file.
-Turning it on for anyone is Miguel's call after the hostile-app browser test (release stop on #133).
+`wam browser-boundary on|off` (below) does both.
+
+## New boxes start with it on
+
+Miguel, 23 Nov 2026 (#133, option A), after the automated hostile-app check on a real box (wizard-ux
+`tools/boundary-box.sh`, CI job "Hostile app on a real box"): a new box starts with the boundary on, a box installed
+before keeps it off for one more release (apps that keep data in the browser move it over first).
+
+`wam bootstrap` decides it once, before it installs anything (`browser_boundary.settle_new_box`): when no choice is
+recorded (`<wam home>/browser-boundary/state.json` is missing), no shell / Agent Service / pre-split bundle is
+installed and nothing but Wizard's own defaults is, it records `on` (`"why": "new box"`) and mints the token, so the
+shell and the Agent Service get their block as bootstrap installs them. `wam bootstrap` then restarts `wam serve`
+(`systemctl --user try-restart wizard-app-manager-api`) so its own routes follow; install.sh reports a failed restart. A box that already runs Wizard, or whose owner chose, is left as it is. `WIZARD_BROWSER_BOUNDARY=0`
+in the installer's environment (get.sh forwards it) keeps a new box off; the Mac guest build uses that until its
+setup page sends the token. `wam browser-boundary off` is the way back on any box.
+
+The box's own programs that call the owner API on its loopback send the token from the same file
+(`browser_boundary.owner_headers`): `wam` agent access, feature switches and agent restarts, and `wizard contact`.
+The boundary walls off app pages in the browser, not programs on the box (they are the owner on every box today,
+wizard-os `spec/OWNER_PROOF.md`).
 
 With it on:
 
@@ -41,8 +60,8 @@ in its `host.env` whether the box is on or off. It reads the file on every call 
 holds one, for its one box-local Agent Service read (the repair page's sign-in recovery card), so `on` and `off` need
 no Troubleshooter restart. It never sets `WIZARD_BROWSER_BOUNDARY` and never hands the token to its page.
 
-Never run `on` before the shell sends the token (wizard-ux, next slice): every Store, Settings and chat call from the
-shell would be refused too. With the box off (the default) there is no token file and no block, so nothing changes.
+The shell sends the token (wizard-ux `core/shell-token.js`). With the box off there is no token file and no block,
+so nothing changes.
 
 This is an extra gate: the owner login, tailscaled peer, origin, `X-Wizard-Store` and from-box checks still run first.
 

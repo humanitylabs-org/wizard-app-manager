@@ -1302,8 +1302,7 @@ def refresh_session_mounts(c: Config) -> dict:
 
 def browser_boundary_cmd(c: Config, args) -> int:
     """`wam browser-boundary status|on|off` (wizard-os#133). On mints the shell-only token and hands it to the Agent
-    Service and the shell; off removes both. Do not turn it on before the shell sends the token (wizard-ux): every
-    Store, Settings and chat call would be refused. Turning it on for anyone is Miguel's call (release stop)."""
+    Service and the shell; off removes both (the way back). A new box starts with it on (settle_browser_boundary)."""
     from . import browser_boundary as bb
     try:
         rt = c.runtipi()
@@ -1613,6 +1612,7 @@ def bootstrap(c: Config) -> dict:
     release_pins.load()
     rt = c.runtipi()
     mode = settle_connection_mode(c, rt)   # before anything is installed: a new box has only Wizard's own apps
+    boundary = settle_browser_boundary(c, rt)   # wizard-os#133: a new box starts with the browser boundary on
     reg = write_registry(c, rt)
     done, failed = [], {}
     for app_id in slots.to_install(reg):
@@ -1642,7 +1642,26 @@ def bootstrap(c: Config) -> dict:
         out["hand_overrides"] = hand
     if mode:
         out["connection_mode"] = mode
+    if boundary:
+        out["browser_boundary"] = boundary
     return out
+
+
+def settle_browser_boundary(c: Config, rt) -> dict | None:
+    """wizard-os#133 (Miguel, 23 Nov): a new box starts with the browser boundary on; a box that already runs Wizard,
+    or whose owner chose, is left as it is (browser_boundary.settle_new_box). `wam bootstrap` then restarts `wam serve`
+    (restart_serve), so the App Manager's own routes follow. Never fails the installer."""
+    from . import browser_boundary as bb
+    try:
+        defaults = slots.load_defaults()
+        core = {d.get("app") for s, d in defaults.items() if s in (alongside.SHELL_SLOT, alongside.SERVICE_SLOT)}
+        core.add(alongside.LEGACY_BUNDLE)
+        shipped = {(v or {}).get("app") for v in defaults.values()}
+        return bb.settle_new_box(c.home, installed_ids(rt), core - {None}, shipped - {None})
+    except Exception as e:  # noqa: BLE001
+        print(f"note: browser boundary left off ({str(e)[:160]}); `wam browser-boundary on` turns it on",
+              file=sys.stderr)
+        return None
 
 
 def relink_fresh_agent(c: Config, rt) -> dict | None:
@@ -3256,7 +3275,7 @@ def main(argv: list[str] | None = None) -> int:
     sd = sub.add_parser("store-data", help="set up the App Store browse data and Store Get routes for the installed shell")
     sd.add_argument("--dry-run", action="store_true")
     ln = sub.add_parser("links"); ln.add_argument("--json", action="store_true"); ln.add_argument("--dry-run", action="store_true")
-    bbp = sub.add_parser("browser-boundary", help="shell-only token for owner routes (wizard-os#133; off by default)")
+    bbp = sub.add_parser("browser-boundary", help="shell-only token for owner routes (wizard-os#133; on for new boxes)")
     bbp.add_argument("action", choices=["status", "on", "off"])
     bbp.add_argument("--no-restart", action="store_true", help="write the settings only; restart the apps yourself")
     bbp.add_argument("--json", action="store_true"); bbp.add_argument("--dry-run", action="store_true")
@@ -3496,7 +3515,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"{r['name']:<20} {(r['active'] or '-'):<20} {r['state']:<15} default {r['default_app'] or '(none yet)'}"
                 + ("  required" if r["required"] else "") for r in rows))
         elif args.cmd == "bootstrap":
-            print(json.dumps(bootstrap(c), indent=2))
+            boot = bootstrap(c)
+            if boot.get("browser_boundary"):   # wizard-os#133: switched on just now; `wam serve` must gate its routes too
+                from . import browser_boundary as _bb
+                boot["browser_boundary"]["serve"] = _bb.restart_serve()
+            print(json.dumps(boot, indent=2))
         elif args.cmd == "prefetch":
             from . import recommended
             print(json.dumps(recommended.prefetch_private_first(c) if args.private_first else recommended.prefetch(c),

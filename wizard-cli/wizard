@@ -58,6 +58,15 @@ def os_home() -> Path:
     return Path(os.environ.get("WIZARD_OS_HOME") or Path.home() / ".wizard-os").expanduser()
 
 
+def _shell_token_header() -> dict:
+    """{"X-Wizard-Shell-Token": <token>} when this box has the browser boundary's shell token (wizard-os#133), else {}."""
+    try:
+        got = (os_home() / "browser-boundary" / "shell-token").read_text().strip()
+    except (OSError, UnicodeError):
+        return {}
+    return {"X-Wizard-Shell-Token": got} if re.fullmatch(r"[a-f0-9]{64}", got) else {}
+
+
 def registry_path(arg: str | None) -> Path:
     if arg:
         return Path(arg).expanduser()
@@ -1725,8 +1734,11 @@ def cmd_contact(ns):
     # view.local already fronts the shell and its Agent Service proxy. HTML alone
     # is not readiness: 0.3.32 pins a service without Setup, despite shipping its UI.
     setup_failure = "The shell answered, but its same-origin Setup API did not; run wizard doctor and update to a release with Setup support (0.3.33 or later)."
+    # With the browser boundary on (wizard-os#133) the owner API needs the shell token; this program runs on the box
+    # as its owner and reads the same file the App Manager hands the shell. The token is never printed.
+    setup_req = urllib.request.Request(f"http://{u.netloc}/wizard/v1/setup", headers=_shell_token_header())
     try:
-        with opener.open(f"http://{u.netloc}/wizard/v1/setup", timeout=min(ns.timeout, 8)) as response:
+        with opener.open(setup_req, timeout=min(ns.timeout, 8)) as response:
             setup = json.loads(response.read(262144))
             if response.status != 200 or not isinstance(setup, dict) or type(setup.get("first_run")) is not bool:
                 raise ValueError()
