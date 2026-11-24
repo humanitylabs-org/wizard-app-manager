@@ -370,8 +370,11 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         # unless an installed app already provides that spot.
         if dep in defaults:
             spot = dep
-            providers = slots.providers(write_registry(c, rt)).get(spot) or []
-            if providers or spot in alongside.external_slots(c.home):
+            reg = write_registry(c, rt)
+            providers = slots.providers(reg).get(spot) or []
+            # A host service filling the spot (wizard-agent-service#463: the host Wizard Voice Service) counts too.
+            host = ((reg.get("external") or {}).get(spot) or {}).get("host_service") is True
+            if providers or host or spot in alongside.external_slots(c.home):
                 continue
             dep = (defaults[spot] or {}).get("app") or dep
         if dep in have or dep in _seen:

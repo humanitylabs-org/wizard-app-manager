@@ -109,3 +109,33 @@ def test_wam_slots_command_shows_the_host_voice_service(voice, tmp_path, monkeyp
         assert state in out["Voice"] and state in out["Transcription"], out
         parked = {p["slot"]: p for p in json.loads((c.home / "apps.json").read_text())["parking"]}
         assert parked["voice"]["state"] == state
+
+
+def test_install_does_not_add_a_speech_stack_beside_the_host_voice_service(monkeypatch):
+    """An app whose `uses` names the transcription spot: the host service filling it counts (Codex P2), so the
+    spot's default (transcriber) is not installed beside it; without the host entry it still is."""
+    from wam import cli
+    calls = []
+
+    class RT:
+        def app(self, urn): return {"info": {"id": urn.split(":")[0]}}
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: RT())
+    monkeypatch.setattr(cli, "ensure_store", lambda c, rt: None)
+    monkeypatch.setattr(cli, "installed_ids", lambda rt: set())
+    monkeypatch.setattr(cli.alongside, "external_slots", lambda h: {})
+    recs = {"notes-app": {"id": "notes-app", "uses": ["transcription"]}, "transcriber": {"id": "transcriber", "uses": []}}
+    monkeypatch.setattr(cli, "resolve_any", lambda c, ref: recs[ref])
+    reg = {"apps": [], "external": {"transcription": {"external": True, "host_service": True, "id": "wizard-voice-service"}}}
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt=None: reg)
+
+    def stop(c, app_id, *a, **k):
+        calls.append(app_id); raise SystemExit("stop here")
+    monkeypatch.setattr(cli, "build_form", stop)
+    with pytest.raises(SystemExit):
+        cli.install(cli.Config(), "notes-app")
+    assert calls == ["notes-app"]
+    calls.clear()
+    reg["external"] = {}
+    with pytest.raises(SystemExit):
+        cli.install(cli.Config(), "notes-app")
+    assert calls[0] == "transcriber"
