@@ -86,8 +86,8 @@ Rules:
 
 ### Updates (Settings › About & updates)
 
-- **Updates**: Automatic (installs by itself overnight, never during a chat) or Ask me (nothing installs until they tap Install). When an update is ready, the card at the top of Settings offers Install (or Install now); it takes 10–20 minutes and Wizard reconnects by itself.
-- **Channel**: For everyone (releases testers have used for about 3 days; recommend it) or For testers (every release at once, and Settings › Appearance › Try new features with the feature switches).
+- **Updates**: Automatic (installs by itself, never during a chat: overnight on For everyone; on For testers as soon as a release is out, which on Wizard for Mac can be any hour) or Ask me (nothing installs until they tap Install). When an update is ready, the card at the top of Settings offers Install (or Install now); it takes 10–20 minutes and Wizard reconnects by itself.
+- **Channel**: For everyone (releases testers have used first, usually for about 3 days; a checked fix can come sooner; recommend it) or For testers (every release at once, and Settings › Appearance › Try new features with the feature switches).
 - When `wizard-interface` is in your skills, it has the current rows and words of this page.
 
 ### Proposing a change for everyone
