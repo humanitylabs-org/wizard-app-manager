@@ -97,6 +97,15 @@ def _permissions(w: dict) -> list[str]:
     return [p for p in BROWSER_PERMISSIONS if p in {v for v in value if isinstance(v, str)}]
 
 
+def _port(value) -> int | None:
+    """A declared container port (wizard.md `view.port`), or None."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if 1 <= n <= 65535 and not isinstance(value, bool) else None
+
+
 def _owner_proof(w: dict) -> dict | None:
     from . import owner_proof
     try:
@@ -170,7 +179,12 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path, *, o
                 "transport": mcp.get("transport", "streamable-http"),
             },
             "skill": f"skills/{name}/SKILL.md" if (meta["dir"] / "SKILL.md").is_file() else None,
-            "view": None if not view else {"url": f"http://{host}:{port}{view.get('path', '/')}"},
+            "view": None if not view else {"url": f"http://{host}:{port}{view.get('path', '/')}",
+                                           # The page from the shell / Agent Service containers on a fresh box (app gateway
+                                           # network, like mcp.internal): the local Wizard path served by the Agent Service
+                                           # with switch wizard/local-app-routes (wizard-app-manager#629).
+                                           **({"internal": f"http://{name}:{vp}{view.get('path', '/')}"}
+                                              if (vp := _port(view.get("port"))) else {})},
             "health": f"http://{host}:{port}{w['health']}" if w.get("health") else None,
             "_skill_src": str(meta["dir"] / "SKILL.md") if (meta["dir"] / "SKILL.md").is_file() else None,
         })
