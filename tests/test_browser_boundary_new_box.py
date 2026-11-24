@@ -207,8 +207,9 @@ def test_bootstrap_switches_a_mac_guest_on_once_its_mac_app_sends_the_token(monk
 
 
 def test_a_mac_guest_stays_off_without_a_clear_yes_from_its_mac_app(monkeypatch, tmp_path):
-    for caps in ({"shell_token": False}, {"shell_token": "yes"}, {}, []):
-        out, c, recreated = _bootstrap_existing(monkeypatch, tmp_path / str(len(str(caps))), mac=True, mac_caps=caps)
+    for i, caps in enumerate(({"shell_token": False}, {"shell_token": "yes"}, {}, [])):
+        (tmp_path / str(i)).mkdir()
+        out, c, recreated = _bootstrap_existing(monkeypatch, tmp_path / str(i), mac=True, mac_caps=caps)
         assert "browser_boundary" not in out and not recreated, caps
     assert bb.mac_host_sends_token(str(tmp_path / "missing.json")) is False
     (tmp_path / "bad.json").write_text("{not json")
