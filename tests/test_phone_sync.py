@@ -617,6 +617,29 @@ def test_two_releases_behind_tells_after_one_hour(owner):
     assert owner.told == []
     assert owner.go(1 * H + 1).endswith('behind:mirror,owner')
     assert len(owner.told) == 2 and all('0.10.58' in m and '0.10.60 is out' in m for _, m in owner.told)
+    # the note says why: the newest release's APK did not pass its checks here
+    assert all('newest not mirrored: 0.10.60 (unavailable_or_invalid)' in m for _, m in owner.told)
+
+
+def test_owner_feed_on_the_same_release_with_a_broken_apk_is_repaired(owner):
+    _at(owner, 124, '0.10.60')
+    owner.go(0)
+    apk = owner.owner / 'wizard-os-0.10.60.apk'
+    apk.write_bytes(b'truncated')
+    assert owner.go(1).endswith('owner:repaired:versionCode=124')
+    assert apk.read_bytes() == owner.apk
+    assert owner.go(2).endswith('owner:unchanged')
+    apk.unlink()
+    assert owner.go(3).endswith('owner:repaired:versionCode=124') and apk.read_bytes() == owner.apk
+
+
+def test_owners_own_build_of_the_same_release_stays(owner):
+    _at(owner, 124, '0.10.60')
+    (owner.owner / 'latest.json').write_text(json.dumps({'app': 'ai.wizards.os', 'versionName': '0.10.60', 'versionCode': 124,
+                                                         'url': 'wizard-os-0.10.60.apk', 'sha256': 'b' * 64}))
+    before = (owner.owner / 'latest.json').read_bytes()
+    assert owner.go(0).endswith('owner:unchanged')
+    assert (owner.owner / 'latest.json').read_bytes() == before
 
 
 def test_no_release_source_for_a_day_tells_the_owner(owner):

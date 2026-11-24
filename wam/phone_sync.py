@@ -256,7 +256,9 @@ def sync(home: Path, runtipi_root: Path, *, pointer_url=None, release_url=None, 
             for i, p in enumerate(admitted):
                 try:
                     return _publish(directory, opener, p, ceiling)
-                except _SKIP:
+                except _SKIP as e:
+                    if seen is not None:   # the watchdog names why the newest release is not on this box
+                        seen.setdefault('rejected', []).append(f"{p['versionName']} ({_outcome(e, None).split(':', 1)[1]})")
                     if i == len(admitted) - 1:
                         raise
     except _SKIP as e:
@@ -316,6 +318,20 @@ def _read_feed(directory: Path) -> dict:
     return feed if isinstance(feed, dict) and type(feed.get('versionCode')) is int else {}
 
 
+def _copy_apk(src: Path, apk: Path, new: dict) -> None:
+    fd, tmp = tempfile.mkstemp(prefix='.phone-apk-', dir=apk.parent)
+    try:
+        with os.fdopen(fd, 'wb') as out, src.open('rb') as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                out.write(chunk)
+            out.flush(); os.fsync(out.fileno()); os.fchmod(out.fileno(), 0o644)
+        if not _verify(Path(tmp), new['bytes'], new['sha256']):
+            raise ValueError('owner APK copy mismatch')
+        os.replace(tmp, apk)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
 def promote_owner(owner_dir: Path, mirror_dir: Path) -> str:
     """Bring a private owner feed up to the mirror's verified release: same bytes (size, sha256, real signer),
     the old latest.json kept as latest.json.bak-<code>, never a downgrade, latest.json written last."""
@@ -338,25 +354,24 @@ def promote_owner(owner_dir: Path, mirror_dir: Path) -> str:
         code = current.get('versionCode') if isinstance(current, dict) else None
         if type(code) is not int:
             raise ValueError('unreadable owner feed')
-        if code >= new['versionCode']:
+        apk = owner_dir / name
+        if code > new['versionCode']:
             return 'unchanged'
+        if code == new['versionCode']:
+            # The same release: unchanged only once its APK is really there and right; the owner's own build of
+            # this version (other bytes or name) is theirs and stays.
+            if current.get('url') != name or str(current.get('sha256', '')).lower() != new['sha256'].lower():
+                return 'unchanged'
+            if _verify(apk, new['bytes'], new['sha256']) and _signed(apk):
+                return 'unchanged'
+            _copy_apk(src, apk, new)
+            return f"repaired:versionCode={code}"
         if code < OWNER_MIN_CODE:
             return 'skipped:pre_preference'
-        apk = owner_dir / name
         if apk.exists() and not _verify(apk, new['bytes'], new['sha256']):
             raise ValueError('conflicting immutable APK URL')
         if not apk.exists():
-            fd, tmp = tempfile.mkstemp(prefix='.phone-apk-', dir=owner_dir)
-            try:
-                with os.fdopen(fd, 'wb') as out, src.open('rb') as f:
-                    for chunk in iter(lambda: f.read(1024 * 1024), b''):
-                        out.write(chunk)
-                    out.flush(); os.fsync(out.fileno()); os.fchmod(out.fileno(), 0o644)
-                if not _verify(Path(tmp), new['bytes'], new['sha256']):
-                    raise ValueError('owner APK copy mismatch')
-                os.replace(tmp, apk)
-            finally:
-                Path(tmp).unlink(missing_ok=True)
+            _copy_apk(src, apk, new)
         fd, tmp = tempfile.mkstemp(prefix='.phone-feed-', dir=owner_dir)
         try:
             with os.fdopen(fd, 'wb') as f:
@@ -449,14 +464,15 @@ def run(home: Path, runtipi_root: Path, *, owners=None, now=None, notify=None, *
     seen = {}
     outcome = sync(home, runtipi_root, seen=seen, **kw)
     mirror = Path(runtipi_root) / 'app-data/wizard-os/phone'
-    feeds, outcomes, parts = {'mirror': mirror}, {'mirror': outcome}, [outcome]
+    why = outcome + (f"; newest not mirrored: {', '.join(seen['rejected'])}" if seen.get('rejected') else '')
+    feeds, outcomes, parts = {'mirror': mirror}, {'mirror': why}, [outcome]
     for i, d in enumerate(owner_feed_dirs(home) if owners is None else owners):
         label = 'owner' if i == 0 else f'owner{i + 1}'
         try:
             res = promote_owner(d, mirror)
         except _SKIP:
             res = 'failed:unavailable_or_invalid'
-        feeds[label], outcomes[label] = d, f'owner {res}'
+        feeds[label], outcomes[label] = d, f'owner {res}; mirror {why}'
         parts.append(f'owner:{res}')
     behind = watch(home, feeds, seen, outcomes, now=now, notify=notify)
     if behind:
