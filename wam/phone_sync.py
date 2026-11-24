@@ -203,7 +203,8 @@ def sync(home: Path, runtipi_root: Path, *, pointer_url=None, release_url=None, 
 
     Reads the mirror pointer and the newest wizard-ux release's phone.json and mirrors the highest valid
     versionCode the box admits. A test that passes only pointer_url reads only that pointer.
-    `seen` (a dict, optional) gets `read` (a release source answered) and `newest` (the newest admitted release),
+    `seen` (a dict, optional) gets `read` (a release source answered), `newest` (the newest valid release within the
+    CI lead cap, also when this box's snapshot gate holds it back) and `rejected` (candidates whose APK failed),
     which the feed watchdog (`run`) compares with what the feeds serve."""
     directory = Path(runtipi_root) / 'app-data/wizard-os/phone'
     opener = urllib.request.build_opener(_Redirect(fixture))
@@ -235,14 +236,16 @@ def sync(home: Path, runtipi_root: Path, *, pointer_url=None, release_url=None, 
         return 'skipped:ci_release_too_far_ahead'
     # Only the reviewed pointer may lift a feed that sits above the ceiling.
     ceiling = None if reviewed is None else ceiling
+    if seen is not None:
+        # The release phones should get. A box whose snapshot the newest release refuses (or doesn't know) still
+        # counts it, so a feed held back by that gate is reported too, not left silent.
+        seen['newest'] = max(found, key=lambda c: c['versionCode'])
     try:
         installed = updates.installed(home)
         admitted = [p for p in found if installed is not None and _version(installed) >= _version(p['min_box_snapshot'])]
         if not admitted:
             return 'skipped:min_box_snapshot'
         admitted.sort(key=lambda c: c['versionCode'], reverse=True)
-        if seen is not None:
-            seen['newest'] = admitted[0]
         directory.parent.mkdir(parents=True, exist_ok=True)
         directory.parent.chmod(0o755)  # same public projection modes as cli.share_registry
         directory.mkdir(exist_ok=True)

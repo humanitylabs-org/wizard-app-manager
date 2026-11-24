@@ -681,3 +681,12 @@ def test_cli_runs_the_mirror_owner_feed_and_watchdog(owner, monkeypatch, capsys)
 def test_doctor_is_quiet_on_a_box_without_a_phone_feed(mirror, tmp_path, monkeypatch):
     monkeypatch.setattr(ps, 'owner_feed_dirs', lambda home: [])
     assert ps.doctor_row(mirror.home, now=0, unit_dir=tmp_path / 'none') is None
+
+
+def test_a_feed_held_back_by_the_box_snapshot_gate_is_reported(owner):
+    _at(owner, 124, '0.10.60')
+    (owner.home / 'release.json').unlink()      # installed snapshot unknown: the mirror admits nothing
+    assert owner.go(0) == 'skipped:min_box_snapshot owner:skipped:no_mirror'
+    assert owner.go(1 * H).endswith('behind:mirror,owner')
+    assert len(owner.told) == 2 and all('skipped:min_box_snapshot' in m for _, m in owner.told)
+    assert ps.doctor_row(owner.home, now=1 * H)[1] is False
