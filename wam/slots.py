@@ -61,9 +61,13 @@ def table(reg: dict, defaults: dict[str, dict] | None = None) -> list[dict]:
     for slot, d in defaults.items():
         if slot in external:   # filled from outside Runtipi (alongside mode: the host's own Hermes)
             e = external[slot]
+            # A host service (wizard-agent-service#463: the host Wizard Voice Service) fills the spot like an app.
+            host = bool(e.get("host_service"))
             rows.append({"slot": slot, "name": d.get("name", slot), "required": bool(d.get("required")),
-                         "default_app": d.get("app"), "installed": [], "active": e.get("id"), "state": "external",
-                         "external": f"external: {e.get('name', e.get('id'))}", "note": d.get("note", "")})
+                         "default_app": d.get("app"), "installed": [], "active": e.get("id"),
+                         "state": "filled" if host else "external",
+                         "external": f"{'host service' if host else 'external'}: {e.get('name', e.get('id'))}",
+                         **({"host_service": True} if host else {}), "note": d.get("note", "")})
             continue
         apps = have.get(slot, [])
         if slot == 'chats':
@@ -87,7 +91,7 @@ def to_install(reg: dict, defaults: dict[str, dict] | None = None) -> list[str]:
     for row in table(reg, defaults):
         if defaults[row["slot"]].get("install") == "on-demand":
             continue
-        if row["state"] == "external":
+        if row["state"] == "external" or row.get("host_service"):
             continue
         # Multi-provider slots are additive: Claude must not suppress the release's ChatGPT default.
         missing = row["default_app"] not in row["installed"] if defaults[row["slot"]].get("multi") else not row["installed"]
