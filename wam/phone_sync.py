@@ -198,11 +198,13 @@ def _publish(directory, opener, p, ceiling=None):
     return f"updated:versionCode={p['versionCode']}"
 
 
-def sync(home: Path, runtipi_root: Path, *, pointer_url=None, release_url=None, fixture=False):
+def sync(home: Path, runtipi_root: Path, *, pointer_url=None, release_url=None, fixture=False, seen=None):
     """Return one outcome; caller logs one line. fixture permits loopback HTTP in hermetic tests only.
 
     Reads the mirror pointer and the newest wizard-ux release's phone.json and mirrors the highest valid
-    versionCode the box admits. A test that passes only pointer_url reads only that pointer."""
+    versionCode the box admits. A test that passes only pointer_url reads only that pointer.
+    `seen` (a dict, optional) gets `read` (a release source answered) and `newest` (the newest admitted release),
+    which the feed watchdog (`run`) compares with what the feeds serve."""
     directory = Path(runtipi_root) / 'app-data/wizard-os/phone'
     opener = urllib.request.build_opener(_Redirect(fixture))
     urls = [pointer_url or POINTER] + ([release_url] if release_url else [] if pointer_url else [RELEASE_POINTER])
@@ -218,6 +220,8 @@ def sync(home: Path, runtipi_root: Path, *, pointer_url=None, release_url=None, 
         found.append((i == 0, p))
     if not found:
         return failures[0]
+    if seen is not None:
+        seen['read'] = True
     try:
         _, mirrored = _current(directory)
     except _SKIP:
@@ -237,6 +241,8 @@ def sync(home: Path, runtipi_root: Path, *, pointer_url=None, release_url=None, 
         if not admitted:
             return 'skipped:min_box_snapshot'
         admitted.sort(key=lambda c: c['versionCode'], reverse=True)
+        if seen is not None:
+            seen['newest'] = admitted[0]
         directory.parent.mkdir(parents=True, exist_ok=True)
         directory.parent.chmod(0o755)  # same public projection modes as cli.share_registry
         directory.mkdir(exist_ok=True)
@@ -255,6 +261,241 @@ def sync(home: Path, runtipi_root: Path, *, pointer_url=None, release_url=None, 
                         raise
     except _SKIP as e:
         return _outcome(e, None)
+
+
+# ---- The owner feed and the feed watchdog (wizard-ux#1768) ----
+#
+# Some boxes (James's) serve /reports/wizard-os/ from a private owner feed in the Hermes home instead of the
+# mirror above. Nothing on the box ever moved that folder: only tools/publish_owner_phone.py by hand, so it sat on
+# 0.10.58 while 0.10.59 and 0.10.60 shipped, and every skip here exits 0 with one line nobody reads. Now the hourly
+# run also brings such an owner feed up to the verified mirror, and remembers what each feed serves against the
+# newest release, so a stuck feed tells the owner (Notifications) and fails `wam doctor`.
+
+OWNER_FEED = Path('data/apps/private-reports/wizard-os')   # under a Hermes home
+# The first phone build that saves the Wizard's address on the phone (ServerSettings, 0.10.18). The shared build
+# has no address baked in, so a phone older than this would open Connect after the update: an owner feed still on
+# such a build is never moved here (publish_owner_phone.py with an owner build is the way), only reported.
+OWNER_MIN_CODE = 82
+STATE = 'phone-feed.json'                                   # in the Wizard home
+BEHIND_HOURS = 3        # a feed behind the newest release this long tells the owner
+BEHIND_RELEASES = 2     # ... or this many releases behind, once it has stayed behind for an hour
+UNREAD_HOURS = 24       # no release source answered for this long
+STALE_RUN_HOURS = 3     # `wam doctor`: the hourly mirror has not run for this long
+
+
+def owner_feed_dirs(home: Path) -> list[Path]:
+    """Private owner feeds this box serves (a Hermes home's private-reports/wizard-os with a latest.json)."""
+    homes = [os.environ.get('HERMES_HOME'), Path.home() / '.hermes']
+    try:
+        from . import alongside
+        homes.append(((alongside.load(Path(home)) or {}).get('agent') or {}).get('hermes_home'))
+    except Exception:  # noqa: BLE001 - discovery never breaks the mirror
+        pass
+    out, keys = [], set()
+    for h in homes:
+        if not h:
+            continue
+        d = Path(h) / OWNER_FEED
+        try:
+            if d.is_symlink() or not d.is_dir() or (d / 'latest.json').is_symlink() or not (d / 'latest.json').is_file():
+                continue
+            key = d.resolve()
+        except OSError:
+            continue
+        if key not in keys:
+            keys.add(key)
+            out.append(d)
+    return out
+
+
+def _read_feed(directory: Path) -> dict:
+    try:
+        feed = json.loads((Path(directory) / 'latest.json').read_text())
+    except (OSError, ValueError):
+        return {}
+    return feed if isinstance(feed, dict) and type(feed.get('versionCode')) is int else {}
+
+
+def promote_owner(owner_dir: Path, mirror_dir: Path) -> str:
+    """Bring a private owner feed up to the mirror's verified release: same bytes (size, sha256, real signer),
+    the old latest.json kept as latest.json.bak-<code>, never a downgrade, latest.json written last."""
+    owner_dir, mirror_dir = Path(owner_dir), Path(mirror_dir)
+    new = _read_feed(mirror_dir)
+    name = new.get('url')
+    if not new or not isinstance(name, str) or not APK_NAME.fullmatch(name) or name != f"wizard-os-{new.get('versionName')}.apk":
+        return 'skipped:no_mirror'
+    src = mirror_dir / name
+    if not (_verify(src, new.get('bytes'), str(new.get('sha256', ''))) and _signed(src)):
+        return 'skipped:mirror_unverified'
+    with (owner_dir / '.owner-publish.lock').open('a') as lock:   # the lock publish_owner_phone.py takes too
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return 'skipped:busy'
+        target = owner_dir / 'latest.json'
+        previous = target.read_bytes()
+        current = json.loads(previous)
+        code = current.get('versionCode') if isinstance(current, dict) else None
+        if type(code) is not int:
+            raise ValueError('unreadable owner feed')
+        if code >= new['versionCode']:
+            return 'unchanged'
+        if code < OWNER_MIN_CODE:
+            return 'skipped:pre_preference'
+        apk = owner_dir / name
+        if apk.exists() and not _verify(apk, new['bytes'], new['sha256']):
+            raise ValueError('conflicting immutable APK URL')
+        if not apk.exists():
+            fd, tmp = tempfile.mkstemp(prefix='.phone-apk-', dir=owner_dir)
+            try:
+                with os.fdopen(fd, 'wb') as out, src.open('rb') as f:
+                    for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                        out.write(chunk)
+                    out.flush(); os.fsync(out.fileno()); os.fchmod(out.fileno(), 0o644)
+                if not _verify(Path(tmp), new['bytes'], new['sha256']):
+                    raise ValueError('owner APK copy mismatch')
+                os.replace(tmp, apk)
+            finally:
+                Path(tmp).unlink(missing_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix='.phone-feed-', dir=owner_dir)
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                f.write(previous); f.flush(); os.fsync(f.fileno()); os.fchmod(f.fileno(), 0o644)
+            os.replace(tmp, owner_dir / f'latest.json.bak-{code}')
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+        _atomic_json(target, {k: new[k] for k in ('app', 'version', 'versionName', 'versionCode', 'url', 'bytes',
+                                                  'sha256', 'signer', 'notes') if k in new})
+        if _read_feed(owner_dir).get('versionCode') != new['versionCode']:
+            raise ValueError('owner feed readback failed')
+    return f"updated:versionCode={new['versionCode']}"
+
+
+def _load_state(home: Path) -> dict:
+    try:
+        st = json.loads((Path(home) / STATE).read_text())
+        return st if isinstance(st, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _hours(since, now) -> float:
+    return (now - since) / 3600 if isinstance(since, (int, float)) else 0.0
+
+
+def _tell(home: Path, title: str, message: str) -> bool:
+    from . import app_updates
+    from types import SimpleNamespace
+    return app_updates._notify(SimpleNamespace(home=Path(home)), title, message, priority='high', required=True)
+
+
+def watch(home: Path, feeds: dict, seen: dict, outcomes: dict, *, now=None, notify=None) -> list[str]:
+    """Compare what each feed serves with the newest release; tell the owner once per stuck release.
+
+    feeds: {label: directory}. Returns the labels that are behind (for the CLI line). State: <home>/phone-feed.json."""
+    now = time.time() if now is None else now
+    notify = notify or (lambda title, message: _tell(home, title, message))
+    st = _load_state(home)
+    old = st.get('feeds') if isinstance(st.get('feeds'), dict) else {}
+    told = st.get('told') if isinstance(st.get('told'), dict) else {}
+    newest = seen.get('newest')
+    if seen.get('read'):
+        st['read_at'] = now
+        st.pop('told_unread', None)
+    st.setdefault('first_run_at', now)
+    if newest:
+        prev = st.get('newest') or {}
+        st['newest'] = {'versionName': newest['versionName'], 'versionCode': newest['versionCode'],
+                        'seen_at': prev.get('seen_at', now) if prev.get('versionCode') == newest['versionCode'] else now}
+    rows, behind = {}, []
+    for label, directory in feeds.items():
+        feed = _read_feed(directory)
+        code, name = feed.get('versionCode', 0), feed.get('versionName') or 'none'
+        row = {'versionName': name, 'versionCode': code, 'outcome': outcomes.get(label, '')}
+        want = (st.get('newest') or {}).get('versionCode')
+        if want and code < want:
+            was = old.get(label) or {}
+            row['behind_since'] = was['behind_since'] if isinstance(was.get('behind_since'), (int, float)) else now
+            hours = _hours(row['behind_since'], now)
+            if hours >= BEHIND_HOURS or (want - code >= BEHIND_RELEASES and hours >= 1):
+                behind.append(label)
+                if told.get(label) != want:
+                    where = '' if label == 'mirror' else " from this Wizard's private update feed"
+                    msg = (f"Your phones are offered WizardOS {name}{where}, but {st['newest']['versionName']} is out "
+                           f"({int(hours)} h behind). The hourly phone update check said: {row['outcome'] or 'nothing'}. "
+                           "Ask your Wizard to look at it (wam doctor).")
+                    if notify('Phone app updates are stuck', msg):
+                        told[label] = want
+        else:
+            told.pop(label, None)
+        rows[label] = row
+    read_at = st.get('read_at', st['first_run_at'])
+    if not seen.get('read') and _hours(read_at, now) >= UNREAD_HOURS and not st.get('told_unread'):
+        if notify('Phone app updates are not being checked',
+                  f"This Wizard has not been able to read the phone releases from GitHub for {int(_hours(read_at, now))} h, "
+                  "so your phones get no app updates. Ask your Wizard to look at it (wam doctor)."):
+            st['told_unread'] = now
+    st.update(checked_at=now, feeds=rows, told=told)
+    try:
+        if Path(home).is_dir():
+            _atomic_json(Path(home) / STATE, st)
+    except OSError:
+        pass
+    return behind
+
+
+def run(home: Path, runtipi_root: Path, *, owners=None, now=None, notify=None, **kw) -> str:
+    """The hourly job: mirror, bring owner feeds along, then the watchdog. Returns the one CLI line."""
+    seen = {}
+    outcome = sync(home, runtipi_root, seen=seen, **kw)
+    mirror = Path(runtipi_root) / 'app-data/wizard-os/phone'
+    feeds, outcomes, parts = {'mirror': mirror}, {'mirror': outcome}, [outcome]
+    for i, d in enumerate(owner_feed_dirs(home) if owners is None else owners):
+        label = 'owner' if i == 0 else f'owner{i + 1}'
+        try:
+            res = promote_owner(d, mirror)
+        except _SKIP:
+            res = 'failed:unavailable_or_invalid'
+        feeds[label], outcomes[label] = d, f'owner {res}'
+        parts.append(f'owner:{res}')
+    behind = watch(home, feeds, seen, outcomes, now=now, notify=notify)
+    if behind:
+        parts.append('behind:' + ','.join(behind))
+    return ' '.join(parts)
+
+
+def doctor_row(home: Path, *, now=None, unit_dir=None):
+    """`wam doctor`: is the phone update feed current, and does the hourly mirror run? (wizard-ux#1768)"""
+    label = 'Phone update feed is current'
+    now = time.time() if now is None else now
+    st = _load_state(home)
+    if not isinstance(st.get('checked_at'), (int, float)):
+        timer = Path(unit_dir or Path.home() / '.config/systemd/user') / f'{UNIT}.timer'
+        try:
+            age = (now - timer.stat().st_mtime) / 3600
+        except OSError:
+            age = None
+        if age is not None and age >= STALE_RUN_HOURS:
+            return (label, False, f'the hourly phone mirror has never finished a run: check '
+                                  f'`systemctl --user status {UNIT}.timer`, run `wam phone-sync`')
+        if age is None and owner_feed_dirs(home):
+            return (label, False, 'this box serves a private phone update feed, but the hourly phone mirror is not '
+                                  'installed, so the feed never moves: run `wam phone-sync --ensure-timer`')
+        return None   # a fresh box before its first tick, or no phone feed on this box
+    if _hours(st['checked_at'], now) >= STALE_RUN_HOURS:
+        return (label, False, f"the hourly phone mirror last ran {int(_hours(st['checked_at'], now))} h ago: "
+                              f"check `systemctl --user status {UNIT}.timer`, run `wam phone-sync`")
+    newest = st.get('newest') or {}
+    late = []
+    for name, row in (st.get('feeds') or {}).items():
+        if newest.get('versionCode') and row.get('versionCode', 0) < newest['versionCode'] and _hours(row.get('behind_since'), now) >= 1:
+            late.append(f"{name} feed offers {row.get('versionName')} ({int(_hours(row.get('behind_since'), now))} h): {row.get('outcome')}")
+    if late:
+        return (label, False, f"newest phone release is {newest.get('versionName')}; " + '; '.join(late))
+    if _hours(st.get('read_at', st.get('first_run_at')), now) >= UNREAD_HOURS:
+        return (label, False, f"could not read the phone releases from GitHub for {int(_hours(st.get('read_at', st.get('first_run_at')), now))} h")
+    names = sorted({(r or {}).get('versionName') or 'none' for r in (st.get('feeds') or {}).values()})
+    return (label, True, f"phones are offered {', '.join(names)}" + (f"; newest release {newest['versionName']}" if newest else ''))
 
 
 def ensure_timer(home: Path, runtipi_root: Path, *, unit_dir=None, runner=subprocess.run):

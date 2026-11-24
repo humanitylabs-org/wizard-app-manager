@@ -2037,6 +2037,13 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool | None, str]]:
         out.extend(registry.slot_choices(json.loads(regp.read_text())))
         out.extend(doctor_gateway_keys(c, json.loads(regp.read_text())))
         out.extend(doctor_inbox_tokens(c, json.loads(regp.read_text())))
+    try:   # wizard-ux#1768: a phone update feed that falls behind, or a mirror that stopped running, shows here
+        from . import phone_sync
+        row = phone_sync.doctor_row(c.home)
+        if row:
+            out.append(row)
+    except Exception as e:  # noqa: BLE001 - a doctor row, never a crash
+        out.append(("Phone update feed is current", None, str(e)[:120]))
     try:
         from . import network
         rep = network.report(c)
@@ -3354,7 +3361,7 @@ def main(argv: list[str] | None = None) -> int:
         c = Config()
         try:
             outcome = (phone_sync.ensure_timer(c.home, c.runtipi_root) if args.ensure_timer
-                       else phone_sync.sync(c.home, c.runtipi_root))
+                       else phone_sync.run(c.home, c.runtipi_root))
         except OSError:
             print("phone-sync failed:timer_setup")
             return 1

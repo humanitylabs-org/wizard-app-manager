@@ -286,7 +286,7 @@ def test_timer_always_enabled_even_check_mode(mirror, tmp_path):
 
 def test_cli_one_line_exit_zero_on_noop(mirror, monkeypatch, capsys):
     monkeypatch.setattr(cli, 'Config', lambda: SimpleNamespace(home=mirror.home, runtipi_root=mirror.root))
-    monkeypatch.setattr(ps, 'sync', lambda *a: 'skipped:pointer_404')
+    monkeypatch.setattr(ps, 'run', lambda *a: 'skipped:pointer_404')
     assert cli.main(['phone-sync']) == 0
     assert capsys.readouterr().out == 'phone-sync skipped:pointer_404\n'
 
@@ -507,3 +507,154 @@ def test_pointer_offline_caps_ci_release_against_mirrored_feed(mirror):
     assert _feed(mirror)['versionCode'] == 78
     mirror.state['release'].update(versionCode=80, versionName='0.10.16')
     assert run() == 'updated:versionCode=80'
+
+
+# ---- wizard-ux#1768: the private owner feed moves with the mirror, and a stuck feed tells the owner ----
+
+H = 3600
+
+
+@pytest.fixture
+def owner(mirror, tmp_path, monkeypatch):
+    """A box like James's: /reports/wizard-os/ is served from a Hermes home's private owner feed, which already
+    serves the shared signed build at versionCode 122 (0.10.58)."""
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'hermes'))
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path / 'nobody')
+    d = tmp_path / 'hermes' / ps.OWNER_FEED
+    d.mkdir(parents=True)
+    (d / 'wizard-os-0.10.58.apk').write_bytes(b'old owner bytes')
+    (d / 'latest.json').write_text(json.dumps({'app': 'ai.wizards.os', 'version': '0.10.58', 'versionName': '0.10.58',
+                                               'versionCode': 122, 'url': 'wizard-os-0.10.58.apk'}))
+    told = []
+    mirror.state.update(owner=d, told=told)
+
+    def go(now, release=None):
+        kw = {'pointer_url': mirror.url, 'fixture': True}
+        if release:
+            kw['release_url'] = mirror.url.replace('/latest.json', '/release.json')
+        return ps.run(mirror.home, mirror.root, now=now, notify=lambda t, m: told.append((t, m)) or True, **kw)
+    mirror.state['go'] = go
+    return SimpleNamespace(**mirror.state, state=mirror.state)
+
+
+def _at(m, code, name):
+    m.pointer.update(versionCode=code, versionName=name)
+
+
+def test_owner_feed_is_found_only_when_it_serves_a_feed(owner, tmp_path, monkeypatch):
+    assert ps.owner_feed_dirs(owner.home) == [owner.owner]
+    (owner.owner / 'latest.json').unlink()
+    assert ps.owner_feed_dirs(owner.home) == []
+
+
+def test_new_release_reaches_the_owner_feed_in_the_same_run(owner):
+    _at(owner, 124, '0.10.60')
+    assert owner.go(1000) == 'updated:versionCode=124 owner:updated:versionCode=124'
+    feed = json.loads((owner.owner / 'latest.json').read_text())
+    assert (feed['versionCode'], feed['versionName'], feed['url']) == (124, '0.10.60', 'wizard-os-0.10.60.apk')
+    assert feed['sha256'] == hashlib.sha256(owner.apk).hexdigest() and feed['signer'] == ps.SIGNER
+    assert (owner.owner / 'wizard-os-0.10.60.apk').read_bytes() == owner.apk
+    assert json.loads((owner.owner / 'latest.json.bak-122').read_text())['versionCode'] == 122
+    assert (owner.owner / 'wizard-os-0.10.58.apk').read_bytes() == b'old owner bytes'   # nothing deleted there
+    assert owner.go(2000) == 'unchanged owner:unchanged'
+    assert owner.told == []
+
+
+def test_owner_feed_ahead_of_the_mirror_is_never_downgraded(owner):
+    _at(owner, 120, '0.10.56')
+    before = (owner.owner / 'latest.json').read_bytes()
+    assert owner.go(1000).endswith('owner:unchanged')
+    assert (owner.owner / 'latest.json').read_bytes() == before
+
+
+def test_owner_feed_from_before_the_saved_address_is_left_alone_and_reported(owner):
+    (owner.owner / 'latest.json').write_text(json.dumps({'app': 'ai.wizards.os', 'versionName': '0.9.38', 'versionCode': 62,
+                                                         'url': 'wizard-os-0.9.38.apk'}))
+    _at(owner, 124, '0.10.60')
+    assert owner.go(0) == 'updated:versionCode=124 owner:skipped:pre_preference'
+    assert json.loads((owner.owner / 'latest.json').read_text())['versionCode'] == 62
+    assert owner.go(1 * H) == 'unchanged owner:skipped:pre_preference behind:owner'
+    assert len(owner.told) == 1 and '0.9.38' in owner.told[0][1] and '0.10.60' in owner.told[0][1]
+
+
+def test_a_stuck_feed_tells_the_owner_once_per_release(owner):
+    _at(owner, 122, '0.10.58')
+    assert owner.go(0) == 'updated:versionCode=122 owner:unchanged'
+    os.chmod(owner.owner, 0o555)   # the owner feed can no longer be written (what a stuck box looks like)
+    try:
+        if os.access(owner.owner, os.W_OK):
+            pytest.skip('running as root')
+        _at(owner, 123, '0.10.59')
+        assert owner.go(1 * H).endswith('owner:failed:unavailable_or_invalid')   # one release, 0 h: no alert yet
+        assert owner.told == []
+        assert owner.go(2 * H) == 'unchanged owner:failed:unavailable_or_invalid'
+        assert owner.told == []
+        assert owner.go(4 * H).endswith('behind:owner')                          # 3 h behind: tell
+        assert len(owner.told) == 1
+        title, msg = owner.told[0]
+        assert title == 'Phone app updates are stuck' and 'WizardOS 0.10.58' in msg and '0.10.59 is out' in msg
+        owner.go(5 * H)
+        assert len(owner.told) == 1                                              # once per release
+        _at(owner, 124, '0.10.60')
+        owner.go(6 * H)
+        assert len(owner.told) == 2 and '0.10.60 is out' in owner.told[1][1]
+        row = ps.doctor_row(owner.home, now=6 * H)
+        assert row[0] == 'Phone update feed is current' and row[1] is False and 'owner feed offers 0.10.58' in row[2]
+    finally:
+        os.chmod(owner.owner, 0o755)
+    owner.go(7 * H)
+    assert json.loads((owner.owner / 'latest.json').read_text())['versionCode'] == 124
+    assert ps.doctor_row(owner.home, now=7 * H)[1] is True
+    assert len(owner.told) == 2
+
+
+def test_two_releases_behind_tells_after_one_hour(owner):
+    _at(owner, 122, '0.10.58')
+    owner.go(0)
+    _at(owner, 124, '0.10.60')
+    owner.pointer['sha256'] = '0' * 64          # this release can't be mirrored at all
+    owner.go(1)
+    assert owner.told == []
+    assert owner.go(1 * H + 1).endswith('behind:mirror,owner')
+    assert len(owner.told) == 2 and all('0.10.58' in m and '0.10.60 is out' in m for _, m in owner.told)
+
+
+def test_no_release_source_for_a_day_tells_the_owner(owner):
+    owner.go(0)
+    owner.state['status'] = 500
+    owner.go(23 * H)
+    assert owner.told == []
+    owner.go(25 * H)
+    owner.go(26 * H)
+    assert len(owner.told) == 1 and owner.told[0][0] == 'Phone app updates are not being checked'
+    assert ps.doctor_row(owner.home, now=26 * H)[1] is False
+
+
+def test_doctor_flags_a_mirror_that_stopped_running(owner, tmp_path):
+    units = tmp_path / 'units'
+    row = ps.doctor_row(owner.home, now=0, unit_dir=units)      # owner feed, no timer: it can never move
+    assert row[1] is False and '--ensure-timer' in row[2]
+    units.mkdir()
+    (units / 'wizard-phone-sync.timer').write_text('x')
+    os.utime(units / 'wizard-phone-sync.timer', (0, 0))
+    assert ps.doctor_row(owner.home, now=1 * H, unit_dir=units) is None   # just installed: first tick pending
+    assert ps.doctor_row(owner.home, now=4 * H, unit_dir=units)[1] is False
+    owner.go(0)
+    assert ps.doctor_row(owner.home, now=1 * H)[1] is True
+    row = ps.doctor_row(owner.home, now=4 * H)
+    assert row[1] is False and 'wizard-phone-sync.timer' in row[2]
+
+
+def test_cli_runs_the_mirror_owner_feed_and_watchdog(owner, monkeypatch, capsys):
+    monkeypatch.setattr(cli, 'Config', lambda: SimpleNamespace(home=owner.home, runtipi_root=owner.root))
+    calls = []
+    monkeypatch.setattr(ps, 'sync', lambda home, root, **kw: calls.append(kw) or 'skipped:pointer_404')
+    assert cli.main(['phone-sync']) == 0
+    assert capsys.readouterr().out == 'phone-sync skipped:pointer_404 owner:skipped:no_mirror\n'
+    assert 'seen' in calls[0]
+    assert json.loads((owner.home / ps.STATE).read_text())['feeds']['owner']['versionCode'] == 122
+
+
+def test_doctor_is_quiet_on_a_box_without_a_phone_feed(mirror, tmp_path, monkeypatch):
+    monkeypatch.setattr(ps, 'owner_feed_dirs', lambda home: [])
+    assert ps.doctor_row(mirror.home, now=0, unit_dir=tmp_path / 'none') is None
