@@ -175,6 +175,11 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
                                      owner_proof_enabled=_owner_proof_enabled(c.home))
     reg['grants'] = read_grants(c, rt)
     ext = alongside.external_slots(c.home)
+    try:   # wizard-agent-service#463: a healthy host Wizard Voice Service fills Voice/Transcription (switch, off)
+        from . import host_services
+        ext = {**host_services.external_slots(reg, c.home), **ext}
+    except Exception:  # noqa: BLE001 - never fail the registry for it
+        pass
     if ext:
         reg["external"] = ext   # spots filled from outside Runtipi (alongside mode: the host's own Hermes)
     from . import links
