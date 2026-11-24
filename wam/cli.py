@@ -1705,7 +1705,7 @@ def settle_existing_browser_boundary(c: Config, rt, before) -> dict | None:
             return None
         why_not = bb.existing_box_reason(c.home, before, core, alongside.LEGACY_BUNDLE,
                                          _on_release_commit(c, [a for a in apps if a in core]),
-                                         mac=bb.mac_guest())
+                                         mac=bb.mac_guest() and not bb.mac_host_sends_token())
         if why_not:
             return None
         res = bb.set_box(c.home, c.runtipi_root, STORE, apps, True, why="existing box")

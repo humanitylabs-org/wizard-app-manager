@@ -129,8 +129,9 @@ def settle_new_box(home, installed, core, defaults, env=None) -> dict | None:
 
 
 def mac_guest() -> bool:
-    """try-wizard's Linux VM on a Mac. Its Mac app still calls the guest's owner routes without the token (the update
-    lease, backups), so a Mac guest is never switched on by itself; `wam browser-boundary on` still works there."""
+    """try-wizard's Linux VM on a Mac. Its Mac app calls the guest's owner routes itself (the update lease, dictation),
+    so a Mac guest is switched on by itself only once that Mac app sends the token (mac_host_sends_token);
+    `wam browser-boundary on` works there either way."""
     import subprocess
     from .disk import MAC_GUEST_MARK, MAC_HOST_FILE
     if MAC_HOST_FILE.is_file() or MAC_GUEST_MARK.exists():
@@ -142,6 +143,22 @@ def mac_guest() -> bool:
     return r.stdout.strip() == "apple"
 
 
+# Written into a Mac guest only by the code-only guest update of a WizardOS for Mac release whose own calls to owner
+# routes carry the shell token (try-wizard next/guest/overlay/opt/wizard/host-capabilities.json, wizard-os#133).
+MAC_HOST_CAPS = "/opt/wizard/host-capabilities.json"
+
+
+def mac_host_sends_token(path: str | None = None) -> bool:
+    """The Mac app running this guest sends the shell token on its own owner calls (MAC_HOST_CAPS says so). An older
+    Mac app never installed that file, so its guest stays as it is: its update lease would get 401 and wait forever."""
+    import json
+    from pathlib import Path
+    try:
+        return json.loads(Path(path or MAC_HOST_CAPS).read_text()).get("shell_token") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def existing_box_reason(home, installed_before, core, legacy, current, mac=False, env=None) -> str | None:
     """Every installer run (`wam bootstrap`, after the release moved the apps): a box that already ran Wizard follows
     the new boxes one release later (Miguel 23 Nov on wizard-os#133, option A). None when it may be switched on now,
@@ -150,7 +167,8 @@ def existing_box_reason(home, installed_before, core, legacy, current, mac=False
     On only when: the owner never chose (no state file) and the installer was not told WIZARD_BROWSER_BOUNDARY=0; the
     box ran the split shell or Agent Service before this run (a new box is settle_new_box's; a pre-split box runs the
     bundle's own shell, which never sends the token); every shell/Agent Service app it has is on the release's own commit now (`current`: an
-    older shell sends no token, so it must have moved first); and it is not a Mac guest (mac_guest)."""
+    older shell sends no token, so it must have moved first); and it is not a Mac guest whose Mac app does not send the
+    token yet (`mac`: mac_guest and not mac_host_sends_token)."""
     env = os.environ if env is None else env
     installed_before = set(installed_before)
     if state_path(home).exists():
