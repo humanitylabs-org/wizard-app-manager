@@ -598,6 +598,13 @@ def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -
                 v = _plain(v)
                 if str(k) not in installed_nets and str(k) != SHARED and (v is None or isinstance(v, dict)):
                     carry[str(k)] = dict(v or {})
+            # Runtipi's own per-app network: it adds `<app>_<store>_network` only to apps with more than one
+            # service, so an app that grows a second service in an update (Calendar 19 -> 33, Mail 20 -> 30) names
+            # a network the installed one-service compose never declared (#1021). Runtipi sets its subnet when it
+            # writes the new generated compose; until then a plain declaration keeps the project valid.
+            own_net = f"{app_id}_{store}_network"
+            if own_net not in installed_nets and any(own_net in s["networks"] for s in services.values()):
+                carry.setdefault(own_net, {})
     out = {"id": app_id, "name": w.get("name") or app_id, "uses": uses, "provides": [str(p) for p in w.get("provides") or []],
            "renamed_from": [str(x) for x in (rf if isinstance(rf, list) else [rf] if isinstance(rf, str) else [])],
            "router": bool(req.get("models") or req.get("services")), "services": services, "custom": None,

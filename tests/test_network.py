@@ -1559,6 +1559,86 @@ def test_pre_update_override_parses_with_the_old_generated_compose(tmp_path):
     assert r.returncode == 0, r.stderr
 
 
+def _sidecar_update_box(tmp_path):
+    """Installed Calendar-19-like app: ONE service, so Runtipi's generated compose has no `c_wizardapps_network`;
+    the update adds a second service (Calendar 33's wizard-calendar-dav), so the new recipe gets that network."""
+    root = tmp_path / "runtipi"
+    inst = root / "apps" / "wizardapps" / "c"
+    new = root / "repos" / "wizardapps" / "apps" / "c"
+    inst.mkdir(parents=True)
+    new.mkdir(parents=True)
+    old = {"services": {"c": {"image": "a", "x-runtipi": {"is_main": True, "internal_port": 8799}}}}
+    (inst / "docker-compose.yml").write_text(yaml.safe_dump(old))
+    (inst / "docker-compose.generated.yml").write_text(yaml.safe_dump({
+        "services": {"c": {"image": "a", "networks": {"tipi_main_network": {"gw_priority": 1}}}},
+        "networks": {"tipi_main_network": {"name": "runtipi_tipi_main_network", "external": True}}}))
+    (new / "docker-compose.yml").write_text(yaml.safe_dump({
+        "services": {"c": {"image": "a", "x-runtipi": {"is_main": True, "internal_port": 8799}},
+                     "c-dav": {"image": "b"}}}))
+    return root, inst
+
+
+def test_pre_update_override_declares_runtipis_app_network_when_an_update_adds_a_service(tmp_path):
+    """#1021: Calendar 19 -> 33 and Mail 20 -> 30 failed on a box with `service "c" refers to undefined network
+    c_wizardapps_network`: the new version has two services, so the pre-update override lists Runtipi's per-app
+    network, which the installed one-service compose never declared. The override now declares it until the
+    post-update reconcile, where Runtipi's new generated compose defines it (with its subnet)."""
+    root, inst = _sidecar_update_box(tmp_path)
+    a = net.read_app(root, "wizardapps", "c", fresh=True)
+    ov = net.overlay_for(net.plan([a], [], set())["apps"][0])
+    assert "c_wizardapps_network" in ov["services"]["c"]
+    assert ov["networks"]["c_wizardapps_network"] == {}
+    f = net.override_path(root, "wizardapps", "c")
+    assert net.write_overlay(f, ov)
+    doc = yaml.safe_load(f.read_text().replace("!override", ""))
+    assert "c_wizardapps_network" in doc[net.MARK]["networks"]
+    # after the update: Runtipi's new generated compose defines the network; the reconcile drops our declaration
+    (inst / "docker-compose.generated.yml").write_text(yaml.safe_dump({
+        "services": {"c": {"image": "a", "networks": {"c_wizardapps_network": {"gw_priority": 0},
+                                                      "tipi_main_network": {"gw_priority": 1}}},
+                     "c-dav": {"image": "b", "networks": {"c_wizardapps_network": {"gw_priority": 0}}}},
+        "networks": {"tipi_main_network": {"name": "runtipi_tipi_main_network", "external": True},
+                     "c_wizardapps_network": {"ipam": {"config": [{"subnet": "10.128.9.0/24"}]}}}}))
+    (inst / "docker-compose.yml").write_text((root / "repos" / "wizardapps" / "apps" / "c" / "docker-compose.yml").read_text())
+    a2 = net.read_app(root, "wizardapps", "c")
+    assert a2["carry_networks"] == {}
+    net.write_overlay(f, net.overlay_for(net.plan([a2], [], set())["apps"][0]))
+    doc = yaml.safe_load(f.read_text().replace("!override", ""))
+    assert "c_wizardapps_network" not in (doc.get("networks") or {})
+    assert "c_wizardapps_network" in doc["services"]["c"]["networks"]
+
+
+def test_sidecar_pre_update_override_parses_with_the_old_and_new_generated_compose(tmp_path):
+    """#1021, with real Compose when it is installed: the update's stop and rollback (old generated) and its start
+    (new generated) both accept the pre-update override, and the new compose keeps Runtipi's subnet."""
+    import shutil
+    import subprocess
+    if not shutil.which("docker") or subprocess.run(["docker", "compose", "version"], capture_output=True).returncode:
+        pytest.skip("docker compose not installed")
+    root, inst = _sidecar_update_box(tmp_path)
+    a = net.read_app(root, "wizardapps", "c", fresh=True)
+    f = net.override_path(root, "wizardapps", "c")
+    net.write_overlay(f, net.overlay_for(net.plan([a], [], set())["apps"][0]))
+    gen = inst / "docker-compose.generated.yml"
+
+    def config(*extra):
+        return subprocess.run(["docker", "compose", "-p", "c", "-f", str(gen), "-f", str(f), "config", *extra],
+                              capture_output=True, text=True)
+    r = config("-q")
+    assert r.returncode == 0, r.stderr
+    gen.write_text(yaml.safe_dump({
+        "services": {"c": {"image": "a", "networks": {"c_wizardapps_network": {"gw_priority": 0},
+                                                      "tipi_main_network": {"gw_priority": 1}}},
+                     "c-dav": {"image": "b", "networks": {"c_wizardapps_network": {"gw_priority": 0}}}},
+        "networks": {"tipi_main_network": {"name": "runtipi_tipi_main_network", "external": True},
+                     "c_wizardapps_network": {"ipam": {"config": [{"subnet": "10.128.9.0/24"}]}}}}))
+    r = config("--format", "json")
+    assert r.returncode == 0, r.stderr
+    got = json.loads(r.stdout)
+    assert got["networks"]["c_wizardapps_network"]["ipam"]["config"] == [{"subnet": "10.128.9.0/24"}]
+    assert "c_wizardapps_network" in got["services"]["c"]["networks"]
+
+
 def test_carried_network_never_replaces_the_owners_own_declaration(tmp_path):
     """#520 / Codex review on #521: a network the owner's override already declares keeps their settings and is
     never recorded as wam's, so the post-update reconcile can't delete it."""
