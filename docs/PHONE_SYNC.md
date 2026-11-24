@@ -66,6 +66,30 @@ One CLI outcome line is printed. Missing pointer (404), offline, invalid pointer
 no-downgrade and unchanged releases all exit 0, leaving retries to the next tick. Timer installation errors exit
 nonzero so the installer can report the missing timer.
 
+## Owner feeds and the feed watchdog (wizard-ux#1768)
+
+Some boxes serve `/reports/wizard-os/` from a private owner feed in a Hermes home
+(`$HERMES_HOME/data/apps/private-reports/wizard-os/`, also `~/.hermes/...` and the alongside agent's Hermes home)
+instead of the mirror folder above. Before this, only wizard-ux `tools/publish_owner_phone.py`, run by hand, moved
+that folder, so James's feed sat on 0.10.58 while 0.10.59 and 0.10.60 shipped. `wam phone-sync` (the hourly timer
+runs `phone_sync.run`) now, after the mirror:
+
+- brings every such owner feed (one with a `latest.json`) up to the mirror's release: the same bytes, checked again
+  for size, sha256 and the real signer; the old `latest.json` kept as `latest.json.bak-<versionCode>`; never a
+  downgrade; `latest.json` written last; under the `.owner-publish.lock` that `publish_owner_phone.py` takes too; old
+  APKs there are never deleted. An owner feed still on a build older than versionCode 82 (0.10.18, the first build
+  that saves the Wizard's address on the phone) is left alone (`owner:skipped:pre_preference`) and reported, because
+  the shared build has no address built in;
+- remembers in `$WIZARD_OS_HOME/phone-feed.json` the newest admitted release and what each feed serves. A feed that
+  stays behind it for 3 hours, or is 2 or more releases behind for an hour, sends one high-priority note to the
+  owner's Notifications inbox (once per release, retried while the inbox doesn't take it). No release source readable
+  for 24 hours sends one note too;
+- `wam doctor` shows `Phone update feed is current`: it fails when a feed is behind for an hour or more, when the
+  hourly mirror hasn't run for 3 hours (or never finished a run since its timer was installed), when no release could
+  be read for 24 hours, and when the box serves an owner feed but the timer isn't installed.
+
+The CLI line gains ` owner:<outcome>` per owner feed and ` behind:<feeds>` when the watchdog sees a stuck feed.
+
 ## Rollout boundary
 
 This change is not a deployment. Publish a box snapshot pinning this App Manager and the Service feed-route
