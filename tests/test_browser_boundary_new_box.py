@@ -118,3 +118,86 @@ def test_the_bootstrap_command_restarts_serve_when_it_switched_on(monkeypatch, c
     monkeypatch.setattr(bb, "restart_serve", lambda run=None: "restarted")
     cli.main(["bootstrap"])
     assert json.loads(capsys.readouterr().out)["browser_boundary"]["serve"] == "restarted"
+
+
+# ---------------------------------------------------------------- a box that already ran Wizard: one release later
+
+def _existing(tmp_path, **kw):
+    args = dict(installed_before={"wizard-ux", "wizard-agent-service", "files"}, core=CORE - {"wizard-shell"},
+                legacy="wizard-shell", current=True, mac=False, env={})
+    args.update(kw)
+    return bb.existing_box_reason(tmp_path, **args)
+
+
+def test_an_existing_box_on_the_release_may_switch_on(tmp_path):
+    assert _existing(tmp_path) is None
+
+
+def test_an_existing_box_is_left_alone_when_it_should_be(tmp_path):
+    assert _existing(tmp_path, installed_before=set()) == "not a box that already ran Wizard"
+    assert _existing(tmp_path, installed_before={"wizard-shell", "files"}).startswith("the pre-split")
+    # a split box keeps the stopped bundle as rollback material: it follows like any other
+    assert _existing(tmp_path, installed_before={"wizard-shell", "wizard-ux", "wizard-agent-service"}) is None
+    assert _existing(tmp_path, current=False).startswith("the shell or Agent Service is not on this release")
+    assert _existing(tmp_path, mac=True).startswith("a Mac guest")
+    assert _existing(tmp_path, env={bb.SWITCH: "0"}).startswith(bb.SWITCH)
+    bb.set_box(tmp_path, tmp_path / "rt", "wizardapps", [], False)          # the owner chose off
+    assert _existing(tmp_path) == "the owner chose"
+
+
+def _bootstrap_existing(monkeypatch, tmp_path, live_commit="c0ffee", mac=False, extra_installed=frozenset()):
+    from wam import release_pins, slots
+    rt_root = tmp_path / "rt"
+    for app in ("wizard-ux", "wizard-agent-service"):
+        d = rt_root / "apps" / cli.STORE / app
+        d.mkdir(parents=True)
+        (d / ".wizard-commit").write_text(live_commit + "\n")
+    pins = {"default_apps": {"shell": {"app": "wizard-ux", "commit": "c0ffee"},
+                             "agent-service": {"app": "wizard-agent-service", "commit": "c0ffee"}}}
+    recreated = []
+    monkeypatch.delenv(bb.SWITCH, raising=False)
+    monkeypatch.setattr(release_pins, "load", lambda: pins)
+    monkeypatch.setattr(bb, "mac_guest", lambda: mac)
+    monkeypatch.setattr(cli, "settle_connection_mode", lambda c, rt: None)
+    monkeypatch.setattr(cli, "installed_ids", lambda rt: {"wizard-ux", "wizard-agent-service", "files", *extra_installed})
+    if not extra_installed:
+        monkeypatch.setattr(cli, "_alongside_apps", lambda c, rt=None: {"wizard-agent-service": "service", "wizard-ux": "shell"})
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt: {"apps": []})
+    monkeypatch.setattr(slots, "to_install", lambda reg: [])
+    monkeypatch.setattr(slots, "table", lambda reg: [])
+    monkeypatch.setattr(cli, "hand_overrides_step", lambda c, rt: None)
+    monkeypatch.setattr(cli, "release_updates", lambda *a, **k: [])
+    monkeypatch.setattr(cli, "relink_fresh_agent", lambda c, rt: None)
+    monkeypatch.setattr(cli, "network_step", lambda c, rt: None)
+    monkeypatch.setattr(cli, "recreate_apps", lambda c, rt, ids: recreated.extend(ids) or {a: "recreated" for a in ids})
+    c = SimpleNamespace(runtipi=lambda: None, home=tmp_path / "home", runtipi_root=rt_root)
+    return cli.bootstrap(c), c, recreated
+
+
+def test_bootstrap_switches_an_existing_box_on_and_recreates_its_apps(monkeypatch, tmp_path):
+    out, c, recreated = _bootstrap_existing(monkeypatch, tmp_path)
+    assert out["browser_boundary"]["on"] is True and out["browser_boundary"]["why"] == "existing box"
+    assert json.loads(bb.state_path(c.home).read_text())["why"] == "existing box"
+    assert sorted(recreated) == ["wizard-agent-service", "wizard-ux"]
+    for app in recreated:
+        assert bb.status_one(c.runtipi_root, cli.STORE, app)
+    # decided once: the next installer run changes nothing
+    out2 = cli.bootstrap(c)
+    assert "browser_boundary" not in out2
+
+
+def test_bootstrap_waits_while_the_shell_is_not_on_the_release(monkeypatch, tmp_path):
+    out, c, recreated = _bootstrap_existing(monkeypatch, tmp_path, live_commit="0ld")
+    assert "browser_boundary" not in out and not bb.state_path(c.home).exists() and not recreated
+
+
+def test_bootstrap_leaves_a_mac_guest_off(monkeypatch, tmp_path):
+    out, c, recreated = _bootstrap_existing(monkeypatch, tmp_path, mac=True)
+    assert "browser_boundary" not in out and not bb.state_path(c.home).exists() and not recreated
+
+
+def test_bootstrap_switches_a_split_box_that_keeps_the_stopped_bundle_on(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_alongside_apps", lambda c, rt=None: {"wizard-agent-service": "service", "wizard-ux": "shell",
+                                                                      "wizard-shell": "bundle"})
+    out, c, recreated = _bootstrap_existing(monkeypatch, tmp_path, extra_installed={"wizard-shell"})
+    assert out["browser_boundary"]["why"] == "existing box"

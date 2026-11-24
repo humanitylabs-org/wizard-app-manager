@@ -75,7 +75,8 @@ def refusal(headers, env=None) -> str | None:
 # Runtipi user-config override marked `x-wizard-browser-boundary` (only that block is ever rewritten or removed).
 # `wam serve` reads the same file (apply_box_state at start). No state file means no token, no block, no change.
 # A new box starts with it on (settle_new_box, Miguel 23 Nov on wizard-os#133, after the automated hostile-app check
-# on a real box, wizard-ux tools/boundary-box.sh); a box installed before keeps it off for now (one release later).
+# on a real box, wizard-ux tools/boundary-box.sh); a box installed before follows one release later
+# (existing_box_reason, run by `wam bootstrap` after the release moved the apps).
 
 MARK = "x-wizard-browser-boundary"
 MOUNT = "/run/wizard-shell/token"
@@ -125,6 +126,46 @@ def settle_new_box(home, installed, core, defaults, env=None) -> dict | None:
     ensure_token(home)
     sp.write_text(json.dumps({"on": True, "why": "new box", "at": int(time.time())}) + "\n")
     return {"on": True, "why": "new box"}
+
+
+def mac_guest() -> bool:
+    """try-wizard's Linux VM on a Mac. Its Mac app still calls the guest's owner routes without the token (the update
+    lease, backups), so a Mac guest is never switched on by itself; `wam browser-boundary on` still works there."""
+    import subprocess
+    from .disk import MAC_GUEST_MARK, MAC_HOST_FILE
+    if MAC_HOST_FILE.is_file() or MAC_GUEST_MARK.exists():
+        return True
+    try:
+        r = subprocess.run(["systemd-detect-virt", "--vm"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.stdout.strip() == "apple"
+
+
+def existing_box_reason(home, installed_before, core, legacy, current, mac=False, env=None) -> str | None:
+    """Every installer run (`wam bootstrap`, after the release moved the apps): a box that already ran Wizard follows
+    the new boxes one release later (Miguel 23 Nov on wizard-os#133, option A). None when it may be switched on now,
+    else why it is left as it is (tried again on the next installer run).
+
+    On only when: the owner never chose (no state file) and the installer was not told WIZARD_BROWSER_BOUNDARY=0; the
+    box ran the split shell or Agent Service before this run (a new box is settle_new_box's; a pre-split box runs the
+    bundle's own shell, which never sends the token); every shell/Agent Service app it has is on the release's own commit now (`current`: an
+    older shell sends no token, so it must have moved first); and it is not a Mac guest (mac_guest)."""
+    env = os.environ if env is None else env
+    installed_before = set(installed_before)
+    if state_path(home).exists():
+        return "the owner chose"
+    if (env.get(SWITCH) or "1") != "1":
+        return f"{SWITCH}={env.get(SWITCH)} in the installer's environment"
+    if not installed_before & set(core):
+        # a pre-split box runs the bundle's own shell, which never sends the token (a split box keeps the stopped
+        # bundle only as rollback material, beside the shell and Agent Service that run)
+        return "the pre-split Wizard shell bundle runs" if legacy in installed_before else "not a box that already ran Wizard"
+    if not current:
+        return "the shell or Agent Service is not on this release yet"
+    if mac:
+        return "a Mac guest (its Mac app does not send the token yet)"
+    return None
 
 
 API_UNIT = "wizard-app-manager-api.service"
@@ -327,10 +368,11 @@ def apply_box_state(home, env=None) -> bool:
     return True
 
 
-def set_box(home, runtipi_root, store: str, app_ids, on: bool, dry_run: bool = False) -> dict:
+def set_box(home, runtipi_root, store: str, app_ids, on: bool, dry_run: bool = False, why: str = "") -> dict:
     """`wam browser-boundary on|off`: record the choice, mint (or drop) the token and (re)write each app's block.
-    Restarting the apps and `wam serve` is the caller's."""
+    Restarting the apps and `wam serve` is the caller's. `why` is noted in the state file when given."""
     import json
+    import time
     out = {"on": on, "changed": []}
     if dry_run:
         out["would_change"] = list(app_ids)
@@ -341,7 +383,7 @@ def set_box(home, runtipi_root, store: str, app_ids, on: bool, dry_run: bool = F
         render(override_path(runtipi_root, store, app_id), overlay(home, app_id) if on else None)
     sp = state_path(home)
     sp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    sp.write_text(json.dumps({"on": on}) + "\n")
+    sp.write_text(json.dumps({"on": on, **({"why": why, "at": int(time.time())} if why else {})}) + "\n")
     minted: list = []
     if on:
         ensure_token(home, minted)

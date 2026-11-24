@@ -1611,6 +1611,7 @@ def bootstrap(c: Config) -> dict:
     """Fill every empty parking spot with its default app. Spots that already hold any provider are left alone."""
     release_pins.load()
     rt = c.runtipi()
+    before = _installed_or_none(rt)
     mode = settle_connection_mode(c, rt)   # before anything is installed: a new box has only Wizard's own apps
     boundary = settle_browser_boundary(c, rt)   # wizard-os#133: a new box starts with the browser boundary on
     reg = write_registry(c, rt)
@@ -1636,6 +1637,8 @@ def bootstrap(c: Config) -> dict:
     if mode and mode.get("notice") == "pending":   # Notifications may have been installed just now
         settle_connection_mode(c, rt)
     net = network_step(c, rt)   # every installer run (fresh or upgrade) converts/repairs the app networks
+    # wizard-os#133: a box that already ran Wizard follows one release later, once the release moved its shell
+    boundary = boundary or settle_existing_browser_boundary(c, rt, before)
     reg = write_registry(c, rt)
     out = {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg), "networks": _net_brief(net)}
     if hand:
@@ -1658,6 +1661,58 @@ def settle_browser_boundary(c: Config, rt) -> dict | None:
         core.add(alongside.LEGACY_BUNDLE)
         shipped = {(v or {}).get("app") for v in defaults.values()}
         return bb.settle_new_box(c.home, installed_ids(rt), core - {None}, shipped - {None})
+    except Exception as e:  # noqa: BLE001
+        print(f"note: browser boundary left off ({str(e)[:160]}); `wam browser-boundary on` turns it on",
+              file=sys.stderr)
+        return None
+
+
+def _installed_or_none(rt) -> set | None:
+    try:
+        return set(installed_ids(rt))
+    except Exception:  # noqa: BLE001 - only the browser boundary step reads it, and it then changes nothing
+        return None
+
+
+def _on_release_commit(c: Config, app_ids) -> bool:
+    """Every given app is installed from the release's own source commit (release-pins.json default_apps)."""
+    rows = {(r or {}).get("app"): r for r in ((release_pins.load() or {}).get("default_apps") or {}).values()}
+    for app_id in app_ids:
+        want = (rows.get(app_id) or {}).get("commit")
+        try:
+            have = (c.runtipi_root / "apps" / STORE / app_id / ".wizard-commit").read_text().strip()
+        except OSError:
+            return False
+        if not want or have != want:
+            return False
+    return True
+
+
+def settle_existing_browser_boundary(c: Config, rt, before) -> dict | None:
+    """wizard-os#133 (Miguel, 23 Nov, option A): a box that already ran Wizard turns the browser boundary on one
+    release after new boxes did, at the end of an installer run, once its shell and Agent Service are on the release
+    (browser_boundary.existing_box_reason). Like `wam browser-boundary on`: token, blocks, the two apps recreated;
+    `wam bootstrap` then restarts `wam serve`. An owner's choice is never changed; `wam browser-boundary off` is the way
+    back. Never fails the installer."""
+    from . import browser_boundary as bb
+    if before is None:
+        return None
+    try:
+        defaults = slots.load_defaults()
+        core = {d.get("app") for s, d in defaults.items() if s in (alongside.SHELL_SLOT, alongside.SERVICE_SLOT)} - {None}
+        apps = sorted(_alongside_apps(c, rt))
+        if not apps:
+            return None
+        why_not = bb.existing_box_reason(c.home, before, core, alongside.LEGACY_BUNDLE,
+                                         _on_release_commit(c, [a for a in apps if a in core]),
+                                         mac=bb.mac_guest())
+        if why_not:
+            return None
+        res = bb.set_box(c.home, c.runtipi_root, STORE, apps, True, why="existing box")
+        out = {"on": True, "why": "existing box"}
+        if res["changed"]:
+            out["restart"] = recreate_apps(c, rt, res["changed"])
+        return out
     except Exception as e:  # noqa: BLE001
         print(f"note: browser boundary left off ({str(e)[:160]}); `wam browser-boundary on` turns it on",
               file=sys.stderr)

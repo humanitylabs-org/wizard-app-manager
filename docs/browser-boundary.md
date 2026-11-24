@@ -28,6 +28,26 @@ shell and the Agent Service get their block as bootstrap installs them. `wam boo
 in the installer's environment (get.sh forwards it) keeps a new box off; the Mac guest build uses that until its
 setup page sends the token. `wam browser-boundary off` is the way back on any box.
 
+## Boxes that already ran Wizard follow one release later
+
+A box installed before keeps the boundary off through the release that switched new boxes on, then follows. At the
+end of every installer run (`wam bootstrap`, after the release moved the apps; `browser_boundary.existing_box_reason`)
+it is switched on, like `wam browser-boundary on` (token, blocks, the shell and the Agent Service recreated, then
+`wam serve` restarted), when all of these hold:
+
+- the owner never chose (no `state.json`) and the installer was not given `WIZARD_BROWSER_BOUNDARY=0`;
+- the split shell or Agent Service was installed before this run (a new box is decided above; a pre-split box that
+  runs only the `wizard-shell` bundle stays off, because the bundle's shell never sends the token, while a split box
+  that keeps the stopped bundle as rollback material follows);
+- the shell and the Agent Service are on the release's own source commit now (an older shell sends no token; a box
+  whose update did not move them is tried again on the next installer run);
+- it is not a Mac guest (try-wizard's VM: its Mac app still calls the guest's update lease and backups without the
+  token).
+
+It records `{"on": true, "why": "existing box"}`, so it is decided once. An app's saved settings come along: the shell
+copies each key an app wrote while it was same-origin into the app's own copy on its first sandboxed start (wizard-ux
+`core/browser-boundary.js` storeCarry). `wam browser-boundary off` is the way back.
+
 The box's own programs that call the owner API on its loopback send the token from the same file
 (`browser_boundary.owner_headers`): `wam` agent access, feature switches and agent restarts, and `wizard contact`.
 The boundary walls off app pages in the browser, not programs on the box (they are the owner on every box today,
