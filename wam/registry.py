@@ -99,11 +99,15 @@ def _permissions(w: dict) -> list[str]:
 
 def _port(value) -> int | None:
     """A declared container port (wizard.md `view.port`), or None."""
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
+    if isinstance(value, bool):
         return None
-    return n if 1 <= n <= 65535 and not isinstance(value, bool) else None
+    if isinstance(value, int):
+        n = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        n = int(value.strip())
+    else:   # floats (8794.5, .inf), lists, None: no address rather than a wrong one or a crash
+        return None
+    return n if 1 <= n <= 65535 else None
 
 
 def _owner_proof(w: dict) -> dict | None:

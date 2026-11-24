@@ -29,7 +29,9 @@ def test_view_with_a_port_gets_its_in_network_address(tmp_path):
 
 
 def test_view_without_a_usable_port_keeps_only_its_url(tmp_path):
-    for i, block in enumerate(['view:\n  path: /\n', 'view:\n  path: /\n  port: nope\n', 'view:\n  path: /\n  port: 70000\n']):
+    blocks = ['view:\n  path: /\n', 'view:\n  path: /\n  port: nope\n', 'view:\n  path: /\n  port: 70000\n',
+              'view:\n  path: /\n  port: .inf\n', 'view:\n  path: /\n  port: 8794.5\n', 'view:\n  path: /\n  port: true\n']
+    for i, block in enumerate(blocks):
         row = _row(tmp_path / str(i), block)
         assert row['view'] == {'url': 'http://127.0.0.1:8799/'}
 
