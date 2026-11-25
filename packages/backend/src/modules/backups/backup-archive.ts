@@ -176,7 +176,7 @@ export class BackupArchive {
   // link count. Symlinks are never followed, so a link can only count names really inside the folder.
   // wizard-app-manager#1039: app data can change during the walk (private agents), so on Linux each folder is opened
   // with O_NOFOLLOW and read through its own handle, like the copy: a folder swapped for a symlink is never entered.
-  // The copy filter is asked before anything is read, so a cancel stops the walk and excluded folders are skipped.
+  // The copy filter is asked before anything is read, so a cancel stops the walk at the next entry.
   private async internalHardLinks(
     root: string,
     filter?: fs.CopyOptions['filter'],
@@ -194,9 +194,11 @@ export class BackupArchive {
     const linux = process.platform === 'linux';
     const openFlags = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK | (fs.constants.O_DIRECTORY ?? 0);
 
-    // `directory` is where to read; `filterSource`/`filterDestination` are the paths the copy filter sees.
+    // `directory` is where to read; `filterSource`/`filterDestination` are the paths the copy filter sees. The filter is
+    // asked first so a cancel (it throws) stops the walk before anything is read. A folder it excludes (the app's own
+    // `backups`) is still walked, never copied: a live file hard-linked with a copy in there has all its names inside.
     const walk = async (directory: string, filterSource: string, filterDestination: string): Promise<void> => {
-      if (filter && !(await filter(filterSource, filterDestination))) return;
+      if (filter) await filter(filterSource, filterDestination);
 
       // Anything unreadable here is left for the copy itself to report; this walk only finds links it can prove inside.
       let handle: fs.promises.FileHandle | null = null;
@@ -221,7 +223,7 @@ export class BackupArchive {
             continue;
           }
           if (!entry.isFile()) continue;
-          if (filter && !(await filter(childSource, childDestination))) continue;
+          if (filter) await filter(childSource, childDestination);
           files.push(path.join(readFrom, entry.name));
         }
         await Promise.all(files.map(async (file) => count(await runFsOperation(() => fs.promises.lstat(file)).catch(() => null))));

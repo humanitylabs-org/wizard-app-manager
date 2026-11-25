@@ -311,21 +311,22 @@ describe('BackupArchive Linux filesystem security', () => {
   });
 
   // wizard-app-manager#1039 (Codex P2 on #1037): a cancelled update or backup is seen only through the copy filter. The
-  // hard-link scan must ask it before reading anything, and must not walk the excluded top-level `backups` folder.
-  it.runIf(process.platform === 'linux')('asks the copy filter before scanning and skips what it excludes', async () => {
+  // hard-link scan must ask it before reading anything and at every entry, also inside the excluded `backups` folder.
+  it.runIf(process.platform === 'linux')('stops the hard-link scan as soon as the job is cancelled', async () => {
     const rootDir = await fs.promises.mkdtemp('/tmp/runtipi-backup-source-');
     const source = path.join(rootDir, 'source');
+    const backups = path.join(source, 'backups');
     const destination = path.join(rootDir, 'backup', 'app-data');
     const logger = createLogger();
     const manager = new BackupArchive(new FilesystemService(logger), logger);
     const lstatSpy = vi.spyOn(fs.promises, 'lstat');
+    const archives = () => lstatSpy.mock.calls.filter(([p]) => String(p).endsWith('archive.tar.gz')).length;
 
     try {
       await writeFile(path.join(source, 'data', 'a'), 'a');
-      await fs.promises.link(path.join(source, 'data', 'a'), path.join(source, 'data', 'b'));
-      for (let i = 0; i < 20; i += 1) await writeFile(path.join(source, 'backups', `old-${i}`, 'archive.tar.gz'), 'old');
+      for (let i = 0; i < 20; i += 1) await writeFile(path.join(backups, `old-${i}`, 'archive.tar.gz'), 'old');
 
-      // Cancelled: the filter throws on its first call, so nothing may be read.
+      // Cancelled before the copy: the filter throws on its first call, so nothing is read.
       const cancelled = new AbortController();
       cancelled.abort();
       await expect(
@@ -336,18 +337,43 @@ describe('BackupArchive Linux filesystem security', () => {
       ).rejects.toThrow('Failed to copy app data for backup');
       expect(lstatSpy).not.toHaveBeenCalled();
 
-      // Not cancelled: nothing inside the excluded backups folder is read or asked about.
-      const asked: string[] = [];
-      await manager.stageBackupDirectory(source, destination, 'app data', (filterSource) => {
-        asked.push(filterSource);
-        return filterSource !== path.join(source, 'backups');
-      });
-      expect(asked.filter((p) => p.startsWith(`${path.join(source, 'backups')}/`))).toEqual([]);
-      expect(lstatSpy.mock.calls.filter(([p]) => String(p).endsWith('archive.tar.gz'))).toEqual([]);
-      await expect(fs.promises.readFile(path.join(destination, 'data', 'b'), 'utf8')).resolves.toBe('a');
-      await expect(fs.promises.access(path.join(destination, 'backups'))).rejects.toMatchObject({ code: 'ENOENT' });
+      // Cancelled while the scan is inside the excluded backups folder: it stops there instead of reading the rest.
+      const later = new AbortController();
+      let asked = 0;
+      await expect(
+        manager.stageBackupDirectory(source, destination, 'app data', (filterSource) => {
+          if (filterSource.startsWith(`${backups}/`) && ++asked === 3) later.abort();
+          later.signal.throwIfAborted();
+          return filterSource !== backups;
+        }),
+      ).rejects.toThrow('Failed to copy app data for backup');
+      expect(archives()).toBeLessThan(3);
     } finally {
       lstatSpy.mockRestore();
+      await fs.promises.rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  // Codex P1 on the #1039 fix: the excluded backups folder is not copied, but a live file hard-linked with a copy kept
+  // there still has every name inside the app data and must not be refused as an outside link.
+  it.runIf(process.platform === 'linux')('keeps a file hard-linked with a copy in the excluded backups folder', async () => {
+    const rootDir = await fs.promises.mkdtemp('/tmp/runtipi-backup-source-');
+    const source = path.join(rootDir, 'source');
+    const backups = path.join(source, 'backups');
+    const destination = path.join(rootDir, 'backup', 'app-data');
+    const logger = createLogger();
+    const manager = new BackupArchive(new FilesystemService(logger), logger);
+
+    try {
+      await writeFile(path.join(source, 'data', 'db'), 'live');
+      await fs.promises.mkdir(path.join(backups, 'snap'), { recursive: true });
+      await fs.promises.link(path.join(source, 'data', 'db'), path.join(backups, 'snap', 'db'));
+
+      await manager.stageBackupDirectory(source, destination, 'app data', (filterSource) => filterSource !== backups);
+
+      await expect(fs.promises.readFile(path.join(destination, 'data', 'db'), 'utf8')).resolves.toBe('live');
+      await expect(fs.promises.access(path.join(destination, 'backups'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
       await fs.promises.rm(rootDir, { recursive: true, force: true });
     }
   });
