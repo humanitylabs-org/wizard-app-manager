@@ -1666,6 +1666,7 @@ def _bootstrap(c: Config) -> dict:
     net = network_step(c, rt)   # every installer run (fresh or upgrade) converts/repairs the app networks
     # wizard-os#133: a box that already ran Wizard follows one release later, once the release moved its shell
     new_box = bool(boundary)
+    write_registry(c, rt)   # WAM#1043: the app check reads apps.json; this run's installs and updates must be in it
     boundary = boundary or settle_existing_browser_boundary(c, rt, before)
     # WAM#1043: a box the installer switched on (just now, or by an earlier release) keeps it only while every app
     # window opens inside it
