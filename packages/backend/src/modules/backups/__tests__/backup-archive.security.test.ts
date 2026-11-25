@@ -68,7 +68,8 @@ describe('BackupArchive file handle cleanup', () => {
         await expect(archive.copyRestoreArchive('/source', '/destination')).rejects.toBe(copyError);
       }
 
-      expect(handle.close).toHaveBeenCalledOnce();
+      // A backup opens the source twice: once for the hard-link scan (wizard-app-manager#1039), once for the copy.
+      expect(handle.close).toHaveBeenCalledTimes(operation === 'backup' ? 2 : 1);
       expect(logger.warn).toHaveBeenCalledWith('Failed to close backup file /source', closeError);
     } finally {
       Object.defineProperty(process, 'platform', { value: originalPlatform });

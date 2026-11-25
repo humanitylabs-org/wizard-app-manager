@@ -148,7 +148,7 @@ export class BackupArchive {
     try {
       // Wizard: hard links whose every name lives inside this folder (a uv/pip cache, a lock file) are the app's own
       // data and are copied as plain files. A file also linked from outside the folder is still refused.
-      const internalLinks = await this.internalHardLinks(source);
+      const internalLinks = await this.internalHardLinks(source, filter, quarantine);
       await this.copySourceToQuarantine(source, quarantine, filter, source, false, internalLinks);
     } catch (error) {
       this.logger.error(`Error copying ${name} to backup quarantine:`, error);
@@ -174,29 +174,64 @@ export class BackupArchive {
 
   // Wizard: every hard-linked file under `root` whose names all sit under `root`, keyed by device and inode, with its
   // link count. Symlinks are never followed, so a link can only count names really inside the folder.
-  private async internalHardLinks(root: string, runFsOperation = pLimit(16)): Promise<Map<string, number>> {
+  // wizard-app-manager#1039: app data can change during the walk (private agents), so on Linux each folder is opened
+  // with O_NOFOLLOW and read through its own handle, like the copy: a folder swapped for a symlink is never entered.
+  // The copy filter is asked before anything is read, so a cancel stops the walk at the next entry.
+  private async internalHardLinks(
+    root: string,
+    filter?: fs.CopyOptions['filter'],
+    destination = root,
+    runFsOperation = pLimit(16),
+  ): Promise<Map<string, number>> {
     const found = new Map<string, { nlink: number; seen: number }>();
-    const walk = async (directory: string): Promise<void> => {
-      // Anything unreadable here is left for the copy itself to report; this walk only finds links it can prove inside.
-      const entries = await runFsOperation(() => fs.promises.readdir(directory, { withFileTypes: true })).catch(() => []);
-      await Promise.all(
-        entries.map(async (entry) => {
-          const entryPath = path.join(directory, entry.name);
-          if (entry.isDirectory()) {
-            await walk(entryPath);
-            return;
-          }
-          if (!entry.isFile()) return;
-          const stats = await runFsOperation(() => fs.promises.lstat(entryPath)).catch(() => null);
-          if (!stats?.isFile() || stats.nlink < 2) return;
-          const key = `${stats.dev}:${stats.ino}`;
-          const known = found.get(key);
-          if (known) known.seen += 1;
-          else found.set(key, { nlink: stats.nlink, seen: 1 });
-        }),
-      );
+    const count = (stats: fs.Stats | null) => {
+      if (!stats?.isFile() || stats.nlink < 2) return;
+      const key = `${stats.dev}:${stats.ino}`;
+      const known = found.get(key);
+      if (known) known.seen += 1;
+      else found.set(key, { nlink: stats.nlink, seen: 1 });
     };
-    await walk(root);
+    const linux = process.platform === 'linux';
+    const openFlags = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK | (fs.constants.O_DIRECTORY ?? 0);
+
+    // `directory` is where to read; `filterSource`/`filterDestination` are the paths the copy filter sees. The filter is
+    // asked first so a cancel (it throws) stops the walk before anything is read. A folder it excludes (the app's own
+    // `backups`) is still walked, never copied: a live file hard-linked with a copy in there has all its names inside.
+    const walk = async (directory: string, filterSource: string, filterDestination: string): Promise<void> => {
+      if (filter) await filter(filterSource, filterDestination);
+
+      // Anything unreadable here is left for the copy itself to report; this walk only finds links it can prove inside.
+      let handle: fs.promises.FileHandle | null = null;
+      let readFrom = directory;
+      if (linux) {
+        handle = await fs.promises.open(directory, openFlags).catch(() => null);
+        if (!handle) return;
+        readFrom = `/proc/self/fd/${handle.fd}`;
+      }
+      try {
+        const stats = handle ? await handle.stat().catch(() => null) : await fs.promises.lstat(directory).catch(() => null);
+        if (!stats?.isDirectory()) return;
+
+        const entries = await runFsOperation(() => fs.promises.readdir(readFrom, { withFileTypes: true })).catch(() => []);
+        const files: string[] = [];
+        for (const entry of entries) {
+          const childSource = path.join(filterSource, entry.name);
+          const childDestination = path.join(filterDestination, entry.name);
+          if (entry.isDirectory()) {
+            // One folder at a time keeps a single open handle per depth.
+            await walk(path.join(readFrom, entry.name), childSource, childDestination);
+            continue;
+          }
+          if (!entry.isFile()) continue;
+          if (filter) await filter(childSource, childDestination);
+          files.push(path.join(readFrom, entry.name));
+        }
+        await Promise.all(files.map(async (file) => count(await runFsOperation(() => fs.promises.lstat(file)).catch(() => null))));
+      } finally {
+        await handle?.close().catch(() => undefined);
+      }
+    };
+    await walk(root, root, destination);
 
     const internal = new Map<string, number>();
     for (const [key, { nlink, seen }] of found) {
