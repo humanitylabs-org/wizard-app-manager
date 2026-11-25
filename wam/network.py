@@ -1610,6 +1610,15 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
         if ours(name) and owned_network(name, n) and name not in p["networks"] and name not in rejected:
             for cname in n["containers"]:
                 _run(docker, "network", "disconnect", "-f", name, cname, check=False)
+            # A container that is not running can still list the network in its settings: one Compose just created
+            # and is about to start (it waits for its dependencies first), or a stopped one Docker starts again later.
+            # Docker allows removing the network anyway, and that container's start then fails with "network ... not
+            # found" (wizard-messenger#395: an update briefly showed the new recipe's `uses:` link, the old version's
+            # restart was created with it, the link was dropped meanwhile, and the update rolled back). Take the
+            # network out of those settings too, so the container starts without the dropped link.
+            for c_ in live["containers"]:
+                if not c_["running"] and name in (c_.get("networks") or {}):
+                    _run(docker, "network", "disconnect", "-f", name, c_["id"], check=False)
             r = _run(docker, "network", "rm", name, check=False)
             if r.returncode:
                 out["errors"].append(f"remove {name}: {(r.stderr or '').strip()[:160]}")
