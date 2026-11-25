@@ -12,11 +12,9 @@ and its signatures are plain Ed25519. The trusted keys ship INSIDE this checkout
 allowed-signers format, one line per key so a key can be changed later by adding the new one first); they are never
 fetched from where the releases come from.
 
-The switch is `WIZARD_VERIFY_RELEASES` (environment, wins) or `"verify_releases"` in ~/.wizard-os/updates.json
-(`wam updates --verify-releases off|warn`): `off` (default) changes nothing at all; `warn` checks, logs a missing or
-bad signature to release-signature.log, records it (`release-signature.json`, `wam updates` status `signature`, and the quick
-update's install-status.json / release.json) and the update carries on. `enforce` (refuse, change nothing) is
-reserved for the next step: until ENFORCE_AVAILABLE is turned on it behaves like `warn` and says so.
+It always runs in warn mode (switched on for everyone, #565): it checks, logs a missing or bad signature to
+release-signature.log, records it (`release-signature.json`, `wam updates` status `signature`, and the quick
+update's install-status.json / release.json) and the update carries on. Refusing an update (enforce) is a later step.
 
 States: `signature`: ok | missing | bad (with a `reason`); `installer`: ok | mismatch | unnamed (the release names
 no installer hash) | unchecked.
@@ -35,11 +33,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-ENV = "WIZARD_VERIFY_RELEASES"
-SETTING = "verify_releases"
-MODES = ("off", "warn", "enforce")
-DEFAULT = "off"
-ENFORCE_AVAILABLE = False        # step A ships off and warn only; enforce comes with the signed releases
+MODE = "warn"                    # log and record, never refuse; enforce comes with the signed releases
+OLD_SETTING = "verify_releases"  # the removed switch's updates.json key (#565); dropped when found
 NAMESPACE = "wizardos-release"   # ssh-keygen -Y sign -n wizardos-release
 PRINCIPAL = "wizardos-release"   # the name every allowed key carries in release_signers
 SIGNERS = Path(__file__).with_name("release_signers")
@@ -51,28 +46,6 @@ _cache: dict[tuple, tuple[float, dict]] = {}
 
 def _home(home: Path | None) -> Path:
     return Path(home or os.environ.get("WIZARD_OS_HOME", Path.home() / ".wizard-os")).expanduser()
-
-
-def requested(home: Path | None = None) -> str:
-    """The mode asked for: the environment wins, then updates.json; anything unknown is off."""
-    v = os.environ.get(ENV)
-    if v is None:
-        try:
-            v = json.loads((_home(home) / "updates.json").read_text()).get(SETTING)
-        except (OSError, ValueError, AttributeError):
-            v = None
-    v = str(v or "").strip().lower()
-    return v if v in MODES else DEFAULT
-
-
-def mode(home: Path | None = None) -> str:
-    """The mode that runs: off | warn | enforce (enforce only once ENFORCE_AVAILABLE)."""
-    m = requested(home)
-    return "warn" if m == "enforce" and not ENFORCE_AVAILABLE else m
-
-
-def on(home: Path | None = None) -> bool:
-    return mode(home) != "off"
 
 
 def signers(path: Path | None = None) -> list[str]:
@@ -179,19 +152,6 @@ def installer_state(sha: str | None, expect: list[str]) -> str:
     return "ok" if sha.lower() in expect else "mismatch"
 
 
-def refuses(rec: dict | None, m: str | None = None) -> str | None:
-    """Why enforce refuses this update (None = go on). Only in enforce mode; warn and off never refuse."""
-    if not rec or (m or rec.get("mode")) != "enforce":
-        return None
-    if rec.get("signature") != "ok":
-        return f"release signature {rec.get('signature')}: {rec.get('reason', '')}".strip(": ")
-    if (rec.get("promotion") or {}).get("signature") not in (None, "ok"):
-        return f"promotion record signature {rec['promotion']['signature']}"
-    if rec.get("installer") == "mismatch":
-        return "the downloaded installer does not match the release's installer hash"
-    return None
-
-
 LOG = "release-signature.log"   # its own file: get.sh empties install.log when the installer starts
 
 
@@ -226,8 +186,7 @@ def _put(path: Path, doc: dict) -> None:
 def stamp(home: Path | None) -> None:
     """Carry the last check into what the installer wrote once it has finished: release.json gets `signature` when it
     records the release that was checked, install-status.json gets the summary when that run (started after the
-    check) is no longer running. get.sh writes both from scratch, so this runs after it (every `wam updates` status
-    with the switch on); the installer's own files are never touched while it runs."""
+    check) is no longer running. get.sh writes both from scratch, so this runs after it (every `wam updates` status); the installer's own files are never touched while it runs."""
     rec = read(home)
     if not rec or not rec.get("release"):
         return
@@ -263,28 +222,24 @@ def write(home: Path | None, rec: dict) -> dict:
     return rec
 
 
-def before_update(home: Path | None, version: str, base: str | None = None, keys: Path | None = None) -> dict | None:
-    """Check the target release before an update uses its pins. None when the switch is off (nothing happens).
+def before_update(home: Path | None, version: str, base: str | None = None, keys: Path | None = None) -> dict:
+    """Check the target release before an update uses its pins.
 
     Returns the record (also written to release-signature.json): mode, release, signature, reason, installer
     hashes the release names (`expect`) and, when this release has one, its promotion record's signature."""
-    m = mode(home)
-    if m == "off":
-        return None
     from . import quick_update
     doc = quick_update.release_doc(version, base)
     raw = doc[1] if doc else None
     res = check_release(version, base, raw, keys) if raw is not None else \
         {"signature": "missing", "reason": f"could not read {version}.json"}
-    rec = {"mode": m, "requested": requested(home), "release": version, **res,
+    rec = {"mode": MODE, "release": version, **res,
            "expect": installer_hashes(doc[0]) if doc else [], "installer": "unchecked"}
     prom = _get(f"{_base(base)}/promotions/{version}.json", 65536, 10)
     if prom is not None:
         rec["promotion"] = check_promotion(version, base, prom, keys)
     rec = write(home, rec)
     if rec["signature"] != "ok":
-        log(home, f"release {version}: signature {rec['signature']} ({rec.get('reason', '')}); "
-                  + ("refused (enforce)" if m == "enforce" else "carrying on (warn-only)"))
+        log(home, f"release {version}: signature {rec['signature']} ({rec.get('reason', '')}); carrying on (warn-only)")
     if (rec.get("promotion") or {}).get("signature") not in (None, "ok"):
         log(home, f"promotion record {version}: signature {rec['promotion']['signature']} "
                   f"({rec['promotion'].get('reason', '')})")
@@ -322,8 +277,7 @@ def checked_installer(home: Path | None, rec: dict, env: str, url: str | None = 
     runs exactly that file (`<env>bash <file> start`; get.sh's detached start copies itself, so get.sh is not
     downloaded a second time). The hash is measured by this process, never read from the installer's own output.
 
-    warn: a mismatch is logged and recorded and the installer still runs. enforce: a mismatch returns no script.
-    A failed download returns no script either (as before, a failed download never looks like a started update)."""
+    A mismatch is logged and recorded and the installer still runs (warn-only). A failed download returns no script either (as before, a failed download never looks like a started update)."""
     from .updates import INSTALLER
     data = download(url or INSTALLER)
     if data is None:
@@ -335,10 +289,7 @@ def checked_installer(home: Path | None, rec: dict, env: str, url: str | None = 
     rec = {**rec, "installer": state, "installer_sha256": sha}
     rec.pop("installer_error", None)
     if state == "mismatch":
-        log(home, f"installer sha256 {sha} is not one the release {rec.get('release')} names; "
-                  + ("refused (enforce)" if rec.get("mode") == "enforce" else "carrying on (warn-only)"))
-        if rec.get("mode") == "enforce":
-            return None, write(home, {**rec, "installer_error": "the installer does not match the release's hash"})
+        log(home, f"installer sha256 {sha} is not one the release {rec.get('release')} names; carrying on (warn-only)")
     fd, path = tempfile.mkstemp(prefix="wizard-os-installer.", dir=os.environ.get("TMPDIR") or None)
     with os.fdopen(fd, "wb") as f:
         f.write(data)
@@ -356,16 +307,10 @@ def summary(rec: dict | None) -> dict | None:
     return out
 
 
-def status(home: Path | None, version: str | None, base: str | None = None, keys: Path | None = None) -> dict | None:
-    """Dry run for `wam updates`: the channel release's signature state, or None when the switch is off."""
-    m = mode(home)
-    if m == "off":
-        return None
+def status(home: Path | None, version: str | None, base: str | None = None, keys: Path | None = None) -> dict:
+    """Dry run for `wam updates`: the channel release's signature state."""
     stamp(home)
-    out: dict = {"mode": m}
-    if requested(home) != m:
-        out["requested"] = requested(home)
-        out["note"] = "enforce is not available yet; warning only"
+    out: dict = {"mode": MODE}
     if version:
         out.update({"release": version, **check_release(version, base, keys=keys)})
     last = read(home)

@@ -3568,9 +3568,6 @@ def main(argv: list[str] | None = None) -> int:
     up.add_argument("--when-idle", action="store_true",
                     help="with --apply: if Wizard is working, update as soon as it has finished")
     up.add_argument("--when-idle-tick", action="store_true", help=argparse.SUPPRESS)
-    upg.add_argument("--verify-releases", choices=("off", "warn", "enforce"),
-                     help="check release signatures and the installer hash before an update: off (default) or warn "
-                          "(log and record, carry on); WIZARD_VERIFY_RELEASES wins")
     upg.add_argument("--quick-apply", metavar="VERSION", help=argparse.SUPPRESS)   # the detached quick-update runner
     up.add_argument("--quick-auto", action="store_true", help=argparse.SUPPRESS)
     au = sub.add_parser("app-updates", help="updates for installed apps: check (default), --apply [ids], --auto "
@@ -3681,7 +3678,6 @@ def main(argv: list[str] | None = None) -> int:
             print("--check only goes with --apply-if-auto", file=sys.stderr)
             return 2
         res = (updates.set_channel(args.channel) if args.channel
-               else updates.set_verify(args.verify_releases) if args.verify_releases
                else updates.set_mode("auto") if args.auto else updates.set_mode("ask") if args.ask
                else updates.apply(force=args.force, anyway=args.anyway, when_idle=args.when_idle) if args.apply
                else updates.apply_if_auto(check=args.check, anyway=args.anyway) if args.apply_if_auto
