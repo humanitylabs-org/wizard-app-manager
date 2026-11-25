@@ -117,6 +117,18 @@ def _switches(w: dict) -> str | None:
     return parse(w.get("switches")) if isinstance(w, dict) else None
 
 
+def _agent_binding(w: dict):
+    """wizard.md `agent_binding` (wizard-os spec/AGENTS.md section 7) as the Agent Service reads it from apps.json:
+    `true`, or `{required, purpose}` with only those two keys. A malformed value is dropped here, never the app
+    (`wam check` reports it). Without it the Service answers 409 binding_not_declared and the app can't deliver (#1054)."""
+    value = w.get("agent_binding") if isinstance(w, dict) else None
+    if value is True:
+        return True
+    if not isinstance(value, dict):
+        return None
+    return {"required": value.get("required") is True, "purpose": str(value.get("purpose") or "").strip()[:120]}
+
+
 # Browser permissions an app frame may be granted (wizard-os spec/WIZARD_MD.md, wizard-ux#1629). The shell's
 # switch wizard/app-location decides whether a declared one is used; apps.json only carries the declaration.
 BROWSER_PERMISSIONS = ("geolocation",)
@@ -199,6 +211,8 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path, *, o
             # Optional (wizard-os docs/APP_SWITCHES.md): the app's feature-switch endpoint, merged into the box's one
             # switch catalog (app_switches.py) so the Tracker's Try it can flip it.
             **({"switches": sw} if (sw := _switches(w)) else {}),
+            # Optional (wizard-os spec/AGENTS.md section 7): the app delivers work to the agent the owner binds it to.
+            **({"agent_binding": ab} if (ab := _agent_binding(w)) is not None else {}),
             "mcp": None if not mcp else {
                 "url": f"http://{host}:{port}{mcp.get('path', '/mcp')}",                 # from the host / Agent Service
                 "internal": f"http://{name}:{mcp.get('port')}{mcp.get('path', '/mcp')}",   # from another app
