@@ -21,9 +21,11 @@ and never counted as blank (wizard-app-manager#1046).
 An app the shell keeps same-origin under the boundary (SAME_ORIGIN, the same list as wizard-ux
 `web/core/browser-boundary.js` SAME_ORIGIN: TG style from its own listing, humanitylabs-org/telegram#68) is not a
 sandboxed frame either: it opens as it did before the boundary, so it is listed as `same_origin` and never counted as
-blank. Only by app id AND the repo apps.json says it came from, AND only while the shell installed on this box has
-that list (its served core/browser-boundary.js names the app in SAME_ORIGIN): a box whose shell is older still frames
-the app sealed, so there it is probed like any app, as is a copy from anywhere else.
+blank. Only by app id AND the repo apps.json says it came from, AND only when its window URL (apps.json view.url,
+the URL the shell opens and decides on) is under the app's path on the shell's own origin, AND only while the shell
+installed on this box has that list (its served core/browser-boundary.js names the app in SAME_ORIGIN). Otherwise
+(an older shell, a copy from anywhere else, a window on the app's own loopback port) the shell frames the app sealed,
+so it is probed like any app.
 """
 from __future__ import annotations
 
@@ -56,10 +58,32 @@ def own_tab(app_id: str, path: str) -> bool:
     return bool(home) and str(path or "").startswith(home)
 
 
-def same_origin(app_id: str, path: str, repo) -> bool:
-    """Whether the shell keeps this app's window same-origin under the boundary (the shell's `sameOriginApp`)."""
+def same_origin(app_id: str, url, repo, shell_origins=()) -> bool:
+    """Whether the shell keeps this app's window same-origin under the boundary: the shell's `sameOriginApp`, on the
+    same window URL the shell opens (apps.json `view.url`, what the Agent Service hands the shell). That URL must be
+    on the shell's own origin (a path, or an absolute URL on one of `shell_origins`) under the app's home path; an
+    app window on a loopback port is another origin, so the shell seals it like any app."""
     home, want = SAME_ORIGIN.get(app_id, (None, None)) if isinstance(app_id, str) else (None, None)
-    return bool(home) and repo == want and str(path or "").startswith(home) and "//" not in str(path)
+    if not home or repo != want or not isinstance(url, str) or not url:
+        return False
+    u = urlsplit(url)
+    if u.netloc and f"{u.scheme}://{u.netloc}".lower() not in {str(o).rstrip("/").lower() for o in shell_origins}:
+        return False
+    return (u.scheme in ("", "http", "https")) and u.path.startswith(home) and "//" not in u.path and ".." not in u.path
+
+
+def _shell_origins(home) -> set:
+    """The origins the box serves the shell on (settings base_url and aliases, the Serve mounts of the shell)."""
+    from . import store_install
+    out = set(store_install.gateway_origins(home))
+    try:
+        from .app_switches import box_origin
+        o = box_origin(Path(home))
+        if o:
+            out.add(o.rstrip("/"))
+    except Exception:  # noqa: BLE001 - discovery only; no origin means the window counts as another origin
+        pass
+    return out
 
 
 class _Tags(HTMLParser):
@@ -306,7 +330,8 @@ def windows(home, runtipi_root, skip=(), only=None) -> list[dict]:
         out.append({"id": a["id"], "name": str(a.get("name") or a["id"])[:80],
                     "page": f"{lp.scheme}://{lp.netloc}{path}", "prefix": path, "proof": proof,
                     **({"own_tab": True} if own_tab(a["id"], path) else {}),
-                    **({"same_origin": True} if same_origin(a["id"], path, a.get("repo")) else {})})
+                    **({"same_origin": True} if a["id"] in SAME_ORIGIN and same_origin(
+                        a["id"], view.get("url"), a.get("repo"), _shell_origins(home)) else {})})
     return out
 
 
