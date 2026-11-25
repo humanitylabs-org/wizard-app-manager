@@ -170,10 +170,17 @@ def read_grants(c: Config, rt) -> list:
         return []
 
 
+_REGISTRY_WARNED: set[str] = set()   # each unreadable-app warning is printed once per process
+
+
 def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
     rt = rt or c.runtipi()
     reg = registry.build(rt.installed(), STORE, c.host_ip(), c.runtipi_root,
                                      owner_proof_enabled=_owner_proof_enabled(c.home))
+    for w in reg.get("warnings") or []:   # an app this user can't read is left as it is, never fails the rest (#1053)
+        if w not in _REGISTRY_WARNED:
+            _REGISTRY_WARNED.add(w)
+            print(f"WARNING: {w}", file=sys.stderr, flush=True)
     reg['grants'] = read_grants(c, rt)
     ext = alongside.external_slots(c.home)
     try:   # wizard-agent-service#463: a healthy host Wizard Voice Service fills Voice/Transcription (switch, off)

@@ -661,6 +661,28 @@ def verify(c, rt, urn: str, app_id: str, res: dict, before: dict, *, settle: flo
     return None
 
 
+def open_restored_folders(c, urn: str) -> list[str]:
+    """Runtipi images before #1053 restored an app's recipe and settings folders as root-only (0700, from mkdtemp),
+    so the box user could no longer read that app and every step that reads all apps failed. Put them back to 0755
+    (as root, through the runtipi container); only a folder that is exactly 0700 is touched. Never raises."""
+    app_id, _, store = urn.partition(":")
+    fixed = []
+    for rel in (f"apps/{store}/{app_id}", f"user-config/{store}/{app_id}"):
+        try:
+            if (os.stat(Path(c.runtipi_root) / rel).st_mode & 0o777) != 0o700:
+                continue
+            from . import app_rename
+            p = app_rename._sh('[ -d "$1" ] && [ "$(stat -c %a "$1")" = 700 ] && chmod 755 "$1"', "/data/" + rel,
+                               timeout=60)
+            if p.returncode == 0:
+                fixed.append(rel)
+                print(f"note: {rel} was left readable only by root after the restore; set back to 0755",
+                      file=sys.stderr)
+        except Exception:  # noqa: BLE001 - best effort: the App Manager also copes with an unreadable app
+            continue
+    return fixed
+
+
 def rollback(c, rt, urn: str, started_ms: int, before: dict) -> dict:
     """Restore the backup this update made (app data, recipe and settings) and bring the app back as it was."""
     from . import cli
@@ -670,6 +692,7 @@ def rollback(c, rt, urn: str, started_ms: int, before: dict) -> dict:
     rt.restore_backup(urn, backups[0]["id"])
     time.sleep(3)
     status = rt.wait_status(urn, {"running", "stopped", "restore_error", "missing"}, 900)
+    open_restored_folders(c, urn)
     if before["status"] == "running" and status != "running":
         rt.start(urn)
         status = rt.wait_status(urn, {"running"}, 300)

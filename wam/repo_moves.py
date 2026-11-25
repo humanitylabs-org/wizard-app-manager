@@ -146,6 +146,11 @@ def _read(root: Path, rel: str) -> bytes | None:
         return (Path(root) / rel).read_bytes()
     except FileNotFoundError:
         return None
+    except PermissionError:
+        # A root-owned folder this user can't enter (0700 after a Runtipi restore, #1053): read it as root through
+        # the runtipi container, the same way _write already writes such files.
+        from . import app_rename
+        return app_rename.rt_read("/data/" + rel)
 
 
 def _write(root: Path, rel: str, data: bytes) -> None:
