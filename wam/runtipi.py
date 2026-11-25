@@ -44,7 +44,7 @@ class Runtipi:
     def __init__(self, base: str, secret: str, fallback: str | None = None):
         self.base = base.rstrip("/")
         self.secret = secret
-        # JWT_SECRET when `secret` is Runtipi 4.12's CLI key (switch wizard/runtipi-cli-key, WAM#839): a 401 with the
+        # JWT_SECRET when `secret` is Runtipi 4.12's CLI key (WAM#839): a 401 with the
         # key is retried once with it, so a key rotated since it was read never locks wam out while the fork accepts both.
         self.fallback = fallback if fallback and fallback != secret else None
 

@@ -1,4 +1,4 @@
-"""wam signs Runtipi CLI tokens with Runtipi 4.12's CLI key when switch wizard/runtipi-cli-key is on (WAM#839)."""
+"""wam signs Runtipi CLI tokens with Runtipi 4.12's CLI key, for everyone (WAM#839; the switch is gone)."""
 import base64
 import hashlib
 import hmac
@@ -6,7 +6,6 @@ import json
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 
 import pytest
 
@@ -38,19 +37,11 @@ def _signed_with(token: str, secret: str) -> bool:
     return want.rstrip(b"=").decode() == sig
 
 
-def test_off_signs_with_jwt_secret_and_removes_the_shell_copy(tmp_path, monkeypatch):
-    copy = runtipi_key.key_path()
-    copy.parent.mkdir(parents=True)
-    copy.write_text(KEY)
-    monkeypatch.setattr(runtipi_key, "switch_on", lambda home=None: False)
-    monkeypatch.setattr(runtipi_key, "container_key", lambda *a, **k: pytest.fail("never asks docker when off"))
-    rt = Runtipi.from_install(_root(tmp_path))
-    assert rt.secret == JWT and rt.fallback is None
-    assert not copy.exists()
+def test_the_switch_is_gone():
+    assert not hasattr(runtipi_key, "SWITCH") and not hasattr(runtipi_key, "switch_on")
 
 
-def test_on_signs_with_the_container_key_and_keeps_a_private_copy(tmp_path, monkeypatch):
-    monkeypatch.setattr(runtipi_key, "switch_on", lambda home=None: True)
+def test_signs_with_the_container_key_and_keeps_a_private_copy(tmp_path, monkeypatch):
     monkeypatch.setattr(runtipi_key, "container_key", lambda *a, **k: KEY)
     rt = Runtipi.from_install(_root(tmp_path))
     assert rt.secret == KEY and rt.fallback == JWT
@@ -59,11 +50,10 @@ def test_on_signs_with_the_container_key_and_keeps_a_private_copy(tmp_path, monk
     assert copy.stat().st_mode & 0o777 == 0o600
 
 
-def test_on_with_an_older_backend_falls_back_to_jwt_secret_and_drops_a_stale_copy(tmp_path, monkeypatch):
+def test_an_older_backend_falls_back_to_jwt_secret_and_drops_a_stale_copy(tmp_path, monkeypatch):
     copy = runtipi_key.key_path()
     copy.parent.mkdir(parents=True)
     copy.write_text(KEY)
-    monkeypatch.setattr(runtipi_key, "switch_on", lambda home=None: True)
     monkeypatch.setattr(runtipi_key, "container_key", lambda *a, **k: None)
     rt = Runtipi.from_install(_root(tmp_path))
     assert rt.secret == JWT and rt.fallback is None
@@ -72,9 +62,8 @@ def test_on_with_an_older_backend_falls_back_to_jwt_secret_and_drops_a_stale_cop
 
 def test_the_answer_is_cached_for_a_minute(tmp_path):
     calls = []
-    on = lambda home=None: calls.append(1) or True   # noqa: E731
     t = [100.0]
-    args = dict(on=on, read=lambda: KEY, now=lambda: t[0])
+    args = dict(read=lambda: calls.append(1) or KEY, now=lambda: t[0])
     assert runtipi_key.secret(tmp_path, JWT, **args) == KEY
     t[0] += 30
     assert runtipi_key.secret(tmp_path, JWT, **args) == KEY
@@ -149,11 +138,3 @@ def test_no_fallback_means_a_401_is_still_an_error():
             Runtipi(f"http://127.0.0.1:{srv.server_port}/api", JWT).req("GET", "/marketplace/all")
     finally:
         srv.shutdown()
-
-
-def test_switch_reads_the_feature_switch(monkeypatch):
-    from wam import feature_switches
-    asked = []
-    monkeypatch.setattr(feature_switches, "is_on", lambda tid, home=None, pages=None, **k: asked.append(tid) or True)
-    assert runtipi_key.switch_on(Path("/nonexistent")) is True
-    assert asked == ["wizard/runtipi-cli-key"]
