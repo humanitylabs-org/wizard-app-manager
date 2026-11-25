@@ -44,9 +44,10 @@ def _server(kind):
                 self.send_response(403)
                 self.end_headers()
                 return
-            if self.path == "/app/":
-                body, ctype = PAGE.format(p="/app/").encode(), "text/html"
-            elif self.path in ("/app/app.css", "/app/assets/index.js", "/app/assets/vendor.js", "/app/assets/legacy.js"):
+            p = "/files/" if self.path.startswith("/files/") else "/app/"   # Files lives at /files/ (WAM#1046)
+            if self.path == p:
+                body, ctype = PAGE.format(p=p).encode(), "text/html"
+            elif self.path in tuple(p + f for f in ("app.css", "assets/index.js", "assets/vendor.js", "assets/legacy.js")):
                 body, ctype = b"/* x */", "text/javascript"
             else:
                 self.send_response(404)
@@ -54,7 +55,7 @@ def _server(kind):
                 return
             self.send_response(200)
             self.send_header("Content-Type", ctype)
-            if kind == "cors" and self.path != "/app/":
+            if kind == "cors" and self.path not in ("/app/", "/files/"):
                 self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(body)
@@ -103,6 +104,16 @@ def test_an_app_like_tg_style_would_open_blank(tmp_path, apps):
     assert "TG style would open blank" in ba.reason(res)
 
 
+def test_an_existing_box_with_files_and_passing_apps_switches_on(monkeypatch, tmp_path, apps):
+    # WAM#1046: a box whose only "blank" app was Files (a default app) no longer stays off for good
+    _files_like(tmp_path, apps)
+    apps("notes", "cors", "Notes")
+    c, recreated, told = _box(monkeypatch, tmp_path)
+    out = cli.bootstrap(c)
+    assert out["browser_boundary"]["on"] is True and out["browser_boundary"]["why"] == "existing box"
+    assert bb.held(c.home) is None and sorted(recreated) == ["wizard-agent-service", "wizard-ux"]
+
+
 def test_an_app_that_answers_origin_null_opens(tmp_path, apps):
     apps("notes", "cors", "Notes")
     res = ba.check(_home(tmp_path), tmp_path / "rt")
@@ -146,7 +157,39 @@ def test_the_shell_and_apps_without_a_window_are_skipped(tmp_path, apps):
     doc = json.loads((h / "apps.json").read_text())
     doc["apps"].append({"id": "worker", "mcp": {"url": "http://127.0.0.1:9/mcp"}})
     (h / "apps.json").write_text(json.dumps(doc))
-    assert ba.check(h, tmp_path / "rt", skip={"wizard-ux"}) == {"ok": [], "blank": [], "unchecked": []}
+    assert ba.check(h, tmp_path / "rt", skip={"wizard-ux"}) == {"ok": [], "blank": [], "unchecked": [], "own_tab": []}
+
+
+def _files_like(tmp_path, apps, path="/files/"):
+    """Files (File Browser): module scripts with no CORS answer, at the window path the shell opens as its own tab."""
+    seen = apps("files", "plain", "Files")
+    reg = _home(tmp_path) / "apps.json"
+    doc = json.loads(reg.read_text())
+    for a in doc["apps"]:
+        if a["id"] == "files":
+            a["view"]["url"] = a["view"]["url"].replace("/app/", path)
+    reg.write_text(json.dumps(doc))
+    return seen
+
+
+def test_files_opens_in_its_own_tab_so_it_never_counts_as_blank(tmp_path, apps):
+    # WAM#1046: under the boundary the shell opens Files as its own tab (wizard-ux#1821), never a sandboxed frame
+    seen = _files_like(tmp_path, apps)
+    apps("notes", "cors", "Notes")
+    res = ba.check(_home(tmp_path), tmp_path / "rt")
+    assert res == {"ok": ["Notes"], "blank": [], "unchecked": [], "own_tab": ["Files"]}
+    assert ba.reason(res) is None and not seen   # not even asked
+    assert ba.check(_home(tmp_path), tmp_path / "rt", only={"files"})["blank"] == []
+
+
+def test_only_the_shells_own_tab_apps_skip_the_check(tmp_path, apps):
+    # same id at another window path, or another app at /files/: framed by the shell, so checked as before
+    _files_like(tmp_path, apps, path="/app/")
+    assert [b["name"] for b in ba.check(_home(tmp_path), tmp_path / "rt")["blank"]] == ["Files"]
+    assert ba.own_tab("files", "/files/") and ba.own_tab("files", "/files/files/")
+    assert not ba.own_tab("files", "/app/") and not ba.own_tab("tg-style", "/files/")
+    assert not ba.own_tab("__proto__", "/files/") and not ba.own_tab("constructor", "/")
+
 
 
 # ---------------------------------------------------------------- the installer
