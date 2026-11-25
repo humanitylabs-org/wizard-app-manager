@@ -1,0 +1,182 @@
+{
+  "version": "0.3.435",
+  "name": "WizardOS 0.3.435 \u2014 0.3.434 with App Manager d607404b -> 048689e8 (fixes)",
+  "date": "2026-11-25",
+  "about": "Latest 0.3.434 with App Manager d607404b -> 048689e8. Cut by the release train for merged Recommended fixes: humanitylabs-org/wizard-ux#1591 Recommended fix: Wizard for Mac's orb and Right \u2318 reply in the thread on screen while an a; humanitylabs-org/wizard-ux#1703 Recommended fix: opening an app reads the Notifications items on its badge; humanitylabs-org/wizard-ux#1710 Recommended fix: Phone release runs again after Oscar became a second code owner; humanitylabs-org/wizard-ux#1711 Recommended fix: a channel feed's thread card says Draft while its thread holds a draft; humanitylabs-org/wizard-ux#1712 Recommended fix: a long-press on any word in a chat starts a selection, also \"a\" and \"it\"; humanitylabs-org/wizard-ux#1715 Recommended fix: the floating orb always keeps its coloured disc behind the icon (Android); humanitylabs-org/wizard-ux#1716 Recommended fix: Wizard's mic on a phone no longer pauses music from other apps or drops e; humanitylabs-org/wizard-ux#1720 Recommended fix: a tapped photo shows full screen at once, no fade-in or black frame; humanitylabs-org/wizard-ux#1721 Recommended fix: tests run the code they are about; no test only checks that source text e; humanitylabs-org/wizard-ux#1727 Recommended fix: the Resources sheet closes on a phone tap on every tab (\u2039 or outside); humanitylabs-org/wizard-ux#1732 Recommended fix: with private first, chats and the model menu go to the default private ag; humanitylabs-org/wizard-ux#1736 Recommended fix: saved Wizards can be renamed, moved to a new address and removed; humanitylabs-org/wizard-ux#1739 Recommended fix: Download saves a file on older Wizard for Mac apps; humanitylabs-org/wizard-ux#1746 Recommended fix: Miguel's Home Tailscale tab no longer shows \"null\"; humanitylabs-org/wizard-ux#1747 Recommended fix: opening Wizard no longer takes over a shared Bluetooth speaker (phone 0.1; humanitylabs-org/wizard-ux#1751 Recommended fix: a phone meeting recording carries on in the same meeting after the app pr; humanitylabs-org/wizard-ux#1753 Recommended fix: your own chat bubbles stand apart from the window on Landscapes Light; humanitylabs-org/wizard-ux#1754 Recommended fix: the desktop frame hotkeys QA run passes end to end (Refs #1726); humanitylabs-org/wizard-ux#1756 Recommended fix: Welcome Say hello sends the shown default on an empty Send; humanitylabs-org/wizard-ux#1757 Recommended fix: Welcome Say hello has a mic, so the first message can be spoken; humanitylabs-org/wizard-ux#1758 Recommended fix: Activity on a fresh box shows one friendly empty state, not empty section; humanitylabs-org/wizard-ux#1759 Recommended fix: a swipe down on the Apps panel's grip, or its grid at the top, closes it; humanitylabs-org/wizard-ux#1760 Recommended fix: the phone Apps panel has a visible Close Apps button next to Search; humanitylabs-org/wizard-ux#1761 Recommended fix: phone take discs show the skin red Cancel and amber paused Pause; humanitylabs-org/wizard-ux#1763 Recommended fix: the phone stops re-sending refused meeting markers every 5 s and saves th; humanitylabs-org/wizard-ux#1764 Recommended fix: Archive on top also puts Archived first in the AI apps desktop sidebar; humanitylabs-org/wizard-ux#1765 Recommended fix: folding the AI apps sidebar leaves desks out of sight where they are; humanitylabs-org/wizard-ux#1767 Recommended fix: the phone app no longer freezes on open after a long meeting (phone 0.10.; humanitylabs-org/wizard-ux#1770 Recommended fix: Forward to Wizard works in an app opened from its home-screen icon; humanitylabs-org/wizard-ux#1771 Recommended fix: Mac Settings says For testers updates install as soon as Wizard is free; humanitylabs-org/wizard-ux#1773 Recommended fix: an existing Wizard with its AI signed out gets only Reconnect your AI; humanitylabs-org/wizard-ux#1774 Recommended fix: a failed send on a signed-out Tinfoil thread offers Reconnect Tinfoil; humanitylabs-org/wizard-ux#1776 Recommended fix: the phone app's start no longer waits on a long meeting's store or upload; humanitylabs-org/wizard-ux#1793 Recommended fix: Try new features kit copy gets 44 px thumbs and switch, and no reverted f; humanitylabs-org/wizard-agent-service#583 Recommended fix: agent tool calls cannot change installed app skill files; humanitylabs-org/wizard-agent-service#590 Recommended fix: a draft request reaches the messaging app (Refs humanitylabs-org/wizard-o; humanitylabs-org/wizard-agent-service#592 Recommended fix: private first answers off when the box has no agent runtime, so Tinfoil k; humanitylabs-org/wizard-agent-service#593 Recommended fix: private first stays on without an agent runtime, and the runtime helper c; humanitylabs-org/wizard-agent-service#595 Recommended fix: the agent runtime reads the Tinfoil key saved in the Tinfoil app, so the ; humanitylabs-org/wizard-agent-service#596 Recommended fix: a fresh box's first private agent installs before its Runtipi override, s; humanitylabs-org/wizard-agent-service#599 Recommended fix: routed agents get one file-sending rule that matches what Wizard accepts; humanitylabs-org/wizard-agent-service#600 Recommended fix: a file a private agent names as a plain path shows as a file card or a 'n; humanitylabs-org/wizard-agent-service#601 Recommended fix: a Chats list snapshot rebuild no longer blocks the Service for about a se; humanitylabs-org/wizard-agent-service#602 Recommended fix: a private agent is never granted the Claude or ChatGPT connection apps; humanitylabs-org/wizard-agent-service#603 Recommended fix: a large Hermes history imports chat by chat instead of running the agent ; humanitylabs-org/wizard-agent-service#604 Recommended fix: imported facts are used, fact memory goes on when an import brings facts; humanitylabs-org/wizard-agent-service#605 Recommended fix: an import that stops part way is marked failed with the reason, and Undo ; humanitylabs-org/wizard-agent-service#606 Recommended fix: a chat started on Telegram says it lives in Telegram instead of offering ; humanitylabs-org/wizard-agent-service#609 Recommended fix: with the browser boundary on, the box's own health probes answer again; humanitylabs-org/wizard-agent-service#618 Recommended fix: Archive clears the saved-result Needs you for good, also after a restore ; humanitylabs-org/wizard-agent-service#621 Recommended fix: the Telegram conversation after a /new shows in Chats; humanitylabs-org/wizard-agent-service#623 Recommended fix: an expired AI sign-in shows the sign-in card, not Not sent / Needs retry; humanitylabs-org/wizard-agent-service#624 Recommended fix: every app wake after the first starts (no fixed thread title Hermes refus; humanitylabs-org/wizard-app-manager#898 Recommended fix: the update retires the hand-written box overrides; humanitylabs-org/wizard-app-manager#901 Recommended fix: a restore reports an app Runtipi can't install and goes on with the rest; humanitylabs-org/wizard-app-manager#903 Recommended fix: Second Hand's ledger also moves when its app-data folder is root's; humanitylabs-org/wizard-app-manager#916 Recommended fix: app updates never install a lower version; moved apps record their new re; humanitylabs-org/wizard-app-manager#923 Recommended fix: private app source copy and gateway-keys doctor use Runtipi's /app-data m; humanitylabs-org/wizard-app-manager#926 Recommended fix: backups say when they leave out a host Hermes main agent; humanitylabs-org/wizard-app-manager#932 Recommended fix: app inbox tokens reach apps when the Agent Service runs on the host; humanitylabs-org/wizard-app-manager#934 Recommended fix: every fresh install and update sets up the agent runtime helper, so the A; humanitylabs-org/wizard-app-manager#939 Recommended fix: app updates no longer fail on live socket files in app data; humanitylabs-org/wizard-app-manager#948 Recommended fix: Connected accounts opens at its Wizard path again, not on a port of its o; humanitylabs-org/wizard-app-manager#950 Recommended fix: runtipi-cli on a fresh box matches the App Manager's Runtipi, so stop/sta; humanitylabs-org/wizard-app-manager#952 Recommended fix: a fresh install survives one dropped connection while downloading; humanitylabs-org/wizard-app-manager#954 Recommended fix: a scheduled backup clears the stale restic lock a crashed run left behind; humanitylabs-org/wizard-app-manager#957 Recommended fix: new boxes start with the browser boundary on; humanitylabs-org/wizard-app-manager#962 Recommended fix: inbox tokens reach apps when Runtipi's user-config is root-owned; humanitylabs-org/wizard-app-manager#964 Recommended fix: a fresh install on a slower machine waits for Runtipi instead of failing ; humanitylabs-org/wizard-app-manager#974 Recommended fix: the Agent Service updates even while a private agent writes in its folder; humanitylabs-org/wizard-app-manager#977 Recommended fix: a big host Hermes no longer makes the nightly backup fail; humanitylabs-org/wizard-app-manager#981 Recommended fix: Bring your Wizard imports Hermes backups on a fresh install (agent sees F; humanitylabs-org/wizard-app-manager#987 Recommended fix: installing Mail no longer warns about a missing 'mail-calendar' app; humanitylabs-org/wizard-app-manager#994 Recommended fix: a private owner phone feed moves with every phone release, and a stuck fe; humanitylabs-org/wizard-app-manager#999 Recommended fix: boxes that already run Wizard turn the browser boundary on one release af; humanitylabs-org/wizard-app-manager#1003 Recommended fix: Mac guests turn the browser boundary on once their Mac app sends the toke; humanitylabs-org/wizard-app-manager#1016 Recommended fix: the Wizard guide names today's update options (Automatic / Ask me, For ev; humanitylabs-org/wizard-app-manager#1022 Recommended fix: app updates that add a second service no longer fail on an undefined <app; humanitylabs-org/wizard-app-manager#1037 Recommended fix: WizardOS updates no longer fail on hard-linked files in the Agent Service. Stable stays 0.3.346 until the installed upgrade test passes.",
+  "install": {
+    "command": "curl -fsSL aiwizards.com/os.sh | bash",
+    "agent": {
+      "start": "curl -fsSL https://aiwizards.com/os.sh | bash -s start",
+      "status": "curl -fsSL https://aiwizards.com/os.sh | bash -s status",
+      "check": "curl -fsSL https://aiwizards.com/os.sh | WIZARD_CHECK=1 bash"
+    },
+    "modes": {
+      "fresh": "blank Ubuntu/Debian box: Runtipi + App Manager + the default app in every spot (including hermes-agent)",
+      "alongside": "box that already runs Hermes (run as its owner): App Manager + apps + the Wizard shell pointed at that Hermes; `wizard link` connects it, `wizard unlink` reverses it byte for byte"
+    },
+    "note": "Fresh and alongside installs both take every default app at the source commit pinned below, and the Wizard UX and Agent Service images at the digests above; the installer reads back what runs (a default app on another source commit fails; index versions are informational and reported as drift). No catalog release is changed by this snapshot."
+  },
+  "components": {
+    "wizard-app-manager": {
+      "repo": "humanitylabs-org/wizard-app-manager",
+      "commit": "048689e8665f9ae0b0a8548eef871281c78ba357",
+      "branch": "main",
+      "note": "Official main at 048689e8 (release train): carries humanitylabs-org/wizard-app-manager#898 Recommended fix: the update retires the hand-written box overrides; humanitylabs-org/wizard-app-manager#901 Recommended fix: a restore reports an app Runtipi can't install and goes on with the rest; humanitylabs-org/wizard-app-manager#903 Recommended fix: Second Hand's ledger also moves when its app-data folder is root's; humanitylabs-org/wizard-app-manager#916 Recommended fix: app updates never install a lower version; moved apps record their new re; humanitylabs-org/wizard-app-manager#923 Recommended fix: private app source copy and gateway-keys doctor use Runtipi's /app-data m; humanitylabs-org/wizard-app-manager#926 Recommended fix: backups say when they leave out a host Hermes main agent; humanitylabs-org/wizard-app-manager#932 Recommended fix: app inbox tokens reach apps when the Agent Service runs on the host; humanitylabs-org/wizard-app-manager#934 Recommended fix: every fresh install and update sets up the agent runtime helper, so the A; humanitylabs-org/wizard-app-manager#939 Recommended fix: app updates no longer fail on live socket files in app data; humanitylabs-org/wizard-app-manager#948 Recommended fix: Connected accounts opens at its Wizard path again, not on a port of its o; humanitylabs-org/wizard-app-manager#950 Recommended fix: runtipi-cli on a fresh box matches the App Manager's Runtipi, so stop/sta; humanitylabs-org/wizard-app-manager#952 Recommended fix: a fresh install survives one dropped connection while downloading; humanitylabs-org/wizard-app-manager#954 Recommended fix: a scheduled backup clears the stale restic lock a crashed run left behind; humanitylabs-org/wizard-app-manager#957 Recommended fix: new boxes start with the browser boundary on; humanitylabs-org/wizard-app-manager#962 Recommended fix: inbox tokens reach apps when Runtipi's user-config is root-owned; humanitylabs-org/wizard-app-manager#964 Recommended fix: a fresh install on a slower machine waits for Runtipi instead of failing ; humanitylabs-org/wizard-app-manager#974 Recommended fix: the Agent Service updates even while a private agent writes in its folder; humanitylabs-org/wizard-app-manager#977 Recommended fix: a big host Hermes no longer makes the nightly backup fail; humanitylabs-org/wizard-app-manager#981 Recommended fix: Bring your Wizard imports Hermes backups on a fresh install (agent sees F; humanitylabs-org/wizard-app-manager#987 Recommended fix: installing Mail no longer warns about a missing 'mail-calendar' app; humanitylabs-org/wizard-app-manager#994 Recommended fix: a private owner phone feed moves with every phone release, and a stuck fe; humanitylabs-org/wizard-app-manager#999 Recommended fix: boxes that already run Wizard turn the browser boundary on one release af; humanitylabs-org/wizard-app-manager#1003 Recommended fix: Mac guests turn the browser boundary on once their Mac app sends the toke; humanitylabs-org/wizard-app-manager#1016 Recommended fix: the Wizard guide names today's update options (Automatic / Ask me, For ev; humanitylabs-org/wizard-app-manager#1022 Recommended fix: app updates that add a second service no longer fail on an undefined <app; humanitylabs-org/wizard-app-manager#1037 Recommended fix: WizardOS updates no longer fail on hard-linked files in the Agent Service"
+    },
+    "wizard-troubleshooter": {
+      "repo": "humanitylabs-org/wizard-troubleshooter",
+      "commit": "9088a254db789449503b59201532bc64d8d06894",
+      "branch": "main",
+      "note": "Host tooling, no image: installed by `wam troubleshooter` as user systemd units (wizard-troubleshooter.service + wizard-guardian.timer, report-only) from exactly this commit; main 9088a25 = 3e56f66 plus #24 (Agent Service repaired through App Manager), #25 (James's one-tap repair screen restored), #26 (the guardian only undoes an update when the link was healthy before it), #29 (the guardian heals app addresses), #34 (busy is not down; a restart that didn't hold is not repeated), #35 (HEAD answers so the shell opens the real Troubleshooter), #36/#38 (owner-approved repair plans with backups and Undo), #39 (replies that never start are an incident; owner can restart Hermes while it looks green), #40 (WizardOS spelling), #41 (an approved Hermes restart actually runs; a draining restart is reported as in progress), #42 (bounded Hermes restart: the drain stops waiting and the gateway is restarted, Restart now, crash-loop handoff, reply keeper check, repair plans on by default, the page watches itself, no Telegram/console advice). The guardian repairs by default: from App Manager 9f793620 `wam troubleshooter` writes GUARDIAN_ACT=1 unless the owner chose `wam troubleshooter --report-only` (kept across updates)."
+    },
+    "wizard-agent-service": {
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "commit": "4c3242e4c7c499d7c5160b06de6c964f71a155b5",
+      "branch": "main",
+      "note": "Official main at 4c3242e4 (release train): carries humanitylabs-org/wizard-agent-service#583 Recommended fix: agent tool calls cannot change installed app skill files; humanitylabs-org/wizard-agent-service#590 Recommended fix: a draft request reaches the messaging app (Refs humanitylabs-org/wizard-o; humanitylabs-org/wizard-agent-service#592 Recommended fix: private first answers off when the box has no agent runtime, so Tinfoil k; humanitylabs-org/wizard-agent-service#593 Recommended fix: private first stays on without an agent runtime, and the runtime helper c; humanitylabs-org/wizard-agent-service#595 Recommended fix: the agent runtime reads the Tinfoil key saved in the Tinfoil app, so the ; humanitylabs-org/wizard-agent-service#596 Recommended fix: a fresh box's first private agent installs before its Runtipi override, s; humanitylabs-org/wizard-agent-service#599 Recommended fix: routed agents get one file-sending rule that matches what Wizard accepts; humanitylabs-org/wizard-agent-service#600 Recommended fix: a file a private agent names as a plain path shows as a file card or a 'n; humanitylabs-org/wizard-agent-service#601 Recommended fix: a Chats list snapshot rebuild no longer blocks the Service for about a se; humanitylabs-org/wizard-agent-service#602 Recommended fix: a private agent is never granted the Claude or ChatGPT connection apps; humanitylabs-org/wizard-agent-service#603 Recommended fix: a large Hermes history imports chat by chat instead of running the agent ; humanitylabs-org/wizard-agent-service#604 Recommended fix: imported facts are used, fact memory goes on when an import brings facts; humanitylabs-org/wizard-agent-service#605 Recommended fix: an import that stops part way is marked failed with the reason, and Undo ; humanitylabs-org/wizard-agent-service#606 Recommended fix: a chat started on Telegram says it lives in Telegram instead of offering ; humanitylabs-org/wizard-agent-service#609 Recommended fix: with the browser boundary on, the box's own health probes answer again; humanitylabs-org/wizard-agent-service#618 Recommended fix: Archive clears the saved-result Needs you for good, also after a restore ; humanitylabs-org/wizard-agent-service#621 Recommended fix: the Telegram conversation after a /new shows in Chats; humanitylabs-org/wizard-agent-service#623 Recommended fix: an expired AI sign-in shows the sign-in card, not Not sent / Needs retry; humanitylabs-org/wizard-agent-service#624 Recommended fix: every app wake after the first starts (no fixed thread title Hermes refus"
+    },
+    "wizard-ux": {
+      "repo": "humanitylabs-org/wizard-ux",
+      "commit": "21183486ad203df01a8ad402b669d1d6302aee01",
+      "branch": "main",
+      "note": "Official main at 21183486 (release train): carries humanitylabs-org/wizard-ux#1591 Recommended fix: Wizard for Mac's orb and Right \u2318 reply in the thread on screen while an a; humanitylabs-org/wizard-ux#1703 Recommended fix: opening an app reads the Notifications items on its badge; humanitylabs-org/wizard-ux#1710 Recommended fix: Phone release runs again after Oscar became a second code owner; humanitylabs-org/wizard-ux#1711 Recommended fix: a channel feed's thread card says Draft while its thread holds a draft; humanitylabs-org/wizard-ux#1712 Recommended fix: a long-press on any word in a chat starts a selection, also \"a\" and \"it\"; humanitylabs-org/wizard-ux#1715 Recommended fix: the floating orb always keeps its coloured disc behind the icon (Android); humanitylabs-org/wizard-ux#1716 Recommended fix: Wizard's mic on a phone no longer pauses music from other apps or drops e; humanitylabs-org/wizard-ux#1720 Recommended fix: a tapped photo shows full screen at once, no fade-in or black frame; humanitylabs-org/wizard-ux#1721 Recommended fix: tests run the code they are about; no test only checks that source text e; humanitylabs-org/wizard-ux#1727 Recommended fix: the Resources sheet closes on a phone tap on every tab (\u2039 or outside); humanitylabs-org/wizard-ux#1732 Recommended fix: with private first, chats and the model menu go to the default private ag; humanitylabs-org/wizard-ux#1736 Recommended fix: saved Wizards can be renamed, moved to a new address and removed; humanitylabs-org/wizard-ux#1739 Recommended fix: Download saves a file on older Wizard for Mac apps; humanitylabs-org/wizard-ux#1746 Recommended fix: Miguel's Home Tailscale tab no longer shows \"null\"; humanitylabs-org/wizard-ux#1747 Recommended fix: opening Wizard no longer takes over a shared Bluetooth speaker (phone 0.1; humanitylabs-org/wizard-ux#1751 Recommended fix: a phone meeting recording carries on in the same meeting after the app pr; humanitylabs-org/wizard-ux#1753 Recommended fix: your own chat bubbles stand apart from the window on Landscapes Light; humanitylabs-org/wizard-ux#1754 Recommended fix: the desktop frame hotkeys QA run passes end to end (Refs #1726); humanitylabs-org/wizard-ux#1756 Recommended fix: Welcome Say hello sends the shown default on an empty Send; humanitylabs-org/wizard-ux#1757 Recommended fix: Welcome Say hello has a mic, so the first message can be spoken; humanitylabs-org/wizard-ux#1758 Recommended fix: Activity on a fresh box shows one friendly empty state, not empty section; humanitylabs-org/wizard-ux#1759 Recommended fix: a swipe down on the Apps panel's grip, or its grid at the top, closes it; humanitylabs-org/wizard-ux#1760 Recommended fix: the phone Apps panel has a visible Close Apps button next to Search; humanitylabs-org/wizard-ux#1761 Recommended fix: phone take discs show the skin red Cancel and amber paused Pause; humanitylabs-org/wizard-ux#1763 Recommended fix: the phone stops re-sending refused meeting markers every 5 s and saves th; humanitylabs-org/wizard-ux#1764 Recommended fix: Archive on top also puts Archived first in the AI apps desktop sidebar; humanitylabs-org/wizard-ux#1765 Recommended fix: folding the AI apps sidebar leaves desks out of sight where they are; humanitylabs-org/wizard-ux#1767 Recommended fix: the phone app no longer freezes on open after a long meeting (phone 0.10.; humanitylabs-org/wizard-ux#1770 Recommended fix: Forward to Wizard works in an app opened from its home-screen icon; humanitylabs-org/wizard-ux#1771 Recommended fix: Mac Settings says For testers updates install as soon as Wizard is free; humanitylabs-org/wizard-ux#1773 Recommended fix: an existing Wizard with its AI signed out gets only Reconnect your AI; humanitylabs-org/wizard-ux#1774 Recommended fix: a failed send on a signed-out Tinfoil thread offers Reconnect Tinfoil; humanitylabs-org/wizard-ux#1776 Recommended fix: the phone app's start no longer waits on a long meeting's store or upload; humanitylabs-org/wizard-ux#1793 Recommended fix: Try new features kit copy gets 44 px thumbs and switch, and no reverted f"
+    }
+  },
+  "images": {
+    "wizard-app-manager": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-app-manager:v4.12.0-wizard.1768-048689e8",
+      "digest": "sha256:debaee945b939f0e2aac97ac81b3bf02732b1bb1705fb2a5796b3a49fb0d1fb0",
+      "built_from": "wizard-app-manager",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-app-manager/actions/runs/45575741095",
+      "source_commit": "048689e8665f9ae0b0a8548eef871281c78ba357",
+      "image_inputs": [
+        "packages/**",
+        "Dockerfile",
+        ".dockerignore",
+        "package.json",
+        "bun.lock",
+        "turbo.json",
+        "wam/hermes-lock.json",
+        "releases/hermes-lock.json",
+        ".github/workflows/image.yml"
+      ]
+    },
+    "wizard-ux": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-ux:sha-21183486ad203df01a8ad402b669d1d6302aee01",
+      "digest": "sha256:7c7f84e4a51d44e9eb4412134a7432797346735e39fd142294c4d6f24e439f89",
+      "built_from": "wizard-ux",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-ux/actions/runs/45560690967"
+    },
+    "wizard-agent-service": {
+      "ref": "ghcr.io/humanitylabs-org/wizard-agent-service:sha-4c3242e4c7c499d7c5160b06de6c964f71a155b5",
+      "digest": "sha256:41def474de3433d80a1705147456fe02dea4555d0c05d5a04c895de4114d5127",
+      "built_from": "wizard-agent-service",
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "ci_run": "https://github.com/humanitylabs-org/wizard-agent-service/actions/runs/45560721603"
+    }
+  },
+  "default_apps": {
+    "shell": {
+      "app": "wizard-ux",
+      "repo": "humanitylabs-org/wizard-ux",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "21183486ad203df01a8ad402b669d1d6302aee01",
+      "note": "Alongside installs use the immutable official image above; index drift is informational."
+    },
+    "agent-service": {
+      "app": "wizard-agent-service",
+      "repo": "humanitylabs-org/wizard-agent-service",
+      "index_version": "0.3.0-candidate.20261012",
+      "commit": "4c3242e4c7c499d7c5160b06de6c964f71a155b5"
+    },
+    "agent": {
+      "app": "hermes-agent",
+      "repo": "oscarhenrycollins/hermes-agent",
+      "index_version": "2026.9.24-wizard2",
+      "alongside": "external: host Hermes",
+      "commit": "e8ae558f26bf4b981e0cad60e387386a1ad7b869"
+    },
+    "ai-connection": {
+      "app": "wizard-chatgpt",
+      "repo": "oscarhenrycollins/chatgpt-connection",
+      "index_version": "0.2.20",
+      "commit": "f0de194e144f4c8c2981a75448eebc078aa5e1de",
+      "note": "chatgpt-connection #20: engine ghcr.io/humanitylabs-org/wizard-chatgpt:0.2.21@sha256:629c29911e68b2088e43ccdd21c0c8d57841eb021bc7951bbf9e2e2087e40924 (wizard-app-store #78: sandboxed sign-in page, private-first sign-in to the standard agent). Refs humanitylabs-org/wizard-app-manager#807."
+    },
+    "claude-subscription": {
+      "app": "wizard-claude",
+      "repo": "oscarhenrycollins/claude-connection",
+      "index_version": "0.2.24",
+      "commit": "ddf1ce68fe9e216067e88f1ad1405ecbc6630e0a",
+      "note": "claude-connection #24: engine ghcr.io/humanitylabs-org/wizard-claude:0.2.26@sha256:bb4812461d21852967e3d89187c66c89e8c45a82878dbf81ad6972d7eef83ee1 (wizard-app-store #78: sandboxed sign-in page, private-first sign-in to the standard agent). Refs humanitylabs-org/wizard-app-manager#807."
+    },
+    "files": {
+      "app": "files",
+      "repo": "oscarhenrycollins/files",
+      "index_version": "2.63.23-wizard3",
+      "commit": "623c69118b209452d6f1c82b6392980222004a45",
+      "note": "oscarhenrycollins/files main 623c6911 (merge of #2): requests through Tailscale Serve reach File Browser only as exactly one Tailscale-User-Login, the box owner's when WIZARD_OWNER_LOGINS is set (written at install, and on update by App Manager #408). Images unchanged from 8a4dd8ac."
+    },
+    "transcription": {
+      "app": "transcriber",
+      "repo": "oscarhenrycollins/transcriber",
+      "index_version": "0.9.0-rc.3.cpu",
+      "commit": "b8d1170a3f97e1d6eed8abc874bdebdf7e9f21dc"
+    },
+    "browser": {
+      "app": "browser",
+      "repo": "oscarhenrycollins/browser",
+      "index_version": "155.0.8059.40",
+      "commit": "4c313284bc73e0af20b7faba7a2554bff1b63513"
+    },
+    "secrets": {
+      "app": "secret-drop",
+      "repo": "oscarhenrycollins/secret-drop",
+      "index_version": "0.1.1",
+      "commit": "690b277619847405cffc711917abafd85223f10b",
+      "note": "secret-drop #1: the engine image is pinned by its multi-arch digest (secret-drop:0.1.1@sha256:29ebc6a7\u2026c03302), the same bytes as the 0.1.1 tag in 0.3.19."
+    },
+    "notifications": {
+      "app": "notifications",
+      "repo": "oscarhenrycollins/notifications",
+      "index_version": "2.29.0-wizard29",
+      "commit": "1cc652feb960466f44c1158c4acda45875c2d939",
+      "note": "oscarhenrycollins/notifications main 1cc652fe: wizard18-wizard29 after 46cd17cf. wizard18: notification routes stored on the box (Chats, Badge, Daily or Off per source) and api/daily for the Morning Report's Overnight section; wizard19: api/routes names each source; wizard20: Morning Report sections get routes (report:<section id>); wizard21: phone router - Chats-routed items stream to the WizardOS Android app over Tailscale (SSE, since-cursor catch-up, no Google push), first app feed shows quietly; wizard22: scheduled jobs and agent notes can name the app they are about (CRON_JOB_APPS, notify app=<id>); wizard23: friendlier phone inbox layout; wizard24: fixes wizard23's restart loop (minimal view shipped zlib+base64 so the inlined front stays under Linux's 128 KiB per-argument limit); wizard25: scheduled-job relay drops runs that end in [SILENT] on their own line; wizard26: the agent's own notifications always wait in Chats; wizard27: CRON_TRUSTED_JOBS (agent review jobs are not failures for mentioning 'failed') and [CRON_FAILURE] honored; wizard28: compose passes CRON_TRUSTED_JOBS; wizard29: a run ending in NO_CHANGE is silent like [SILENT]. Images unchanged from 46cd17cf (same digest-pinned front python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4 and engine binwiederhier/ntfy:v2.29.0@sha256:4c599cf0818965782f93f652bd843e92714992e84d6b88ad17713dc0951cda1f). No migration: volumes unchanged (${APP_DATA_DIR}/inbox:/data, hermes-cron read-only, ${APP_DATA_DIR}/data:/var/lib/ntfy); routes.json and phone.sqlite3 are created on first use inside the existing /data volume; new optional settings (CRON_JOB_APPS, CRON_TRUSTED_JOBS, PHONE_OWNER_LOGIN) default to empty."
+    },
+    "voice": {
+      "app": "wizard-voice-service",
+      "repo": "humanitylabs-org/wizard-voice-service",
+      "index_version": "0.2.2-rc1.app1",
+      "commit": "d28c5f7cd29040ab1df3b5a945a81486f53e445a"
+    },
+    "connection-router": {
+      "app": "wizard-connection-router",
+      "repo": "humanitylabs-org/wizard-connection-router",
+      "index_version": "0.1.4",
+      "commit": "f46a867207deb6e3a465bf86241dd3fe76a6ce5f"
+    },
+    "agent-history": null
+  },
+  "hermes": {
+    "tag": "v2026.9.24",
+    "commit": "f97608f178d1ffeca59860195ab7da295f7c8e5f",
+    "image": {
+      "ref": "docker.io/nousresearch/hermes-agent:v2026.9.24",
+      "digest": "sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
+    },
+    "test_record": "none: carried over from 0.3.21, pinned before Wizard stable existed",
+    "rollback": null
+  },
+  "notes": "Latest. Exactly 0.3.434 except App Manager d607404b -> 048689e8."
+}
