@@ -125,7 +125,8 @@ def _browser_rows(home, declared_ids, served) -> list[dict]:
     return out
 
 
-def payload(home=None, app_rows=None, declared_ids=None) -> dict:
+def payload(home=None, app_rows=None, declared_ids=None, info=None) -> dict:
+    """What leaves the box. `info` (a dict) is filled with where each app's rows came from, for `wam switch-feedback`."""
     from . import app_switches
     if app_rows is None:
         app_rows, status = app_switches.listing(home)
@@ -133,8 +134,15 @@ def payload(home=None, app_rows=None, declared_ids=None) -> dict:
         declared_ids = {a["id"] for a in app_switches.declared(_home(home))}
     else:
         served = {r.get("app") for r in app_rows if isinstance(r, dict)}
-    return {"contract": CONTRACT, "box": box_id(home),
-            "switches": rows(list(app_rows) + _browser_rows(home, declared_ids, served))}
+    browser = _browser_rows(home, declared_ids, served)
+    if info is not None:
+        from_browser = sorted({r["id"].split(":", 1)[0] for r in browser})
+        info.update(read_here=sorted(a for a in served if a), from_browser=from_browser,
+                    waiting_for_browser=sorted((declared_ids or set()) - served - set(from_browser)))
+        if info["waiting_for_browser"]:
+            info["note"] = ("apps without an owner-proof key are read by the owner's browser: the shell's "
+                            "wizard/try-feature-counts package posts them to store-install/_switch-feedback")
+    return {"contract": CONTRACT, "box": box_id(home), "switches": rows(list(app_rows) + browser)}
 
 
 def record(home, body, *, declared_ids=None, now=None) -> dict:
@@ -183,10 +191,11 @@ def tick(home=None, *, force=False, dry_run=False, on=None, now=None, post=_post
     try:
         if not (switch_on(home) if on is None else on):
             return {"switch": SWITCH, "on": False, "sent": False}
-        doc = payload(home, app_rows)
+        info = {}
+        doc = payload(home, app_rows, info=info)
         url = relay_url() + PATH
         if dry_run:
-            return {"switch": SWITCH, "on": True, "sent": False, "dry_run": True, "url": url, "would_send": doc}
+            return {"switch": SWITCH, "on": True, "sent": False, "dry_run": True, "url": url, "would_send": doc, **info}
         s, now = _state(home), time.time() if now is None else now
         digest = _digest(doc)
         if not force and s.get("sent") == digest and now - float(s.get("sent_at") or 0) < RESEND_S:
