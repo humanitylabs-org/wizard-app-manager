@@ -146,7 +146,10 @@ export class BackupArchive {
   public async stageBackupDirectory(source: string, destination: string, name: string, filter?: fs.CopyOptions['filter']) {
     const quarantine = path.join(path.dirname(destination), '.backup-quarantine', path.basename(destination));
     try {
-      await this.copySourceToQuarantine(source, quarantine, filter);
+      // Wizard: hard links whose every name lives inside this folder (a uv/pip cache, a lock file) are the app's own
+      // data and are copied as plain files. A file also linked from outside the folder is still refused.
+      const internalLinks = await this.internalHardLinks(source);
+      await this.copySourceToQuarantine(source, quarantine, filter, source, false, internalLinks);
     } catch (error) {
       this.logger.error(`Error copying ${name} to backup quarantine:`, error);
       throw new Error(`Failed to copy ${name} for backup`, { cause: error });
@@ -169,15 +172,55 @@ export class BackupArchive {
     }
   }
 
+  // Wizard: every hard-linked file under `root` whose names all sit under `root`, keyed by device and inode, with its
+  // link count. Symlinks are never followed, so a link can only count names really inside the folder.
+  private async internalHardLinks(root: string, runFsOperation = pLimit(16)): Promise<Map<string, number>> {
+    const found = new Map<string, { nlink: number; seen: number }>();
+    const walk = async (directory: string): Promise<void> => {
+      // Anything unreadable here is left for the copy itself to report; this walk only finds links it can prove inside.
+      const entries = await runFsOperation(() => fs.promises.readdir(directory, { withFileTypes: true })).catch(() => []);
+      await Promise.all(
+        entries.map(async (entry) => {
+          const entryPath = path.join(directory, entry.name);
+          if (entry.isDirectory()) {
+            await walk(entryPath);
+            return;
+          }
+          if (!entry.isFile()) return;
+          const stats = await runFsOperation(() => fs.promises.lstat(entryPath)).catch(() => null);
+          if (!stats?.isFile() || stats.nlink < 2) return;
+          const key = `${stats.dev}:${stats.ino}`;
+          const known = found.get(key);
+          if (known) known.seen += 1;
+          else found.set(key, { nlink: stats.nlink, seen: 1 });
+        }),
+      );
+    };
+    await walk(root);
+
+    const internal = new Map<string, number>();
+    for (const [key, { nlink, seen }] of found) {
+      if (seen === nlink) internal.set(key, nlink);
+    }
+    return internal;
+  }
+
+  // A file with more than one name is copied only when the walk found all of its names inside the folder and its link
+  // count has not changed since.
+  private internalHardLink(stats: { dev: number; ino: number; nlink: number }, internalLinks?: Map<string, number>): boolean {
+    return internalLinks?.get(`${stats.dev}:${stats.ino}`) === stats.nlink;
+  }
+
   private async copySourceToQuarantine(
     source: string,
     destination: string,
     filter?: fs.CopyOptions['filter'],
     filterSource = source,
     child = false,
+    internalLinks?: Map<string, number>,
   ): Promise<void> {
     if (process.platform !== 'linux') {
-      await this.copySourceToQuarantineOutsideLinux(source, destination, filter, filterSource);
+      await this.copySourceToQuarantineOutsideLinux(source, destination, filter, filterSource, internalLinks);
       return;
     }
 
@@ -225,7 +268,7 @@ export class BackupArchive {
       const sourceHandlePath = `/proc/self/fd/${sourceHandle.fd}`;
 
       if (stats.isFile()) {
-        if (stats.nlink > 1) {
+        if (stats.nlink > 1 && !this.internalHardLink(stats, internalLinks)) {
           throw new Error('Backup contains unsupported file types');
         }
 
@@ -249,6 +292,7 @@ export class BackupArchive {
           filter,
           path.join(filterSource, entry.name),
           true,
+          internalLinks,
         );
       }
       // Wizard: keep a folder's own mode (e.g. an app's 0700 private folder), as `cp -r` did before 4.11.
@@ -312,6 +356,7 @@ export class BackupArchive {
     destination: string,
     filter?: fs.CopyOptions['filter'],
     filterSource = source,
+    internalLinks?: Map<string, number>,
   ): Promise<void> {
     if (filter && !(await filter(filterSource, destination))) {
       return;
@@ -328,7 +373,7 @@ export class BackupArchive {
     }
 
     if (stats.isFile()) {
-      if (stats.nlink > 1) {
+      if (stats.nlink > 1 && !this.internalHardLink(stats, internalLinks)) {
         throw new Error('Backup contains unsupported file types');
       }
 
@@ -351,7 +396,7 @@ export class BackupArchive {
       const entrySource = path.join(source, entry);
       const entryDestination = path.join(destination, entry);
       const entryFilterSource = path.join(filterSource, entry);
-      await this.copySourceToQuarantineOutsideLinux(entrySource, entryDestination, filter, entryFilterSource);
+      await this.copySourceToQuarantineOutsideLinux(entrySource, entryDestination, filter, entryFilterSource, internalLinks);
     }
     await fs.promises.chmod(destination, stats.mode & 0o7777);
   }
