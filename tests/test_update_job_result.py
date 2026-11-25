@@ -201,3 +201,20 @@ def test_release_updates_names_the_reason(tmp_path, monkeypatch):
     failed = {}
     assert cli.release_updates(c, rt, failed) == []
     assert "Failed to copy app data for backup" in failed["wizard-agent-service"]
+
+
+def test_a_long_job_message_keeps_dockers_error_at_its_end():
+    """wizard-messenger#395: Runtipi's message is Compose's progress lines first and Docker's error last; the report
+    kept only the first 300 characters and so never showed the cause."""
+    progress = " ".join(f"Container messenger_wizardapps-service{i}-1 Waiting" for i in range(40))
+    message = ("Failed to restart the app: Container messenger_wizardapps-messenger-1  Recreate\n" + progress +
+               "\nError response from daemon: failed to set up container networking: network "
+               "wizard-link-messenger--notifications not found")
+    why = cli.job_reason(message)
+    assert len(why) <= 300 and "\n" not in why
+    assert why.startswith("Failed to restart the app: Container messenger_wizardapps-messenger-1 Recreate")
+    assert why.endswith("network wizard-link-messenger--notifications not found")
+    assert " … " in why
+    assert cli.job_reason("pull access denied") == "pull access denied"
+    assert cli.job_reason(None) == "no reason given"
+    assert len(cli.job_reason("x" * 1000)) == 300

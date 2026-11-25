@@ -542,7 +542,7 @@ class FakeDocker:
             c = next(x for x in self.live["containers"] if x["name"] == a[-1])
             c["networks"][a[-2]] = [a[i + 1] for i, x in enumerate(a) if x == "--alias"]
         elif a[:2] == ["network", "disconnect"]:
-            c = next((x for x in self.live["containers"] if x["name"] == a[-1]), None)
+            c = next((x for x in self.live["containers"] if a[-1] in (x["name"], x.get("id"))), None)
             if c:
                 c["networks"].pop(a[-2], None)
         return subprocess.CompletedProcess(args, 0, "", "")
@@ -620,6 +620,47 @@ def test_reconcile_migrates_live_is_idempotent_and_rolls_back(tmp_path, monkeypa
     for cont in fake.live["containers"]:
         if cont["service"] != "twenty-db":
             assert list(cont["networks"]) == [net.SHARED_DOCKER]
+
+
+def test_a_dropped_link_is_taken_out_of_a_container_waiting_to_start(tmp_path, monkeypatch):
+    """wizard-messenger#395: an update briefly put the new recipe (a new `uses:`) in place, so the link was granted,
+    built and written into the override; Runtipi then restarted the OLD version for its backup, and Compose recreated
+    the app's container with the link before waiting for its dependencies. Meanwhile the grant was taken back and the
+    link removed: Docker allows that while the container is only created, and its start then failed with "network
+    wizard-link-messenger--notifications not found", so the update rolled back. A removed network must also leave the
+    settings of containers that are not running, so they start without it."""
+    c = Cfg(tmp_path)
+    grant = {"kind": "app", "from": "messenger", "to": "notifications", "reason": "uses", "approved": "install"}
+    apps = [app("messenger", uses=["notifications"]), app("notifications")]
+    with_link = net.plan(apps, [grant], set(), approved=[grant])
+    link = net.link_name("messenger", "notifications")
+    assert link in with_link["networks"]
+    live = live_from(with_link)
+    for cont in live["containers"]:
+        cont["id"] = cont["name"] + "-id"
+        if cont["urn"] == "messenger:wizardapps":
+            cont["running"] = False   # Compose created it and waits for the app's own dependencies before starting it
+    live["containers"].append({"id": "stopped-id", "name": "messenger-old-stopped", "urn": "messenger:wizardapps",
+                               "service": "translation", "running": False, "network_mode": "", "networks": {link: []}})
+    live["networks"][link]["containers"] = ["notifications-notifications"]   # only running ones are connected
+    fake = FakeDocker(live)
+    # the old recipe is back: Messenger no longer declares Notifications, the grant is gone
+    without = net.plan([app("messenger"), app("notifications")], [], set())
+    assert link not in without["networks"]
+    monkeypatch.setattr(net, "build", lambda *args, **kwargs: (without, "wizardapps"))
+    monkeypatch.setattr(net, "docker_cmd", lambda: ["docker"])
+    monkeypatch.setattr(net, "_run", fake.run)
+    monkeypatch.setattr(net, "observe", lambda *args, **kwargs: json.loads(json.dumps(fake.live)))
+    res = net.reconcile(c, restart=False)
+    assert link in res["removed"] and link not in fake.live["networks"]
+    for cont in fake.live["containers"]:
+        assert link not in cont["networks"], cont["name"]
+    rm = fake.calls.index(("network", "rm", link))
+    waiting = [i for i, x in enumerate(fake.calls) if x[:2] == ("network", "disconnect") and x[-2:] in (
+        (link, "messenger-messenger-id"), (link, "stopped-id"))]
+    assert len(waiting) == 2 and all(i < rm for i in waiting)
+    # networks the plan still wants are never taken out of a waiting container
+    assert all(x[-2] == link for x in fake.calls if x[:2] == ("network", "disconnect"))
 
 
 def test_enabled_switch(tmp_path, monkeypatch):

@@ -2882,6 +2882,17 @@ def update_wait_s(c: "Config") -> int:
 JOB_ENDED = {"succeeded", "failed", "cancelled"}
 
 
+def job_reason(message, limit: int = 300) -> str:
+    """One line of a Runtipi job message, at most `limit` characters. A long message keeps its start and its END:
+    a failed `compose up` prints its progress lines first and Docker's actual error last, and keeping only the start
+    hid the cause in update reports (wizard-messenger#395: "... messenger-1 Recreate" and nothing after it)."""
+    text = " ".join(str(message or "no reason given").split())
+    if len(text) <= limit:
+        return text
+    head = limit // 3
+    return f"{text[:head].rstrip()} … {text[-(limit - head - 3):].lstrip()}"
+
+
 def update_job(rt, urn: str, request, timeout: float, *, sleep=time.sleep, clock=time.monotonic) -> dict | None:
     """Follow Runtipi's update job (Runtipi 4.12 AppJobService) to its end and return it.
 
@@ -3082,7 +3093,7 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
         update_strand.clear(getattr(c, "home", None), urn)
     if job and job.get("status") != "succeeded":
         # #971: Runtipi put the previous version back (or is still busy with it); say so instead of reporting an update
-        why = " ".join(str(job.get("message") or "no reason given").split())[:300]
+        why = job_reason(job.get("message"))
         out["job"] = {"status": job.get("status"), "phase": job.get("phase"), "message": why}
         if job.get("status") in ("failed", "cancelled"):
             kept = "; the installed version was kept" if status in ("running", "stopped") else ""
