@@ -270,6 +270,88 @@ describe('BackupArchive Linux filesystem security', () => {
     }
   });
 
+  // wizard-app-manager#1039 (Codex P1 on #1037): a private agent's data can change while it is backed up. A folder the
+  // scan listed as a directory and that is then swapped for a symlink to the outside must not let the scan count the
+  // outside name of a hard link as if it sat inside, or that file is accepted into the backup.
+  it.runIf(process.platform === 'linux')('does not follow a folder swapped for a symlink while counting hard links', async () => {
+    const rootDir = await fs.promises.mkdtemp('/tmp/runtipi-backup-source-');
+    const source = path.join(rootDir, 'source');
+    const outside = path.join(rootDir, 'outside');
+    const swappedDir = path.join(source, 'd');
+    const destination = path.join(rootDir, 'backup', 'app-data');
+    const logger = createLogger();
+    const manager = new BackupArchive(new FilesystemService(logger), logger);
+    const originalReaddir = fs.promises.readdir;
+    let swapped = false;
+    const swap = () => {
+      if (swapped) return;
+      swapped = true;
+      fs.rmSync(swappedDir, { recursive: true });
+      fs.symlinkSync(outside, swappedDir);
+    };
+    // Swap right after the source folder itself is listed (by path or through its handle), before the scan reaches `d`.
+    const readdirSpy = vi.spyOn(fs.promises, 'readdir').mockImplementation((async (...args: Parameters<typeof originalReaddir>) => {
+      const result = await originalReaddir(...args);
+      if (!swapped && fs.realpathSync(String(args[0])) === source) swap();
+      return result;
+    }) as typeof originalReaddir);
+
+    try {
+      await writeFile(path.join(outside, 'secret'), 'host secret');
+      await fs.promises.mkdir(swappedDir, { recursive: true });
+      await fs.promises.link(path.join(outside, 'secret'), path.join(source, 'secret'));
+
+      await expect(manager.stageBackupDirectory(source, destination, 'app data')).rejects.toThrow('Failed to copy app data for backup');
+      expect(swapped).toBe(true);
+      await expect(fs.promises.access(path.join(destination, 'secret'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      readdirSpy.mockRestore();
+      await fs.promises.rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  // wizard-app-manager#1039 (Codex P2 on #1037): a cancelled update or backup is seen only through the copy filter. The
+  // hard-link scan must ask it before reading anything, and must not walk the excluded top-level `backups` folder.
+  it.runIf(process.platform === 'linux')('asks the copy filter before scanning and skips what it excludes', async () => {
+    const rootDir = await fs.promises.mkdtemp('/tmp/runtipi-backup-source-');
+    const source = path.join(rootDir, 'source');
+    const destination = path.join(rootDir, 'backup', 'app-data');
+    const logger = createLogger();
+    const manager = new BackupArchive(new FilesystemService(logger), logger);
+    const lstatSpy = vi.spyOn(fs.promises, 'lstat');
+
+    try {
+      await writeFile(path.join(source, 'data', 'a'), 'a');
+      await fs.promises.link(path.join(source, 'data', 'a'), path.join(source, 'data', 'b'));
+      for (let i = 0; i < 20; i += 1) await writeFile(path.join(source, 'backups', `old-${i}`, 'archive.tar.gz'), 'old');
+
+      // Cancelled: the filter throws on its first call, so nothing may be read.
+      const cancelled = new AbortController();
+      cancelled.abort();
+      await expect(
+        manager.stageBackupDirectory(source, destination, 'app data', () => {
+          cancelled.signal.throwIfAborted();
+          return true;
+        }),
+      ).rejects.toThrow('Failed to copy app data for backup');
+      expect(lstatSpy).not.toHaveBeenCalled();
+
+      // Not cancelled: nothing inside the excluded backups folder is read or asked about.
+      const asked: string[] = [];
+      await manager.stageBackupDirectory(source, destination, 'app data', (filterSource) => {
+        asked.push(filterSource);
+        return filterSource !== path.join(source, 'backups');
+      });
+      expect(asked.filter((p) => p.startsWith(`${path.join(source, 'backups')}/`))).toEqual([]);
+      expect(lstatSpy.mock.calls.filter(([p]) => String(p).endsWith('archive.tar.gz'))).toEqual([]);
+      await expect(fs.promises.readFile(path.join(destination, 'data', 'b'), 'utf8')).resolves.toBe('a');
+      await expect(fs.promises.access(path.join(destination, 'backups'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      lstatSpy.mockRestore();
+      await fs.promises.rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it.runIf(process.platform === 'linux')('still fails when the app data folder itself is missing', async () => {
     const rootDir = await fs.promises.mkdtemp('/tmp/runtipi-backup-source-');
     const logger = createLogger();
