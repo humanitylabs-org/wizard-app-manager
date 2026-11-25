@@ -22,7 +22,6 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(gs, "_gh_cache", None)
     monkeypatch.setattr(gs, "_gh_token", lambda: "")
     monkeypatch.setattr(private.subprocess, "run", lambda *a, **k: type("R", (), {"returncode": 1})())
-    monkeypatch.setattr(gs, "switch_on", lambda: False)
     monkeypatch.setattr(gs, "_user_login", lambda tok: {OLD: "old-account", NEW: "new-account"}.get(tok, ""))
     gs._login_cache.clear()
     yield
