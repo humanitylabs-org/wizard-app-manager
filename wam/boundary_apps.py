@@ -13,6 +13,10 @@ never "blank". Only GET requests, only the app's own page and the files it names
 The installer runs it before it switches the boundary on (cli.settle_existing_browser_boundary) and after a new
 box's default apps are in (cli.settle_auto_browser_boundary); an install or update on a box with the boundary on
 checks that one app (cli.boundary_after_app).
+
+An app the shell opens as its own browser tab under the boundary (OWN_TAB, the same list as wizard-ux
+`web/core/browser-boundary.js` OWN_TAB, wizard-ux#1821) is never a sandboxed frame, so it is listed as `own_tab`
+and never counted as blank (wizard-app-manager#1046).
 """
 from __future__ import annotations
 
@@ -31,6 +35,15 @@ APP_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 # Served by the shell or the Agent Service on the box origin, never by the app itself.
 SHELL_PATHS = ("/wizard-os-home/", "/wizard/", "/wizard-os/")
 CORS_OK = {"*", "null"}
+# Installed app id -> the window path under which the shell opens it as its own tab while the boundary is on,
+# instead of a sandboxed frame. Keep in step with wizard-ux web/core/browser-boundary.js OWN_TAB (wizard-ux#1821).
+OWN_TAB = {"files": "/files/"}
+
+
+def own_tab(app_id: str, path: str) -> bool:
+    """Whether the shell opens this app in its own tab under the boundary (the shell's `ownTab(appId, url)`)."""
+    home = OWN_TAB.get(app_id) if isinstance(app_id, str) else None
+    return bool(home) and str(path or "").startswith(home)
 
 
 class _Tags(HTMLParser):
@@ -244,16 +257,22 @@ def windows(home, runtipi_root, skip=(), only=None) -> list[dict]:
             return h
 
         out.append({"id": a["id"], "name": str(a.get("name") or a["id"])[:80],
-                    "page": f"{lp.scheme}://{lp.netloc}{path}", "prefix": path, "proof": proof})
+                    "page": f"{lp.scheme}://{lp.netloc}{path}", "prefix": path, "proof": proof,
+                    **({"own_tab": True} if own_tab(a["id"], path) else {})})
     return out
 
 
 def check(home, runtipi_root, skip=(), only=None, get=_get, wait_s: float = 0) -> dict:
-    """{ok: [names], blank: [{id, name, why, files}], unchecked: [{id, name, why}]}. `wait_s`: keep retrying apps
-    whose page does not answer yet (just installed or updated) until that many seconds have passed in all."""
-    out = {"ok": [], "blank": [], "unchecked": []}
+    """{ok: [names], blank: [{id, name, why, files}], unchecked: [{id, name, why}], own_tab: [names]}. `wait_s`:
+    keep retrying apps whose page does not answer yet (just installed or updated) until that many seconds have
+    passed in all. `own_tab`: apps the shell opens in their own tab under the boundary (OWN_TAB): never framed, so
+    never probed and never blank."""
+    out = {"ok": [], "blank": [], "unchecked": [], "own_tab": []}
     end = time.monotonic() + wait_s
     for app in windows(home, runtipi_root, skip, only):
+        if app.get("own_tab"):
+            out["own_tab"].append(app["name"])
+            continue
         while True:
             r = probe(app, get)
             if not r.get("down") or time.monotonic() >= end:
