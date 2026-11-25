@@ -59,7 +59,7 @@ HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", 
 STRIP_PREFIXES = ("tailscale-", "x-forwarded-", "x-wizard-", "cf-access-")
 STRIP_NAMES = {"forwarded", "x-real-ip", "remote-user", "proxy", "cf-connecting-ip"}
 # What a sandboxed app page may load by itself through the edge, unsigned (Handler._sandboxed_file_load).
-SANDBOXED_FILE_DESTS = frozenset({"script", "style", "image", "video", "audio", "track"})
+SANDBOXED_FILE_DESTS = frozenset({"script", "style", "image", "video", "audio", "track", "font"})
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 _CTL = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 MAX_BODY = 110 * 1024 * 1024        # the shell's own client_max_body_size
@@ -254,7 +254,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get_all("Authorization") is not None:
             return "bearer_owner_handoff_denied"
         origin = self._one("Origin")
-        if self.headers.get_all("Origin") and origin != f"https://{host}":
+        if self.headers.get_all("Origin") and origin != f"https://{host}" and not self._sandboxed_file_load():
             return "origin_forbidden"
         if self.command not in ("GET", "HEAD") and origin != f"https://{host}":
             return "origin_required"
@@ -270,13 +270,22 @@ class Handler(BaseHTTPRequestHandler):
     def _sandboxed_file_load(self) -> bool:
         """True for a file the app's own page loads inside Wizard's sandboxed window (browser boundary, wizard-os#133).
         That window has an opaque origin, so the browser marks the page's own <script>, <link rel=stylesheet>, <img>,
-        <video> and <audio> loads cross-site (no Origin, no cookie); refusing them left the page without its scripts
+        <video> and <audio> loads cross-site (no cookie); refusing them left the page without its scripts
         (wizard-messenger#413: stuck on its first line). Such a load is passed on UNSIGNED and without cookies, so the
         app sees an anonymous visitor: it gets only what the app gives anyone (page files, a ticketed media address),
-        never the owner's authority. fetch()/XHR (mode cors), navigations and writes stay refused."""
+        never the owner's authority. A module script or font is fetched in cors mode with `Origin: null` (the app then
+        answers it with `Access-Control-Allow-Origin: *`, docs/browser-boundary.md). fetch()/XHR (destination empty),
+        navigations, framing, a real Origin and writes stay refused."""
         one = lambda name: (self._one(name) or "").strip().lower()
-        return (self.command in ("GET", "HEAD") and self.headers.get_all("Origin") is None
-                and one("Sec-Fetch-Site") == "cross-site" and one("Sec-Fetch-Mode") == "no-cors"
+        origins = self.headers.get_all("Origin") or []
+        mode = one("Sec-Fetch-Mode")
+        if mode == "no-cors":
+            origin_ok = not origins
+        elif mode == "cors":
+            origin_ok = len(origins) == 1 and origins[0].strip().lower() == "null"
+        else:
+            return False
+        return (origin_ok and self.command in ("GET", "HEAD") and one("Sec-Fetch-Site") == "cross-site"
                 and one("Sec-Fetch-Dest") in SANDBOXED_FILE_DESTS)
 
     def _activity(self, path: str) -> None:
