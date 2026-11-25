@@ -6,14 +6,13 @@ Runtipi 4.12 signs `sub=cli` tokens with a private key kept in the backend's `ru
 Runtipi keeps world-readable (0664). The fork still accepts both (`verifyCliToken`, packages/backend/src/modules/auth/
 auth.middleware.ts) until every tool reads the new key.
 
-Off by default: feature switch `wizard/runtipi-cli-key` (For testers). With it on:
+On for everyone (show-and-tell yes, WAM#839; the switch `wizard/runtipi-cli-key` is gone):
   - wam reads the key from the running `runtipi` container and signs with it; when the container has no such key (a
     backend older than 4.12) or it can't be read right now, wam signs with JWT_SECRET as before;
   - wam keeps a private copy in `<wizard home>/runtipi-cli-key` (0600, this user only) so the wizard-ux loopback
     tools (tools/store-data-origin.mjs, system-resources.mjs, home-resources-origin.mjs) sign with the same key.
     Those tools use the copy when it holds a valid key and JWT_SECRET otherwise. Whenever wam can't read the key it
     removes the copy, so the tools never keep signing with a key the backend no longer has.
-With it off, wam signs with JWT_SECRET and removes that copy, so the shell's tools go back to JWT_SECRET too.
 """
 from __future__ import annotations
 
@@ -24,12 +23,11 @@ import threading
 import time
 from pathlib import Path
 
-SWITCH = "wizard/runtipi-cli-key"
 KEY_FILE = "runtipi-cli-key"            # under the wizard home (~/.wizard-os)
 CONTAINER = "runtipi"
 CONTAINER_PATH = "/data/.secrets/cli-secret"
 KEY = re.compile(r"[a-f0-9]{64}")
-CACHE_S = 60                            # one switch read and one docker exec per minute per process, at most
+CACHE_S = 60                            # one docker exec per minute per process, at most
 
 _cache: dict[str, tuple[float, str]] = {}
 _lock = threading.Lock()
@@ -38,11 +36,6 @@ _lock = threading.Lock()
 def _home(home: Path | None) -> Path:
     from .updates import _home as h
     return h(home)
-
-
-def switch_on(home: Path | None = None) -> bool:
-    from . import feature_switches
-    return feature_switches.is_on(SWITCH, home, timeout=2)
 
 
 def container_key(docker: list[str] | None = None, timeout: int = 10) -> str | None:
@@ -90,7 +83,7 @@ def _drop_copy(path: Path) -> None:
         pass
 
 
-def secret(root: Path, jwt_secret: str, home: Path | None = None, *, on=None, read=None, now=None) -> str:
+def secret(root: Path, jwt_secret: str, home: Path | None = None, *, read=None, now=None) -> str:
     """The secret to sign wam's CLI tokens with for the Runtipi install at `root` (see the module docstring)."""
     t = (now or time.monotonic)()
     ck = f"{Path(root)}|{_home(home)}"
@@ -99,12 +92,10 @@ def secret(root: Path, jwt_secret: str, home: Path | None = None, *, on=None, re
         if hit and t - hit[0] < CACHE_S:
             return hit[1] or jwt_secret
     path = key_path(home)
-    key = None
-    if (on or switch_on)(home):
-        key = (read or container_key)()
+    key = (read or container_key)()
     if key:
         _write_copy(path, key)
-    else:                               # off, a backend without the key, or unreadable now: the shell's tools follow
+    else:                               # a backend without the key, or unreadable now: the shell's tools follow
         _drop_copy(path)                # wam back to JWT_SECRET (a stale copy would 401 forever; Codex P2)
     with _lock:
         _cache[ck] = (t, key or "")
