@@ -78,6 +78,15 @@ sandboxed window asks (`Sec-Fetch-Site: cross-site`, no Referer, `Origin: null` 
 and `crossorigin` files, which then need `Access-Control-Allow-Origin: *` or `null`). An app **would open blank** when
 a file that loads today would not load in the sandbox. An app this box-local request can't read at all (stopped, or a
 page that refuses it) is listed as not checked and never holds the box. Only GETs; nothing is written.
+Two kinds of app are never a sandboxed frame, so they are not asked and never hold the box: Files, which the shell
+opens as its own tab (`own_tab`, wizard-ux `OWN_TAB`, WAM#1046), and TG style installed from
+`humanitylabs-org/telegram`, whose window the shell keeps same-origin because it is a second view of the shell's own
+chats (`same_origin`, wizard-ux `SAME_ORIGIN`, telegram#68). The check decides on the same window URL the shell opens
+(apps.json `view.url`): it must be under `/tg-style/` on the shell's own origin (a path, or a URL on the box's
+`network.base_url`, an alias or the shell's Serve origin). And only while the shell installed on the box has that list
+(its served `core/browser-boundary.js` names `tg-style` in `SAME_ORIGIN`). With an older shell, a TG style from any
+other repo, or a window on its own loopback port (a box without a tailnet path, `http://127.0.0.1:<port>/`: another
+origin, so the shell seals it), it is checked like any app.
 
 - **A box that already ran Wizard** (above): when any app would open blank it is not switched on;
   `<wam home>/browser-boundary/held.json` names the apps, the installer output carries `browser_boundary.held`,
