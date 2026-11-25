@@ -1,11 +1,9 @@
 """Graceful Agent Service restarts (wizard-app-manager#642, the App Manager half of wizard-agent-service#480).
 
-Off by default: feature switch `wizard/graceful-restart` (For testers, Settings > Try new features). With it off
-nothing here runs and every restart stops the Agent Service straight away, as before.
-
-With it on, every restart of the `wizard-agent-service` app that the App Manager starts (`wam app restart`, an app
-update or a WizardOS release moving it, a settings change that recreates it) goes through the Agent Service restart
-gate (wizard-agent-service docs/graceful-restart.md, which needs `WIZARD_GRACEFUL_RESTART=1` on the service):
+On for every box (the `wizard/graceful-restart` switch was approved at show-and-tell and removed): every restart
+of the `wizard-agent-service` app that the App Manager starts (`wam app restart`, an app update or a WizardOS release
+moving it, a settings change that recreates it) goes through the Agent Service restart gate
+(wizard-agent-service docs/graceful-restart.md, which needs `WIZARD_GRACEFUL_RESTART=1` on the service):
 
 1. `POST /wizard/v1/restart` holds new sends (saved, launched after the restart) and lets running turns finish;
    `GET` is polled until `phase` is `ready`, then the restart runs. An Agent Service without the gate (404) or one
@@ -39,7 +37,6 @@ from pathlib import Path
 
 from . import browser_boundary
 
-SWITCH = "wizard/graceful-restart"
 APP = "wizard-agent-service"
 ROUTE = "/wizard/v1/restart"
 STATE = "agent-restart.json"
@@ -60,14 +57,9 @@ class NotUpdated(SystemExit):
     """An update called off at the gate: nothing changed (a SystemExit like every other refused app_update)."""
 
 
-def switch_on(home: Path | None = None) -> bool:
-    from . import feature_switches
-    return feature_switches.is_on(SWITCH, home)
-
-
 def applies(urn_or_id: str, home: Path | None = None, store: str = "wizardapps") -> bool:
     app, _, st = urn_or_id.partition(":")
-    return app == APP and (st or store) == store and switch_on(home)
+    return app == APP and (st or store) == store
 
 
 def _home(home: Path | None) -> Path:
@@ -154,7 +146,7 @@ def choose(action: str, minutes: int | None = None, home: Path | None = None) ->
 
 def status(home: Path | None = None) -> dict:
     doc = read_state(home)
-    return {"switch": SWITCH, "on": switch_on(home), "restart": doc or None}
+    return {"restart": doc or None}
 
 
 def _describe(turns) -> str:
@@ -365,6 +357,8 @@ def update(c, urn: str, do_update, *, backup: bool = True, home: Path | None = N
         return res
     hk = {k: v for k, v in kw.items() if k in ("req", "sleep", "clock")}
     origin = kw.get("origin") or _origin(home) or g.get("origin")
+    if not origin and not res.get("error"):
+        return res   # nowhere to ask for /wizard/health (no service port on record): the update as before
     problem = res.get("error") or (None if healthy(origin, **hk) else
                                    "the Agent Service did not pass its health check after the update")
     if not problem:

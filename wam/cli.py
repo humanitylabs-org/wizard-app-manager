@@ -25,7 +25,7 @@ Wizard additions:
   wam agent-runtime [--json] [--dry-run]  install/update the agent runtime helper the Agent Service creates agents with
   wam app-updates [--apply [ids]|--ask|--auto|--hold id]  new versions of installed apps (hourly when Automatic;
                                 checked and rolled back on failure)
-  wam agent-restart [wait [--minutes N]|now|cancel]  a waiting Agent Service restart (switch wizard/graceful-restart):
+  wam agent-restart [wait [--minutes N]|now|cancel]  a waiting Agent Service restart (it waits for running chats):
                                 chats still run past the limit, so wait longer, restart now or call it off
   wam doctor [--fix]            check the whole chain
   wam connections [--json]      what each app can reach (its declared connections), the gateway path, internet
@@ -897,7 +897,7 @@ LIFECYCLE_WANT = {"start": {"running"}, "restart": {"running"}, "stop": {"stoppe
 def app_lifecycle(c: "Config", verb: str, app_id: str, timeout: int = 300) -> dict:
     """start/stop/restart one app through the authenticated App Manager API (the path the web UI uses).
     runtipi-cli talks to the queue directly on [::1]:5672, which the stock compose never publishes (#53).
-    A restart of the Agent Service waits for its running chats first when `wizard/graceful-restart` is on (#642)."""
+    A restart of the Agent Service waits for its running chats first (#642)."""
     urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
     if verb == "restart":
         from . import graceful_restart
@@ -3123,7 +3123,7 @@ def _older_updates(c: "Config", targets: list[str]) -> dict:
 
 def app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | None = None, allow_host_access: bool = False,
                settings=None) -> dict:
-    """See _app_update. With `wizard/graceful-restart` on (#642), an update of the Agent Service first waits for its
+    """See _app_update. An update of the Agent Service first waits for its
     running chats (the restart gate), then must pass its health check, else the backup it just made is restored."""
     from . import graceful_restart
     urn = app_id if ":" in app_id else f"{app_id}:{STORE}"
@@ -3315,7 +3315,7 @@ def _backfill_owner_logins(runtipi_root: Path, targets: list[str]) -> None:
 
 
 def _graceful_passthrough(argv: list[str]) -> int | None:
-    """With `wizard/graceful-restart` on (#642), runtipi-cli must not restart the Agent Service behind the gate's back:
+    """runtipi-cli must not restart the Agent Service behind the gate's back:
     a flag-first update/restart of it (`wam app update --no-backup wizard-agent-service`) goes through app_update /
     app_lifecycle like the plain form, and a bulk form (`--all`, no target) is refused with the commands to use.
     None: not concerned, hand it to runtipi-cli as before."""
@@ -3326,10 +3326,8 @@ def _graceful_passthrough(argv: list[str]) -> int | None:
     if targets and not any(t.split(":", 1)[0] == graceful_restart.APP for t in targets):
         return None
     c = Config()
-    if not graceful_restart.switch_on(c.home):
-        return None
     if not targets or len(targets) > 1:
-        print("the Agent Service waits for its running chats before a restart (switch wizard/graceful-restart), so "
+        print("the Agent Service waits for its running chats before a restart (#642), so "
               f"it is not part of a bulk `wam app {argv[1]}`: run `wam app {argv[1]} {graceful_restart.APP}` on its own, "
               "and name the other apps one by one", file=sys.stderr)
         return 1
@@ -3602,7 +3600,7 @@ def main(argv: list[str] | None = None) -> int:
                                                  "what this box sends, or send it now")
     sfb.add_argument("--dry-run", action="store_true", help="print what would be sent, send nothing")
     sfb.add_argument("--force", action="store_true", help="send even when nothing changed since the last send")
-    arp = sub.add_parser("agent-restart", help="a waiting Agent Service restart (switch wizard/graceful-restart): "
+    arp = sub.add_parser("agent-restart", help="a waiting Agent Service restart (it waits for running chats): "
                                                "status, or wait [--minutes N] / now / cancel")
     arp.add_argument("action", nargs="?", default="status", choices=("status", "wait", "now", "cancel"))
     arp.add_argument("--minutes", type=int, default=None)

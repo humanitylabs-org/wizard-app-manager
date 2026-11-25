@@ -80,6 +80,17 @@ def _no_real_host_dashboard(request, tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_restart_gate(request, monkeypatch):
+    """An Agent Service restart or update waits at the service's restart gate on every box (#642). Tests about
+    something else take the plain path, so they never poll a loopback port or wait for /wizard/health;
+    tests/test_graceful_restart.py tests the gate and its wiring itself."""
+    if request.module.__name__.endswith(("test_graceful_restart", "test_browser_boundary_new_box")):
+        return
+    from wam import graceful_restart
+    monkeypatch.setattr(graceful_restart, "applies", lambda *a, **k: False)
+
+
+@pytest.fixture(autouse=True)
 def _no_switch_feedback_sends(request, monkeypatch):
     """The hourly tick's Try new features counts (wam/switch_feedback.py, #701) never read the real box or send in
     tests; tests/test_switch_feedback.py tests the module itself."""

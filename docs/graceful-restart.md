@@ -1,13 +1,13 @@
 # Graceful Agent Service restarts (#642)
 
-Switch: `wizard/graceful-restart` (Settings > Try new features, For testers only). Off by default: with it off every
-restart stops the Agent Service straight away, as before. It needs the Agent Service's own gate too
+On for every box: the `wizard/graceful-restart` switch was approved at show-and-tell and removed, so there is no
+off path left in the App Manager. It needs the Agent Service's own gate too
 (`WIZARD_GRACEFUL_RESTART=1`, wizard-agent-service `docs/graceful-restart.md`); a service without it answers 404 and
 is restarted as before.
 
 Code: `wam/graceful_restart.py`, wired into `cli.app_lifecycle` (verb `restart`) and `cli.app_update`, so it covers
 `wam app restart|update wizard-agent-service` (also the flag-first form, `--no-backup` first), a WizardOS release moving
-the service, and settings changes that recreate it. With the switch on, a bulk `wam app update|restart` (`--all`, or
+the service, and settings changes that recreate it. A bulk `wam app update|restart` (`--all`, or
 several apps with the service among them) is refused with the commands to run instead, so runtipi-cli never restarts
 the service behind the gate.
 
@@ -24,7 +24,7 @@ the service behind the gate.
    - `wam agent-restart wait [--minutes N]`: `POST` again with the new limit;
    - `wam agent-restart now`: restart now;
    - `wam agent-restart cancel`: call it off (`DELETE`), held sends launch at once, nothing changes.
-   The shell's restart note (wizard-ux, same switch) sends Wait longer / Restart now to the Agent Service itself;
+   The shell's restart note (wizard-ux) sends Wait longer / Restart now to the Agent Service itself;
    the gate follows it (`restart_now: true` restarts now, a new limit takes the phase back to `waiting`).
    The same answer goes over the owner API: `GET/POST /api/agent-restart` on `wam serve` (bearer token),
    body `{"action": "wait"|"now"|"cancel", "minutes": n}`. With no answer within 30 min
