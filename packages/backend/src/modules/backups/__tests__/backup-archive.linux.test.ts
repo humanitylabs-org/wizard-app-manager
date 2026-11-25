@@ -220,6 +220,56 @@ describe('BackupArchive Linux filesystem security', () => {
     }
   });
 
+  // An agent's uv cache hard-links each package file between its archive and wheel folders (and the installed copy), so
+  // the Agent Service's app data holds hundreds of hard links that all live inside it. Refusing every hard link failed
+  // each Agent Service update backup ("Failed to copy app data for backup"), and with it the WizardOS update.
+  it.runIf(process.platform === 'linux')('copies hard links whose names all sit inside the app data as plain files', async () => {
+    const rootDir = await fs.promises.mkdtemp('/tmp/runtipi-backup-source-');
+    const source = path.join(rootDir, 'source');
+    const cache = path.join(source, 'home', '.cache', 'uv');
+    const destination = path.join(rootDir, 'backup', 'app-data');
+    const logger = createLogger();
+    const manager = new BackupArchive(new FilesystemService(logger), logger);
+
+    try {
+      await writeFile(path.join(cache, 'archive-v0', 'pkg', 'mod.py'), 'code');
+      await fs.promises.mkdir(path.join(cache, 'wheels-v6', 'pkg'), { recursive: true });
+      await fs.promises.link(path.join(cache, 'archive-v0', 'pkg', 'mod.py'), path.join(cache, 'wheels-v6', 'pkg', 'mod.py'));
+      await fs.promises.mkdir(path.join(source, 'home', 'lazy-packages', 'pkg'), { recursive: true });
+      await fs.promises.link(path.join(cache, 'archive-v0', 'pkg', 'mod.py'), path.join(source, 'home', 'lazy-packages', 'pkg', 'mod.py'));
+
+      await manager.stageBackupDirectory(source, destination, 'app data');
+
+      for (const copy of ['.cache/uv/archive-v0/pkg/mod.py', '.cache/uv/wheels-v6/pkg/mod.py', 'lazy-packages/pkg/mod.py']) {
+        const copied = path.join(destination, 'home', copy);
+        await expect(fs.promises.readFile(copied, 'utf8')).resolves.toBe('code');
+        expect((await fs.promises.lstat(copied)).nlink).toBe(1);
+      }
+    } finally {
+      await fs.promises.rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === 'linux')('still refuses a file that is also linked from outside the app data', async () => {
+    const rootDir = await fs.promises.mkdtemp('/tmp/runtipi-backup-source-');
+    const source = path.join(rootDir, 'source');
+    const destination = path.join(rootDir, 'backup', 'app-data');
+    const logger = createLogger();
+    const manager = new BackupArchive(new FilesystemService(logger), logger);
+
+    try {
+      await writeFile(path.join(rootDir, 'host-secret'), 'secret');
+      await fs.promises.mkdir(path.join(source, 'a'), { recursive: true });
+      await fs.promises.link(path.join(rootDir, 'host-secret'), path.join(source, 'a', 'one'));
+      await fs.promises.link(path.join(rootDir, 'host-secret'), path.join(source, 'two'));
+
+      await expect(manager.stageBackupDirectory(source, destination, 'app data')).rejects.toThrow('Failed to copy app data for backup');
+      await expect(fs.promises.access(destination)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fs.promises.rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it.runIf(process.platform === 'linux')('still fails when the app data folder itself is missing', async () => {
     const rootDir = await fs.promises.mkdtemp('/tmp/runtipi-backup-source-');
     const logger = createLogger();
