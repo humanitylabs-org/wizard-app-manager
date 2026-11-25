@@ -1535,14 +1535,18 @@ def capability_providers(c: Config, name: str) -> list[str] | None:
     return list(dict.fromkeys(found)) or None
 
 
-def resolve_any(c: Config, ref: str) -> dict:
+def resolve_any(c: Config, ref: str, *, pin_repo: str | None = None) -> dict:
     """Explicit pinned catalog first, owner aliases next, then the public index/private repo fallback.
 
     An alias cannot silently replace an opted-in immutable catalog release. Its manifest identity is checked
     inside prepare before any image load/pull or store mutation.
+    `pin_repo`: fetch the release pin's commit from this repo instead (the repo's current name when the release
+    still pins its old one, #1047), so the box keeps the name it already follows.
     """
     pinned = release_pins.resolve(ref)
     if pinned:
+        if pin_repo:
+            pinned = {**pinned, 'repo': pin_repo}
         return private.prepare(c.runtipi_root, STORE, pinned['repo'], source_pin=pinned)
     from . import test_catalog
     pinned = test_catalog.resolve(ref)
@@ -1923,12 +1927,22 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
                 continue  # independent Hermes pause; unrelated release defaults still update
         try:
             commit = (live / ".wizard-commit").read_text().strip()
-            source = json.loads((live / ".wizard-source").read_text()).get("repo")
-        except (OSError, ValueError):
+            src = json.loads((live / ".wizard-source").read_text())
+            source = src.get("repo")
+        except (OSError, ValueError, AttributeError) as e:
+            print(f"note: {app_id} not moved to the release's source: its install record can't be read "
+                  f"({type(e).__name__})", file=sys.stderr)
             continue
+        fetch_from = None
         if source != row["repo"]:
-            from . import repo_moves   # the release pins the repo's new name after a GitHub move (#578)
-            if not repo_moves.follow(c, app_id, want=row["repo"]):
+            from . import repo_moves
+            if repo_moves.follow(c, app_id, want=row["repo"]):
+                pass   # the release pins the repo's new name after a GitHub move (#578)
+            elif repo_moves.pinned_old_name(src, row["repo"]):
+                fetch_from = source   # the box already follows the move, the release pins the old name (#1047)
+            else:
+                print(f"note: {app_id} not moved to the release's source {row['commit'][:12]}: the release pins "
+                      f"{row['repo']} but this box installed it from {source}", file=sys.stderr)
                 continue
         meta = registry.app_meta(c.runtipi_root, STORE, app_id)
         if commit == row["commit"] and (not row.get("index_version") or
@@ -1936,7 +1950,8 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
             continue
         try:
             print(f"updating {app_id} to the release's source {row['commit'][:12]}", file=sys.stderr)
-            rec = resolve_any(c, app_id)   # prepares the pinned recipe (and its selection) in the store folder
+            # prepares the pinned recipe (and its selection) in the store folder
+            rec = resolve_any(c, app_id, pin_repo=fetch_from) if fetch_from else resolve_any(c, app_id)
             # Updates reuse the old saved form. Reconcile new required inputs using the SAME
             # shared-secret/default rules as install, without resetting any owner settings.
             urn = f"{app_id}:{STORE}"

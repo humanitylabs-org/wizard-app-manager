@@ -48,7 +48,7 @@
     "claude-subscription": {
       "name": "Claude connection",
       "app": "wizard-claude",
-      "repo": "oscarhenrycollins/claude-connection",
+      "repo": "humanitylabs-org/claude-connection",
       "required": false,
       "note": "The Claude connection app ships on every box next to ChatGPT: it holds the agent's own Claude Code sign-in (fresh: the shared Claude volume; alongside: the host Hermes' Claude login folder), renews it when it expires and offers Connect/Test. Without it an expired Claude sign-in only shows up as a failed chat."
     },
@@ -77,7 +77,7 @@
     "files": {
       "name": "Files",
       "app": "files",
-      "repo": "oscarhenrycollins/files",
+      "repo": "humanitylabs-org/files",
       "required": true,
       "gateway": {"path": "/files/", "strip_prefix": false}
     },
@@ -116,7 +116,7 @@
     "cloudflare-connection": {
       "name": "Cloudflare",
       "app": "wizard-cloudflare",
-      "repo": "oscarhenrycollins/wizard-cloudflare",
+      "repo": "humanitylabs-org/wizard-cloudflare",
       "required": false,
       "install": "on-demand",
       "recommended": true,
