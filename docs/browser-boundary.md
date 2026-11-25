@@ -67,6 +67,38 @@ With it on:
 - Only the Connections view's own page files (GET `_connections/…` outside `api/`) skip it, because they load as a
   frame and hold no owner data. Its `api/` calls are gated.
 
+## Only while every installed app opens inside it (WAM#1043)
+
+On 25 Nov WizardOS 0.3.436 switched an existing box on by itself and TG style and Files opened blank: their page
+loads a module script that never answers `Origin: null`. So the installer now asks the installed apps first
+(`wam/boundary_apps.py`). For every app with a window (not the shell or the Agent Service) it loads the page on the
+app's loopback port, with the host the app trusts (its `WIZARD_TRUSTED_HOSTS`) and the owner-proof signature the
+owner edge would add, then asks for each of the page's own files twice: the way it loads today, and the way a
+sandboxed window asks (`Sec-Fetch-Site: cross-site`, no Referer, `Origin: null` for module scripts, `modulepreload`
+and `crossorigin` files, which then need `Access-Control-Allow-Origin: *` or `null`). An app **would open blank** when
+a file that loads today would not load in the sandbox. An app this box-local request can't read at all (stopped, or a
+page that refuses it) is listed as not checked and never holds the box. Only GETs; nothing is written.
+
+- **A box that already ran Wizard** (above): when any app would open blank it is not switched on;
+  `<wam home>/browser-boundary/held.json` names the apps, the installer output carries `browser_boundary.held`,
+  `wam doctor` shows a `Browser boundary (sealed app windows)` row, and nothing is recorded as a choice, so the next
+  installer run checks again.
+- **A box the installer switched on by itself** (`"why": "new box"` this run, or `new box` / `existing box` from an
+  earlier release that never checked): once the run's apps are in, the same check runs once (`"checked"` in
+  `state.json`). When an app would open blank the boundary is switched back off (blocks removed, the shell and the
+  Agent Service recreated, `wam serve` restarted), the choice is forgotten and the reason held as above; a box that
+  was already on before the run also gets one Notifications line saying apps open the old way again.
+- **Switched on:** the owner gets one Notifications line saying apps now open in a sealed window and that
+  `wam browser-boundary off` is the way back (`"told": true` in `state.json`; retried on later runs until taken).
+- **An app installed or updated on a box with the boundary on** is checked; one that would open blank is named in
+  the install/update result (`browser_boundary.opens_blank`) and in one Notifications line with the way back. This
+  never switches the boundary off by itself: an app must not be able to lower the wall by failing on purpose.
+- **The owner's own `wam browser-boundary on|off`** is never undone; `on` lists any app that would open blank
+  (`would_open_blank`). Either clears `held.json`.
+
+Tests: `tests/test_browser_boundary_apps.py` (real HTTP servers standing in for TG style, Notes, Tinfoil-style and
+login-only apps).
+
 ## Turning it on for a box: `wam browser-boundary on|off|status`
 
 `wam browser-boundary on` mints the token once (32 random bytes as lowercase hex, `<wam home>/browser-boundary/shell-token`,

@@ -128,6 +128,72 @@ def settle_new_box(home, installed, core, defaults, env=None) -> dict | None:
     return {"on": True, "why": "new box"}
 
 
+# ---------------------------------------------------------------- installed apps must open inside it (WAM#1043)
+#
+# The installer switches the boundary on by itself only while every installed app window still opens in a sandboxed
+# frame (wam/boundary_apps.py). When one would open blank it stays off (or goes back off, when the installer itself
+# had switched it on), `held.json` names the apps, `wam doctor` shows it, and the next installer run tries again.
+# An owner's own `wam browser-boundary on|off` is never undone.
+
+AUTO = ("new box", "existing box")
+
+
+def held_path(home) -> "Path":
+    from pathlib import Path
+    return Path(home) / STATE_DIR / "held.json"
+
+
+def held(home) -> dict | None:
+    """Why the installer left the boundary off ({why, apps, at}), or None."""
+    import json
+    try:
+        got = json.loads(held_path(home).read_text())
+    except (OSError, ValueError):
+        return None
+    return got if isinstance(got, dict) and got.get("why") else None
+
+
+def hold(home, why: str, apps: list) -> None:
+    import json
+    import time
+    p = held_path(home)
+    p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    p.write_text(json.dumps({"why": why, "apps": apps, "at": int(time.time())}) + "\n")
+
+
+def clear_held(home) -> None:
+    held_path(home).unlink(missing_ok=True)
+
+
+def state(home) -> dict:
+    import json
+    try:
+        got = json.loads(state_path(home).read_text())
+    except (OSError, ValueError):
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def automatic(home) -> bool:
+    """On, and switched on by the installer (not by the owner): the installer may still switch it back off."""
+    st = state(home)
+    return st.get("on") is True and st.get("why") in AUTO
+
+
+def note_state(home, **kw) -> None:
+    """Add keys (checked, told) to the recorded choice without changing it."""
+    import json
+    st = state(home)
+    if st:
+        state_path(home).write_text(json.dumps({**st, **kw}) + "\n")
+
+
+def forget_choice(home) -> None:
+    """The installer takes back its own switch-on (never an owner's): no choice is recorded, so the next installer
+    run decides again."""
+    state_path(home).unlink(missing_ok=True)
+
+
 def mac_guest() -> bool:
     """try-wizard's Linux VM on a Mac. Its Mac app calls the guest's owner routes itself (the update lease, dictation),
     so a Mac guest is switched on by itself only once that Mac app sends the token (mac_host_sends_token);
@@ -402,6 +468,7 @@ def set_box(home, runtipi_root, store: str, app_ids, on: bool, dry_run: bool = F
     sp = state_path(home)
     sp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     sp.write_text(json.dumps({"on": on, **({"why": why, "at": int(time.time())} if why else {})}) + "\n")
+    clear_held(home)   # a new choice: the installer's old reason no longer applies
     minted: list = []
     if on:
         ensure_token(home, minted)
@@ -426,4 +493,7 @@ def status(home, runtipi_root, store: str, app_ids) -> dict:
     except OSError:
         usable = False
     apps = {app_id: status_one(runtipi_root, store, app_id) for app_id in app_ids}
-    return {"on": box_on(home), "token": usable, "apps": apps}
+    out = {"on": box_on(home), "token": usable, "apps": apps}
+    if held(home):
+        out["held"] = held(home)["why"]
+    return out
