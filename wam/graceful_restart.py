@@ -357,6 +357,8 @@ def update(c, urn: str, do_update, *, backup: bool = True, home: Path | None = N
         return res
     hk = {k: v for k, v in kw.items() if k in ("req", "sleep", "clock")}
     origin = kw.get("origin") or _origin(home) or g.get("origin")
+    if not origin and not res.get("error"):
+        return res   # nowhere to ask for /wizard/health (no service port on record): the update as before
     problem = res.get("error") or (None if healthy(origin, **hk) else
                                    "the Agent Service did not pass its health check after the update")
     if not problem:

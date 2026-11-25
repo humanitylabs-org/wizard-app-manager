@@ -416,3 +416,11 @@ def test_a_service_that_comes_back_without_its_gate_is_not_restarted_blind(tmp_p
     svc = LosingService([IDLE], post_codes=[200, 404])
     with pytest.raises(gr.CalledOff, match="no longer has its restart gate"):
         run_gate(tmp_path, svc)
+
+
+def test_update_on_a_box_with_no_service_port_on_record_is_a_plain_update(tmp_path):
+    """On for every box: a box whose Agent Service origin is unknown (no alongside.json port, no apps.json health
+    URL) has nowhere to ask for /wizard/health, so its update is not reported as failed or rolled back."""
+    res = gr.update(None, URN, lambda: {"status": "running", "version": 6}, home=tmp_path, rt=FakeRt(),
+                    rollback=lambda *a: pytest.fail("no rollback"))
+    assert res == {"status": "running", "version": 6, "graceful": "unreachable"}
