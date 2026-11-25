@@ -58,6 +58,8 @@ HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", 
 # this keeps apps from ever seeing a forged look-alike).
 STRIP_PREFIXES = ("tailscale-", "x-forwarded-", "x-wizard-", "cf-access-")
 STRIP_NAMES = {"forwarded", "x-real-ip", "remote-user", "proxy", "cf-connecting-ip"}
+# What a sandboxed app page may load by itself through the edge, unsigned (Handler._sandboxed_file_load).
+SANDBOXED_FILE_DESTS = frozenset({"script", "style", "image", "video", "audio", "track", "font"})
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 _CTL = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 MAX_BODY = 110 * 1024 * 1024        # the shell's own client_max_body_size
@@ -198,6 +200,7 @@ class _UnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    unsigned = False
     server: _UnixHTTPServer
 
     def log_message(self, *_):   # never log requests: paths and headers can carry private data
@@ -251,15 +254,39 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get_all("Authorization") is not None:
             return "bearer_owner_handoff_denied"
         origin = self._one("Origin")
-        if self.headers.get_all("Origin") and origin != f"https://{host}":
+        if self.headers.get_all("Origin") and origin != f"https://{host}" and not self._sandboxed_file_load():
             return "origin_forbidden"
         if self.command not in ("GET", "HEAD") and origin != f"https://{host}":
             return "origin_required"
         site = self.headers.get_all("Sec-Fetch-Site", [])
+        self.unsigned = False
         if len(site) > 1 or (site and site[0] not in ("same-origin", "none")):
-            return "cross_site_forbidden"
+            if not self._sandboxed_file_load():
+                return "cross_site_forbidden"
+            self.unsigned = True
         self.authority = host
         return None
+
+    def _sandboxed_file_load(self) -> bool:
+        """True for a file the app's own page loads inside Wizard's sandboxed window (browser boundary, wizard-os#133).
+        That window has an opaque origin, so the browser marks the page's own <script>, <link rel=stylesheet>, <img>,
+        <video> and <audio> loads cross-site (no cookie); refusing them left the page without its scripts
+        (wizard-messenger#413: stuck on its first line). Such a load is passed on UNSIGNED and without cookies, so the
+        app sees an anonymous visitor: it gets only what the app gives anyone (page files, a ticketed media address),
+        never the owner's authority. A module script or font is fetched in cors mode with `Origin: null` (the app then
+        answers it with `Access-Control-Allow-Origin: *`, docs/browser-boundary.md). fetch()/XHR (destination empty),
+        navigations, framing, a real Origin and writes stay refused."""
+        one = lambda name: (self._one(name) or "").strip().lower()
+        origins = self.headers.get_all("Origin") or []
+        mode = one("Sec-Fetch-Mode")
+        if mode == "no-cors":
+            origin_ok = not origins
+        elif mode == "cors":
+            origin_ok = len(origins) == 1 and origins[0].strip().lower() == "null"
+        else:
+            return False
+        return (origin_ok and self.command in ("GET", "HEAD") and one("Sec-Fetch-Site") == "cross-site"
+                and one("Sec-Fetch-Dest") in SANDBOXED_FILE_DESTS)
 
     def _activity(self, path: str) -> None:
         app = self.server.app
@@ -334,13 +361,14 @@ class Handler(BaseHTTPRequestHandler):
         for k, v in self.headers.items():
             low = k.lower()
             if (low in HOP or low in tokens or low.startswith(STRIP_PREFIXES) or low in STRIP_NAMES
-                    or low in app["strip"] or low == "host"):
+                    or low in app["strip"] or low == "host" or (self.unsigned and low == "cookie")):
                 continue
             headers[k] = v
         headers["Host"] = self.authority
         headers["Connection"] = "close"
-        headers[op.HEADER] = op.sign(key, app["id"], self.command, self.path)
-        self._activity(self.path)
+        if not self.unsigned:
+            headers[op.HEADER] = op.sign(key, app["id"], self.command, self.path)
+            self._activity(self.path)
         try:
             backend = self._connect()
         except OSError:

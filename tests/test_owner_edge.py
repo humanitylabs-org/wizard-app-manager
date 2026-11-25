@@ -192,6 +192,55 @@ def test_writes_carry_their_body_and_need_the_same_origin(edge):
     assert len(edge["seen"]) == n                                                                # nothing forwarded
 
 
+def sandboxed(dest="script", **over):
+    """A file the app's page loads by itself inside Wizard's sandboxed window: cross-site, no-cors, no Origin."""
+    return serve_headers(**{"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": dest,
+                            "Cookie": "wizard_messenger_session=abc", **over})
+
+
+@pytest.mark.parametrize("dest", ["script", "style", "image", "video", "audio", "track"])
+def test_a_sandboxed_window_gets_its_own_page_files_unsigned(edge, dest):
+    """wizard-messenger#413: with the browser boundary on, the app window is an opaque frame, so its own scripts,
+    stylesheets and media are cross-site loads. They reach the app as an anonymous visitor: no owner proof, no
+    cookie, so the app only gives what it gives anyone (its page files, a ticketed media address)."""
+    status, _, body = call(edge, "GET", "/app.js", sandboxed(dest, **{"X-Wizard-App-Owner-Proof": "1.forged.sig"}))
+    assert status == 200 and body == b'{"ok":true}'
+    got = edge["seen"][-1]
+    h = {k.lower(): v for k, v in got["headers"].items()}
+    assert got["path"] == "/app.js" and op.HEADER.lower() not in h and "cookie" not in h
+    assert "tailscale-user-login" not in h and h["host"] == f"{BOX}:8796"
+    assert call(edge, "HEAD", "/app.css", sandboxed("style"))[0] == 200
+
+
+@pytest.mark.parametrize("dest", ["script", "style", "font"])
+def test_a_sandboxed_windows_module_script_or_font_goes_through_unsigned(edge, dest):
+    """A module script (or a font) is fetched in cors mode with Origin: null; the app answers it with ACAO *."""
+    status, _, _ = call(edge, "GET", "/index.js", sandboxed(dest, **{"Sec-Fetch-Mode": "cors", "Origin": "null"}))
+    assert status == 200
+    h = {k.lower(): v for k, v in edge["seen"][-1]["headers"].items()}
+    assert op.HEADER.lower() not in h and "cookie" not in h and h["origin"] == "null"
+
+
+@pytest.mark.parametrize("why,headers,method", [
+    ("fetch from the sandboxed page", sandboxed("empty", **{"Sec-Fetch-Mode": "cors", "Origin": "null"}), "GET"),
+    ("cors-mode file load without Origin null", sandboxed("script", **{"Sec-Fetch-Mode": "cors"}), "GET"),
+    ("cors-mode file load from another site", sandboxed("script", **{"Sec-Fetch-Mode": "cors", "Origin": "https://evil.example"}), "GET"),
+    ("navigation from another site", sandboxed("document", **{"Sec-Fetch-Mode": "navigate"}), "GET"),
+    ("framed by another site", sandboxed("iframe", **{"Sec-Fetch-Mode": "navigate"}), "GET"),
+    ("same-site, not sandboxed", sandboxed(**{"Sec-Fetch-Site": "same-site"}), "GET"),
+    ("with an Origin", sandboxed(**{"Origin": "https://evil.example"}), "GET"),
+    ("no-cors with Origin null", sandboxed(**{"Origin": "null"}), "GET"),
+    ("a write with Origin null", sandboxed(**{"Sec-Fetch-Mode": "cors", "Origin": "null"}), "POST"),
+    ("a write", sandboxed(), "POST"),
+    ("no destination", sandboxed(**{"Sec-Fetch-Dest": None}), "GET"),
+    ("another tailnet user", sandboxed(**{"Tailscale-User-Login": "guest@example.com"}), "GET"),
+])
+def test_other_cross_site_requests_stay_refused(edge, why, headers, method):
+    n = len(edge["seen"])
+    assert call(edge, method, "/app.js", headers)[0] == 403, why
+    assert len(edge["seen"]) == n                                                                # nothing forwarded
+
+
 @pytest.mark.parametrize("why,headers", [
     ("another tailnet user", serve_headers(**{"Tailscale-User-Login": "guest@example.com"})),
     ("tagged node or Funnel: no identity", serve_headers(**{"Tailscale-User-Login": None})),
