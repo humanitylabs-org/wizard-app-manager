@@ -389,16 +389,13 @@ class Ops:
         raise QuickError("the shell does not serve the release image's files")
 
     def start_installer(self, version: str, auto: bool) -> bool:
-        from .updates import installer_script
         from . import release_sig
         env = ("WIZARD_HERMES_PROMOTION= " if auto else "") + f"WIZARD_RELEASE={version} "
-        sig = _signature(self.home, version)          # None while the switch is off (#565)
-        script = installer_script(env)
-        if sig is not None:
-            script, sig = release_sig.checked_installer(self.home, sig, env)
-            if script is None:
-                self.log(f"installer not started: {sig.get('installer_error')}")
-                return False
+        sig = _signature(self.home, version)          # signed releases, warn-only (#565)
+        script, sig = release_sig.checked_installer(self.home, sig, env)
+        if script is None:
+            self.log(f"installer not started: {sig.get('installer_error')}")
+            return False
         # A failed download must not look like a started installer, and a retry must not run a partial script (#499).
         r = subprocess.run(["bash", "-c", script], capture_output=True,
                            text=True, timeout=600)
@@ -407,12 +404,10 @@ class Ops:
         return r.returncode == 0
 
 
-def _signature(home: Path, version: str, base: str | None = None) -> dict | None:
-    """The release-signature record `wam updates --apply` wrote for <version> before it started this run (#565).
-    None while the switch is off; with it on and no record for this release, check now."""
+def _signature(home: Path, version: str, base: str | None = None) -> dict:
+    """The release-signature record `wam updates --apply` wrote for <version> before it started this run (#565);
+    with no record for this release, check now."""
     from . import release_sig
-    if not release_sig.on(home):
-        return None
     rec = release_sig.read(home)
     if not rec or rec.get("release") != version:
         rec = release_sig.before_update(home, version, base)
@@ -520,12 +515,12 @@ def run(version: str, home: Path | None = None, base: str | None = None, auto: b
         ops.store_data()
         _status(h, step="checking", message="")
         rec = ops.readback(pins)
-        if (sig := _signature(h, version, base)) is not None:   # release.json says how the release file was signed
-            written = _read(h / "release.json")
-            if written is not None:
-                _atomic(h / "release.json", (json.dumps({**written, "signature": sig.get("signature")}, indent=2)
-                                             + "\n").encode(), os.stat(h / "release.json").st_mode & 0o777)
-            _status(h, signature=release_sig_summary(sig))
+        sig = _signature(h, version, base)   # release.json says how the release file was signed
+        written = _read(h / "release.json")
+        if written is not None:
+            _atomic(h / "release.json", (json.dumps({**written, "signature": sig.get("signature")}, indent=2)
+                                         + "\n").encode(), os.stat(h / "release.json").st_mode & 0o777)
+        _status(h, signature=release_sig_summary(sig))
         for app in p["apps"]:
             want = ((target.get("images") or {}).get(app) or {}).get("digest")
             if want:

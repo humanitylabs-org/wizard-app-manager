@@ -1,4 +1,4 @@
-"""Signed releases, warn-only (wizard-app-manager#565): release + promotion signatures and the installer's hash.
+"""Signed releases, warn-only and on for everyone (wizard-app-manager#565): release + promotion signatures and the installer's hash.
 
 Every key here is a throwaway Ed25519 key made in the test's temp folder; no private key is committed."""
 import json
@@ -173,13 +173,6 @@ def test_an_installer_whose_hash_does_not_match_warns_and_carries_on(tmp_path, t
     assert r.returncode == 0 and ran == "ran start\n"
 
 
-def test_enforce_refuses_a_mismatched_installer_and_runs_nothing(tmp_path, tmpdir_env):
-    f, _ = _installer(tmp_path)
-    script, rec = release_sig.checked_installer(tmp_path / "wos", {"mode": "enforce", "expect": ["0" * 64]}, "",
-                                                f.as_uri())
-    assert script is None and "does not match" in rec["installer_error"] and list(tmpdir_env.iterdir()) == []
-
-
 def test_a_failed_installer_download_starts_nothing(tmp_path, tmpdir_env, monkeypatch):
     monkeypatch.setattr(release_sig.time, "sleep", lambda s: None)
     script, rec = release_sig.checked_installer(tmp_path / "wos", {"mode": "warn", "expect": []}, "",
@@ -205,25 +198,29 @@ def _serve_installer(tmp_path, monkeypatch, body="exit 0\n"):
     return hashlib.sha256(f.read_bytes()).hexdigest()
 
 
-# --- the switch on the update path ----------------------------------------------------------------------------------
+# --- on the update path (always on, warn-only) ---------------------------------------------------------------------
 
-def test_with_the_switch_off_updates_are_unchanged(tmp_path, monkeypatch):
-    rel, h = _mirror(tmp_path), _box(tmp_path)
-    before = sorted(p.name for p in h.iterdir())
-    calls = []
-    res = updates.apply(h, rel.as_uri(), _runner(calls))
-    assert res["started"] is True and "signature" not in res
-    assert calls == [["bash", "-c", updates.installer_script("WIZARD_RELEASE=0.9.2 ")]]   # exactly main's command
-    assert sorted(p.name for p in h.iterdir()) == before                                 # nothing new written
-    assert "signature" not in updates.status(h, rel.as_uri())
-    monkeypatch.setenv(release_sig.ENV, "nonsense")                                      # unknown = off
-    assert release_sig.mode(h) == "off"
-
-
-def test_warn_against_todays_unsigned_mirror_completes_and_records_missing(tmp_path, monkeypatch):
+def test_the_check_is_on_for_everyone_and_the_old_switch_is_gone(tmp_path, monkeypatch):
+    """switch-default (#565): no WIZARD_VERIFY_RELEASES / --verify-releases / verify_releases any more; a stored value
+    from the old switch (even `off`) changes nothing and is dropped from updates.json."""
     rel, h = _mirror(tmp_path), _box(tmp_path)
     _serve_installer(tmp_path, monkeypatch)
-    monkeypatch.setenv(release_sig.ENV, "warn")
+    (h / "updates.json").write_text(json.dumps({"mode": "ask", "verify_releases": "off"}) + "\n")
+    monkeypatch.setenv("WIZARD_VERIFY_RELEASES", "off")
+    calls = []
+    res = updates.apply(h, rel.as_uri(), _runner(calls))
+    assert res["started"] is True and res["signature"]["mode"] == "warn" and res["signature"]["signature"] == "missing"
+    assert calls[0][-1].startswith("trap 'rm -f ")                     # the checked copy runs, never curl | bash
+    assert json.loads((h / "updates.json").read_text()) == {"mode": "ask"}
+    assert "WIZARD_VERIFY_RELEASES" not in updates._run_env(tmp_path, None)
+    assert not hasattr(updates, "set_verify") and not hasattr(release_sig, "ENV")
+    with pytest.raises(SystemExit):
+        cli.main(["updates", "--verify-releases", "warn"])
+
+
+def test_an_update_against_todays_unsigned_mirror_completes_and_records_missing(tmp_path, monkeypatch):
+    rel, h = _mirror(tmp_path), _box(tmp_path)
+    _serve_installer(tmp_path, monkeypatch)
     calls = []
     res = updates.apply(h, rel.as_uri(), _runner(calls))
     assert res["started"] is True and len(calls) == 1
@@ -235,67 +232,36 @@ def test_warn_against_todays_unsigned_mirror_completes_and_records_missing(tmp_p
     assert "release 0.9.2: signature missing" in log and "carrying on (warn-only)" in log
 
 
-def test_warn_records_a_good_signature_and_the_installer_hash(tmp_path, monkeypatch, keys):
+def test_an_update_records_a_good_signature_and_the_installer_hash(tmp_path, monkeypatch, keys):
     sha = _serve_installer(tmp_path, monkeypatch)
     rel, h = _mirror(tmp_path, installer={"os.sh": sha, "get.sh": sha}), _box(tmp_path)
     _sign(keys["trusted"], rel / "0.9.2.json"); _sign(keys["trusted"], rel / "promotions" / "0.9.2.json")
     monkeypatch.setattr(release_sig, "SIGNERS", keys["list"])
-    monkeypatch.setenv(release_sig.ENV, "warn")
     calls = []
     res = updates.apply(h, rel.as_uri(), _runner(calls))
     assert res["started"] is True and len(calls) == 1
     assert res["signature"] == {**res["signature"], "signature": "ok", "installer": "ok", "promotion": "ok"}
 
 
-def test_warn_with_a_bad_signature_still_updates(tmp_path, monkeypatch, keys):
+def test_a_bad_signature_still_updates(tmp_path, monkeypatch, keys):
     rel, h = _mirror(tmp_path, installer={"os.sh": "0" * 64}), _box(tmp_path)
     _serve_installer(tmp_path, monkeypatch)
     _sign(keys["other"], rel / "0.9.2.json")
     monkeypatch.setattr(release_sig, "SIGNERS", keys["list"])
-    monkeypatch.setenv(release_sig.ENV, "warn")
     calls = []
     res = updates.apply(h, rel.as_uri(), _runner(calls))
     assert res["started"] is True and res["signature"]["signature"] == "bad" and len(calls) == 1
     assert res["signature"]["installer"] == "mismatch"           # warn-only: the update still started
 
 
-def test_enforce_is_warn_only_in_this_step(tmp_path, monkeypatch):
-    rel, h = _mirror(tmp_path), _box(tmp_path)
-    _serve_installer(tmp_path, monkeypatch)
-    monkeypatch.setenv(release_sig.ENV, "enforce")
-    assert release_sig.mode(h) == "warn"
-    calls = []
-    assert updates.apply(h, rel.as_uri(), _runner(calls))["started"] is True and len(calls) == 1
-    st = updates.status(h, rel.as_uri())
-    assert st["signature"]["requested"] == "enforce" and "not available yet" in st["signature"]["note"]
-
-
-def test_enforce_once_available_refuses_an_unsigned_release_and_changes_nothing(tmp_path, monkeypatch):
-    rel, h = _mirror(tmp_path), _box(tmp_path)
-    monkeypatch.setattr(release_sig, "ENFORCE_AVAILABLE", True)
-    monkeypatch.setenv(release_sig.ENV, "enforce")
-    calls = []
-    res = updates.apply(h, rel.as_uri(), _runner(calls))
-    assert res["started"] is False and "release signature missing" in res["error"] and calls == []
-
-
 def test_dry_run_status_prints_the_signature_state(tmp_path, monkeypatch, capsys):
     rel, h = _mirror(tmp_path), _box(tmp_path)
     monkeypatch.setenv("WIZARD_OS_HOME", str(h))
     monkeypatch.setenv("WIZARD_RELEASE_BASE", rel.as_uri())
-    assert cli.main(["updates", "--verify-releases", "warn"]) == 0
-    assert json.loads((h / "updates.json").read_text())["verify_releases"] == "warn"
-    capsys.readouterr()
     assert cli.main(["updates"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["signature"]["mode"] == "warn" and out["signature"]["release"] == "0.9.2"
     assert out["signature"]["signature"] == "missing"
-    updates.set_channel("latest", h)                                # other saved choices keep the setting
-    assert json.loads((h / "updates.json").read_text())["verify_releases"] == "warn"
-    assert cli.main(["updates", "--verify-releases", "off"]) == 0
-    capsys.readouterr(); updates._latest.clear()
-    assert cli.main(["updates"]) == 0
-    assert "signature" not in json.loads(capsys.readouterr().out)
 
 
 def test_quick_update_writes_the_signature_into_release_and_install_status(tmp_path, monkeypatch):
@@ -311,18 +277,11 @@ def test_quick_update_writes_the_signature_into_release_and_install_status(tmp_p
     _apps(h, old)
     monkeypatch.setattr(quick_update, "checkout_state", lambda: (WAM, True))
     monkeypatch.delenv("WIZARD_RELEASE_BASE", raising=False)
-    monkeypatch.setenv(release_sig.ENV, "warn")
     res = quick_update.run("0.9.2", h, rel.as_uri(), ops=FakeOps(h))
     assert res["done"] is True
     assert json.loads((h / "release.json").read_text())["signature"] == "missing"
     st = json.loads((h / "install-status.json").read_text())
     assert st["state"] == "done" and st["signature"]["signature"] == "missing"
-
-
-def test_a_detached_quick_update_keeps_an_environment_only_switch(tmp_path, monkeypatch):
-    assert "WIZARD_VERIFY_RELEASES" not in updates._run_env(tmp_path, None)         # off: main's environment
-    monkeypatch.setenv(release_sig.ENV, "warn")
-    assert updates._run_env(tmp_path, None)["WIZARD_VERIFY_RELEASES"] == "warn"
 
 
 def test_the_installer_is_fetched_with_curl_like_the_unchecked_path(tmp_path, monkeypatch):
@@ -346,7 +305,6 @@ def test_after_a_full_installer_run_release_and_install_status_carry_the_signatu
     import time as _t
     rel, h = _mirror(tmp_path), _box(tmp_path)
     _serve_installer(tmp_path, monkeypatch)
-    monkeypatch.setenv(release_sig.ENV, "warn")
     calls = []
     assert updates.apply(h, rel.as_uri(), _runner(calls))["started"] is True
     (h / "install.log").write_text("")                                  # get.sh: `: > "$INSTALL_LOG"`
