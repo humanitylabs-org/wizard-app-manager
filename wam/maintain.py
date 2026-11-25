@@ -413,7 +413,7 @@ def set_os_security(mode: str, home: Path | None = None, runner=subprocess.run, 
 @contextmanager
 def _lease(home: Path):
     """The box's one maintenance lease. Also refuses while a Hermes update or the nightly app updates
-    (wam/app_updates.py, 04:30 timer; both timers are Persistent, so they can fire together after a box was off) hold
+    (wam/app_updates.py, hourly timer; both timers are Persistent, so they can fire together after a box was off) hold
     their own lock, and holds both locks for the whole run so neither starts underneath OS patching or a restart."""
     home.mkdir(parents=True, exist_ok=True)
     fd = os.open(home / "maintenance.lock", os.O_RDWR | os.O_CREAT, 0o600)
