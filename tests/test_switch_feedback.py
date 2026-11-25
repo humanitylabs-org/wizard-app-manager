@@ -111,6 +111,15 @@ def test_hello_wizard_settings_end_with_try_new_features():
     assert 'wizard-try-features.js' in json.loads((REPO / 'wam/style-policy.json').read_text())['assets']
 
 
+def test_list_template_settings_end_with_try_new_features_too():
+    html = (REPO / 'templates/list/web/index.html').read_text()
+    assert '<script defer src="wizard-try-features.js"></script>' in html and 'id="wz-try-css"' in html
+    settings = html[html.index('<dialog class="wz-sheet" id="settings"'):html.index('</dialog>')]
+    assert settings.rstrip().endswith('<section class="wz-sec" id="try-features"></section>')
+    assert "WzTryFeatures.mount(document.getElementById('try-features'), { path: 'api/switches' })" in \
+        (REPO / 'templates/list/web/app.js').read_text()
+
+
 def test_catalog_passes_tried_and_vote_only_from_apps_that_keep_them():
     app = {'id': 'demo', 'name': 'Demo'}
     rows = app_switches._rows(app, {'switches': [

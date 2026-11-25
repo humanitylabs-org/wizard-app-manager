@@ -217,4 +217,12 @@ for (const b of document.querySelectorAll('[data-filter]')) b.onclick = () => { 
 el('search').oninput = () => { query = el('search').value; render(); }; el('load-retry').onclick = refresh;
 if (window.WizardApp?.version === 1) { WizardApp.ready({name: C.title, version: '0.1.0'}); WizardApp.back.register({canGoBack: () => editing !== null, back: cancelEdit}); }
 request('list.json').then(config => { applyConfig(config); render(); }).catch(() => {});
+// Settings: the app's own sheet. Try new features (the shared kit section) is mounted last and hides itself when the
+// app lists no switches (app/server.py SWITCHES).
+let tryFeatures = null;
+document.getElementById('open-settings').onclick = () => {
+  if (!tryFeatures && window.WzTryFeatures) tryFeatures = WzTryFeatures.mount(document.getElementById('try-features'), { path: 'api/switches' });
+  else if (tryFeatures) tryFeatures.reload();
+  WzSheet.open(document.getElementById('settings'));
+};
 render(); refresh(); document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });

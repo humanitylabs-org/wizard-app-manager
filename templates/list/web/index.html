@@ -10,8 +10,10 @@
   <link rel="stylesheet" href="wizard-ui.css">
   <link rel="stylesheet" href="standalone.css">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="wizard-try-features.css" id="wz-try-css">
   <script defer src="/wizard-os-home/core/app-client.js"></script>
   <script defer src="wizard-sheet.js"></script>
+  <script defer src="wizard-try-features.js"></script>
   <script defer src="app.js"></script>
 </head>
 <body>
@@ -23,6 +25,9 @@
         <div id="groups" aria-busy="true"></div>
         <button type="button" id="add-group" class="wz-button secondary add-group" hidden>+ Add group</button>
         <div id="empty" class="wz-empty" hidden><strong id="empty-title"></strong><p id="empty-copy"></p></div>
+      </section>
+      <section class="wz-sec" aria-label="More">
+        <ul class="wz-list"><li><button type="button" class="wz-row" id="open-settings"><span class="wz-main"><b>Settings</b></span></button></li></ul>
       </section>
     </div>
     <div class="controls">
@@ -42,5 +47,10 @@
       <p id="announcement" class="wz-sr" role="status" aria-live="polite"></p>
     </div>
   </main>
+  <dialog class="wz-sheet" id="settings" aria-labelledby="settings-h">
+    <h2 id="settings-h">Settings</h2>
+    <!-- Try new features: always the last thing in Settings (wizard-os docs/APP_SWITCHES.md). Hidden when the app has no switches. -->
+    <section class="wz-sec" id="try-features"></section>
+  </dialog>
 </body>
 </html>
