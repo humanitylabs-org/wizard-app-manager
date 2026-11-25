@@ -176,7 +176,7 @@ def test_apply_if_auto_respects_ask_and_busy(tmp_path):
     au._write(tmp_path, mode="ask")
     assert au.apply_if_auto(C())["started"] is False
     au._write(tmp_path, mode="auto")
-    assert au.apply_if_auto(C(), is_busy=lambda: True, hourly=True)["skipped"] == "busy"
+    assert au.apply_if_auto(C(), is_busy=lambda: True)["skipped"] == "busy"
 
 
 def test_manual_update_button_runs_in_the_background():
@@ -309,14 +309,9 @@ def test_status_drops_a_standard_pin_and_asks_runtipi_again(tmp_path, monkeypatc
     assert seen == [True, False] and [r["id"] for r in out["due"]] == ["notes"]
 
 
-def _local(h, m, day=15):
-    import time
-    return time.mktime((2026, 11, day, h, m, 0, 0, 0, -1))
-
-
-def test_timer_ticks_hourly_and_off_switch_keeps_the_0430_run(tmp_path, monkeypatch):
-    """wizard-os#613: the unit ticks every hour; with wizard/app-updates-hourly off only the first tick from 04:30
-    each day runs (the old nightly timer), with it on every tick runs."""
+def test_timer_ticks_and_runs_every_hour(tmp_path, monkeypatch):
+    """wizard-os#613 (switch wizard/app-updates-hourly removed): the unit ticks every hour and every tick runs
+    Automatic app updates, quietly repeating an unchanged "Waiting for you"."""
     home, ud = tmp_path / "home", tmp_path / "units"
     au.ensure_timer(home, ud, systemctl=False)
     timer = (ud / "wizard-app-updates.timer").read_text()
@@ -327,34 +322,21 @@ def test_timer_ticks_hourly_and_off_switch_keeps_the_0430_run(tmp_path, monkeypa
     C.home = home
     ran = []
     monkeypatch.setattr(au, "apply", lambda c, **k: ran.append(k) or {"started": True})
-    tick = lambda t, hourly=False: au.apply_if_auto(C(), is_busy=lambda: False, hourly=hourly, now=t)  # noqa: E731
-    assert tick(_local(3, 30))["skipped"] == "not-due"                 # off: before 04:30 nothing runs
-    assert tick(_local(4, 34))["started"] is True                      # the 04:30 tick runs
-    assert tick(_local(5, 31))["skipped"] == "not-due"                 # once a day
-    assert tick(_local(23, 30))["skipped"] == "not-due"
-    assert tick(_local(4, 31, day=16))["started"] is True              # next day again
-    assert [k["quiet_repeats"] for k in ran] == [False, False]
-    ran.clear()
-    assert tick(_local(5, 35, day=16), hourly=True)["started"] is True  # on: every tick runs
-    assert tick(_local(6, 35, day=16), hourly=True)["started"] is True
-    assert tick(_local(2, 30, day=17), hourly=True)["started"] is True
+    for _ in range(3):
+        assert au.apply_if_auto(C(), is_busy=lambda: False)["started"] is True
     assert [k["quiet_repeats"] for k in ran] == [True, True, True]
+    assert au.apply_if_auto(C(), is_busy=lambda: True)["skipped"] == "busy"
+    assert not hasattr(au, "HOURLY_SWITCH") and not hasattr(au, "hourly_on")
 
 
-def test_off_switch_catches_up_a_missed_0430_and_busy_waits_for_tomorrow(tmp_path, monkeypatch):
+def test_the_retired_nightly_stamp_is_cleared_and_nothing_else(tmp_path, monkeypatch):
     class C:
         home = tmp_path
     monkeypatch.setattr(au, "apply", lambda c, **k: {"started": True})
-    au._write(tmp_path, nightly_at=_local(4, 40, day=14))
-    assert au.apply_if_auto(C(), is_busy=lambda: False, hourly=False, now=_local(11, 30))["started"] is True
-    au._write(tmp_path, nightly_at=_local(4, 40, day=14))
-    assert au.apply_if_auto(C(), is_busy=lambda: True, hourly=False, now=_local(4, 33))["skipped"] == "busy"
-    assert au.apply_if_auto(C(), is_busy=lambda: False, hourly=False, now=_local(5, 33))["skipped"] == "not-due"
-
-
-def test_hourly_switch_is_off_without_the_shell(tmp_path):
-    assert au.HOURLY_SWITCH == "wizard/app-updates-hourly"
-    assert au.hourly_on(tmp_path) is False
+    au._write(tmp_path, nightly_at=1_800_000_000.0, holds=["money"], mode="auto")
+    assert au.apply_if_auto(C(), is_busy=lambda: False)["started"] is True
+    st = au._state(tmp_path)
+    assert "nightly_at" not in st and st["holds"] == ["money"] and st["mode"] == "auto"
 
 
 def test_hourly_runs_do_not_repeat_the_same_waiting_for_you_notice(tmp_path, monkeypatch):
@@ -395,4 +377,4 @@ def test_hourly_runs_do_not_repeat_the_same_waiting_for_you_notice(tmp_path, mon
     run()
     assert len(sent) == 4                                 # a day after the last reminder: told again
     run(False)
-    assert len(sent) == 5                                 # the nightly run (switch off) tells every time, as before
+    assert len(sent) == 5                                 # a run by hand (not the timer) tells every time

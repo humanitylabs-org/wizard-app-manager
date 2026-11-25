@@ -11,8 +11,8 @@ app installed from the Wizard App Index stayed on the version it was installed a
   (running or stopped), its version moved, no container is restarting or fewer containers run than before, and its
   declared health URL or MCP endpoint answers. Anything else is rolled back from the backup the update just made,
   and that version is not retried until the publisher ships a newer one;
-- a systemd user timer (wizard-app-updates.timer) runs apply when the app-update mode is "auto": nightly at the
-  04:30 tick, or every hour with feature switch `wizard/app-updates-hourly` on (wizard-os#613, off by default);
+- a systemd user timer (wizard-app-updates.timer) runs apply every hour when the app-update mode is "auto"
+  (wizard-os#613), so a release reaches the box within about an hour;
 - the owner is told what changed through the Notifications app when it is installed.
 
 The app-update mode is separate from the WizardOS update mode (updates.py): system releases default to Ask me
@@ -22,8 +22,7 @@ Owners can switch to "ask" (`wam app-updates --ask`) or hold single apps (`--hol
 Never touched here: the shell, the Agent Service, Hermes and anything the WizardOS release pins (they move with the
 release), apps prepared from an exact owner-local selection (.wizard-selection), and versions the owner ignored.
 
-State lives in <wizard-os home>/app-updates.json: {"mode", "holds", "failed": {id: tipi}, "last": {...},
-"nightly_at": <epoch of the last nightly tick that ran>}.
+State lives in <wizard-os home>/app-updates.json: {"mode", "holds", "failed": {id: tipi}, "last": {...}}.
 """
 from __future__ import annotations
 
@@ -143,25 +142,7 @@ def hold(app_id: str, on: bool = True, home: Path | None = None) -> dict:
     return {"holds": sorted(hs)}
 
 
-# ---------------------------------------------------------------- the timer (nightly, or hourly behind a switch)
-
-HOURLY_SWITCH = "wizard/app-updates-hourly"   # wizard-os#613: Automatic runs every hour, not only at 04:30
-NIGHTLY_AT = (4, 30)                           # local time of the one run a day while the switch is off
-
-
-def hourly_on(home: Path | None = None) -> bool:
-    from . import feature_switches
-    return feature_switches.is_on(HOURLY_SWITCH, home)
-
-
-def _nightly_due(home: Path | None, now: float) -> bool:
-    """Switch off: the first tick at or after today's 04:30 (local) runs, once a day, exactly like the old 04:30
-    timer (Persistent: a box that was off at 04:30 runs at its next tick that day)."""
-    t = time.localtime(now)
-    window = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, *NIGHTLY_AT, 0, 0, 0, -1))
-    if now < window:
-        return False
-    return float(_state(home).get("nightly_at") or 0) < window
+# ---------------------------------------------------------------- the timer (hourly)
 
 
 def _timer_files(unit_dir: Path, wam: str) -> dict[Path, str]:
@@ -171,8 +152,7 @@ def _timer_files(unit_dir: Path, wam: str) -> dict[Path, str]:
             "[Service]\nType=oneshot\nEnvironment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin\n"
             f"TimeoutStartSec=6h\nExecStart={wam} app-updates --apply-if-auto\n"),
         unit_dir / f"{UNIT}.timer": (
-            # Ticks hourly at :30 for everyone; apply_if_auto runs only the 04:30 tick unless the hourly switch is
-            # on, so the switch takes effect at the next tick without rewriting this unit (wizard-os#613).
+            # Every tick runs Automatic app updates (wizard-os#613): a release reaches the box within about an hour.
             "[Unit]\nDescription=Wizard app update check\n\n"
             "[Timer]\nOnCalendar=*-*-* *:30\nRandomizedDelaySec=10m\nPersistent=true\n\n"
             "[Install]\nWantedBy=timers.target\n"),
@@ -1370,22 +1350,30 @@ def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: 
             **({"reported": reports} if reports else {})}
 
 
-def apply_if_auto(c=None, is_busy=None, hourly=None, now: float | None = None) -> dict:
-    """The timer: only in Automatic, and not while the agent is mid-run (next window tries again). It ticks every
-    hour; with `wizard/app-updates-hourly` off only the first tick from 04:30 each day runs (wizard-os#613)."""
+def apply_if_auto(c=None, is_busy=None) -> dict:
+    """The timer: only in Automatic, and not while the agent is mid-run (next hour tries again). It ticks and runs
+    every hour (wizard-os#613)."""
     from . import cli, updates
     c = c or cli.Config()
     if mode(c.home) != "auto":
         return {"app_mode": mode(c.home), "started": False}
-    every_hour = hourly_on(c.home) if hourly is None else hourly
-    if not every_hour:
-        now = time.time() if now is None else now
-        if not _nightly_due(c.home, now):
-            return {"started": False, "skipped": "not-due", "note": "app updates run nightly (04:30)"}
-        _write(c.home, nightly_at=now)
+    _forget_nightly(c.home)
     if (is_busy or (lambda: updates.busy(updates.service_origin(c.home))))():
-        return {"started": False, "skipped": "busy", "note": "a chat run is active; trying again next window"}
-    return apply(c, quiet_repeats=every_hour, queue=False)
+        return {"started": False, "skipped": "busy", "note": "a chat run is active; trying again next hour"}
+    return apply(c, quiet_repeats=True, queue=False)
+
+
+def _forget_nightly(home: Path | None) -> None:
+    """Drop `nightly_at`, the once-a-day stamp the retired wizard/app-updates-hourly off path kept (wizard-os#613)."""
+    if "nightly_at" not in _state(home):
+        return
+    with _StateLock(home) as lk:
+        s = _state(lk.h)
+        if s.pop("nightly_at", None) is None:
+            return
+        tmp = lk.h / f"{STATE}.{os.getpid()}.{threading.get_ident()}.tmp"
+        tmp.write_text(json.dumps(s, indent=1) + "\n")
+        tmp.replace(lk.h / STATE)
 
 
 def start_detached(runner=subprocess.run, only: list[str] | None = None) -> dict:
