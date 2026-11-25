@@ -145,8 +145,8 @@ def test_an_agent_service_update_puts_the_timer_in_place(box, tmp_path, monkeypa
 
 
 def test_a_flag_first_agent_service_update_puts_the_timer_in_place_too(box, tmp_path, monkeypatch):
-    """`wam app update --no-backup wizard-agent-service` (switch wizard/graceful-restart off) goes straight to
-    runtipi-cli and skips app_update(): it must set the timer up as well (Codex P2 on the first version)."""
+    """A flag-first or bulk form can reach runtipi-cli and skip app_update(): it must set the timer up as well
+    (Codex P2 on the first version)."""
     c, hh, ovr, restarts = box
     units = tmp_path / "_systemd_user"
     for f in units.glob("wizard-session-mounts.*"):

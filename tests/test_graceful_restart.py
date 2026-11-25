@@ -1,5 +1,6 @@
-"""Graceful Agent Service restarts through the service's restart gate (#642, switch wizard/graceful-restart)."""
+"""Graceful Agent Service restarts through the service's restart gate (#642; on for every box, no switch)."""
 import json
+from pathlib import Path
 
 import pytest
 
@@ -237,26 +238,22 @@ def test_update_of_a_stopped_service_skips_gate_and_health(tmp_path):
     assert svc.calls == [] and res["graceful"] == "not_running"
 
 
-# ---------------------------------------------------------------- wiring in cli (switch off = unchanged)
+# ---------------------------------------------------------------- wiring in cli
 
 class Cfg:
     def __init__(self, home):
         self.home = home
 
 
-def test_switch_off_restarts_straight_away(tmp_path, monkeypatch):
-    monkeypatch.setattr(gr, "switch_on", lambda home=None: False)
-    monkeypatch.setattr(gr, "gate", lambda *a, **k: pytest.fail("gate must not run with the switch off"))
-    plain = []
-    monkeypatch.setattr(cli, "_app_lifecycle", lambda c, verb, app_id, urn, t=300: plain.append((verb, urn)) or {})
-    monkeypatch.setattr(cli, "_app_update", lambda *a, **k: plain.append(("update",)) or {})
-    cli.app_lifecycle(Cfg(tmp_path), "restart", "wizard-agent-service")
-    cli.app_update(Cfg(tmp_path), "wizard-agent-service")
-    assert plain == [("restart", URN), ("update",)]
+def test_no_switch_is_left():
+    """#642 was approved at show-and-tell: the wizard/graceful-restart switch is gone, the gate always applies."""
+    assert not hasattr(gr, "SWITCH") and not hasattr(gr, "switch_on")
+    src = (Path(cli.__file__).parent / "graceful_restart.py").read_text()
+    assert "feature_switches" not in src
+    assert gr.applies(URN) and gr.applies("wizard-agent-service") and not gr.applies("wizard-ux")
 
 
-def test_switch_on_routes_only_the_agent_service(tmp_path, monkeypatch):
-    monkeypatch.setattr(gr, "switch_on", lambda home=None: True)
+def test_routes_only_the_agent_service(tmp_path, monkeypatch):
     through = []
     monkeypatch.setattr(gr, "restart", lambda c, urn, fn, **k: through.append(urn) or fn())
     monkeypatch.setattr(gr, "update", lambda c, urn, fn, **k: through.append(("update", urn)) or fn())
@@ -272,7 +269,6 @@ def test_switch_on_routes_only_the_agent_service(tmp_path, monkeypatch):
 
 def test_cli_agent_restart_answers(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path))
-    monkeypatch.setattr(gr, "switch_on", lambda home=None: False)
     assert cli.main(["agent-restart", "now"]) == 1
     (tmp_path / gr.STATE).write_text(json.dumps({"phase": "overdue"}))
     assert cli.main(["agent-restart", "wait", "--minutes", "5"]) == 0
@@ -288,7 +284,6 @@ def test_owner_api_answers_a_waiting_restart_with_the_token_only(tmp_path, monke
     import urllib.request
     from http.server import ThreadingHTTPServer
     monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path))
-    monkeypatch.setattr(gr, "switch_on", lambda home=None: True)
     c = cli.Config()
     cli.Handler.cfg, cli.Handler.token = c, c.api_token()
     srv = ThreadingHTTPServer(("127.0.0.1", 0), cli.Handler)
@@ -306,7 +301,7 @@ def test_owner_api_answers_a_waiting_restart_with_the_token_only(tmp_path, monke
     auth = {"Authorization": f"Bearer {c.api_token()}"}
     try:
         assert call("GET", {})[0] == 401 and call("POST", {}, {"action": "now"})[0] == 401
-        assert call("GET", auth) == (200, {"switch": gr.SWITCH, "on": True, "restart": None})
+        assert call("GET", auth) == (200, {"restart": None})
         assert call("POST", auth, {"action": "now"})[0] == 409            # nothing is waiting
         (c.home / gr.STATE).write_text(json.dumps({"phase": "overdue"}))
         assert call("POST", auth, {"action": "soon"})[0] == 400
@@ -318,7 +313,6 @@ def test_owner_api_answers_a_waiting_restart_with_the_token_only(tmp_path, monke
 
 def test_runtipi_passthrough_cannot_restart_the_service_behind_the_gate(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path))
-    monkeypatch.setattr(gr, "switch_on", lambda home=None: True)
     passed, routed = [], []
     monkeypatch.setattr(cli, "runtipi_cli", lambda root, argv: passed.append(argv) or 0)
     monkeypatch.setattr(cli, "app_update", lambda c, app, backup=True, allow_host_access=False: routed.append(
@@ -330,8 +324,6 @@ def test_runtipi_passthrough_cannot_restart_the_service_behind_the_gate(tmp_path
     assert "on its own" in capsys.readouterr().err
     assert cli.main(["app", "update", "--no-backup", "wizard-ux"]) == 0
     assert passed == [["app", "update", "--no-backup", "wizard-ux"]]
-    monkeypatch.setattr(gr, "switch_on", lambda home=None: False)
-    assert cli.main(["app", "update", "--all"]) == 0 and passed[-1] == ["app", "update", "--all"]
 
 
 def test_the_shells_restart_now_on_the_service_restarts_now(tmp_path):
