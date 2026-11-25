@@ -78,6 +78,11 @@ sandboxed window asks (`Sec-Fetch-Site: cross-site`, no Referer, `Origin: null` 
 and `crossorigin` files, which then need `Access-Control-Allow-Origin: *` or `null`). An app **would open blank** when
 a file that loads today would not load in the sandbox. An app this box-local request can't read at all (stopped, or a
 page that refuses it) is listed as not checked and never holds the box. Only GETs; nothing is written.
+Two kinds of app are never a sandboxed frame, so they are not asked and never hold the box: Files, which the shell
+opens as its own tab (`own_tab`, wizard-ux `OWN_TAB`, WAM#1046), and TG style installed from
+`humanitylabs-org/telegram` at `/tg-style/`, whose window the shell keeps same-origin because it is a second view of
+the shell's own chats (`same_origin`, wizard-ux `SAME_ORIGIN`, telegram#68). A TG style from any other repo or path
+is checked like any app.
 
 - **A box that already ran Wizard** (above): when any app would open blank it is not switched on;
   `<wam home>/browser-boundary/held.json` names the apps, the installer output carries `browser_boundary.held`,

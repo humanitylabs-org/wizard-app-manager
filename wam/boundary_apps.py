@@ -17,6 +17,11 @@ checks that one app (cli.boundary_after_app).
 An app the shell opens as its own browser tab under the boundary (OWN_TAB, the same list as wizard-ux
 `web/core/browser-boundary.js` OWN_TAB, wizard-ux#1821) is never a sandboxed frame, so it is listed as `own_tab`
 and never counted as blank (wizard-app-manager#1046).
+
+An app the shell keeps same-origin under the boundary (SAME_ORIGIN, the same list as wizard-ux
+`web/core/browser-boundary.js` SAME_ORIGIN: TG style from its own listing, humanitylabs-org/telegram#68) is not a
+sandboxed frame either: it opens as it did before the boundary, so it is listed as `same_origin` and never counted as
+blank. Only by app id AND the repo apps.json says it came from; a copy from anywhere else is probed like any app.
 """
 from __future__ import annotations
 
@@ -38,12 +43,21 @@ CORS_OK = {"*", "null"}
 # Installed app id -> the window path under which the shell opens it as its own tab while the boundary is on,
 # instead of a sandboxed frame. Keep in step with wizard-ux web/core/browser-boundary.js OWN_TAB (wizard-ux#1821).
 OWN_TAB = {"files": "/files/"}
+# Installed app id -> (window path, the repo it must be installed from): the shell keeps its window same-origin under
+# the boundary. Keep in step with wizard-ux web/core/browser-boundary.js SAME_ORIGIN (humanitylabs-org/telegram#68).
+SAME_ORIGIN = {"tg-style": ("/tg-style/", "humanitylabs-org/telegram")}
 
 
 def own_tab(app_id: str, path: str) -> bool:
     """Whether the shell opens this app in its own tab under the boundary (the shell's `ownTab(appId, url)`)."""
     home = OWN_TAB.get(app_id) if isinstance(app_id, str) else None
     return bool(home) and str(path or "").startswith(home)
+
+
+def same_origin(app_id: str, path: str, repo) -> bool:
+    """Whether the shell keeps this app's window same-origin under the boundary (the shell's `sameOriginApp`)."""
+    home, want = SAME_ORIGIN.get(app_id, (None, None)) if isinstance(app_id, str) else (None, None)
+    return bool(home) and repo == want and str(path or "").startswith(home) and "//" not in str(path)
 
 
 class _Tags(HTMLParser):
@@ -258,20 +272,25 @@ def windows(home, runtipi_root, skip=(), only=None) -> list[dict]:
 
         out.append({"id": a["id"], "name": str(a.get("name") or a["id"])[:80],
                     "page": f"{lp.scheme}://{lp.netloc}{path}", "prefix": path, "proof": proof,
-                    **({"own_tab": True} if own_tab(a["id"], path) else {})})
+                    **({"own_tab": True} if own_tab(a["id"], path) else {}),
+                    **({"same_origin": True} if same_origin(a["id"], path, a.get("repo")) else {})})
     return out
 
 
 def check(home, runtipi_root, skip=(), only=None, get=_get, wait_s: float = 0) -> dict:
-    """{ok: [names], blank: [{id, name, why, files}], unchecked: [{id, name, why}], own_tab: [names]}. `wait_s`:
-    keep retrying apps whose page does not answer yet (just installed or updated) until that many seconds have
-    passed in all. `own_tab`: apps the shell opens in their own tab under the boundary (OWN_TAB): never framed, so
-    never probed and never blank."""
-    out = {"ok": [], "blank": [], "unchecked": [], "own_tab": []}
+    """{ok: [names], blank: [{id, name, why, files}], unchecked: [{id, name, why}], own_tab: [names],
+    same_origin: [names]}. `wait_s`: keep retrying apps whose page does not answer yet (just installed or updated)
+    until that many seconds have passed in all. `own_tab`: apps the shell opens in their own tab under the boundary
+    (OWN_TAB); `same_origin`: apps whose window the shell keeps same-origin (SAME_ORIGIN): neither is a sandboxed
+    frame, so neither is probed or ever blank."""
+    out = {"ok": [], "blank": [], "unchecked": [], "own_tab": [], "same_origin": []}
     end = time.monotonic() + wait_s
     for app in windows(home, runtipi_root, skip, only):
         if app.get("own_tab"):
             out["own_tab"].append(app["name"])
+            continue
+        if app.get("same_origin"):
+            out["same_origin"].append(app["name"])
             continue
         while True:
             r = probe(app, get)

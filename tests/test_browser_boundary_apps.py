@@ -44,7 +44,8 @@ def _server(kind):
                 self.send_response(403)
                 self.end_headers()
                 return
-            p = "/files/" if self.path.startswith("/files/") else "/app/"   # Files lives at /files/ (WAM#1046)
+            # Files lives at /files/ (WAM#1046), TG style at /tg-style/ (telegram#68)
+            p = next((q for q in ("/files/", "/tg-style/") if self.path.startswith(q)), "/app/")
             if self.path == p:
                 body, ctype = PAGE.format(p=p).encode(), "text/html"
             elif self.path in tuple(p + f for f in ("app.css", "assets/index.js", "assets/vendor.js", "assets/legacy.js")):
@@ -55,7 +56,7 @@ def _server(kind):
                 return
             self.send_response(200)
             self.send_header("Content-Type", ctype)
-            if kind == "cors" and self.path not in ("/app/", "/files/"):
+            if kind == "cors" and self.path not in ("/app/", "/files/", "/tg-style/"):
                 self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(body)
@@ -157,7 +158,7 @@ def test_the_shell_and_apps_without_a_window_are_skipped(tmp_path, apps):
     doc = json.loads((h / "apps.json").read_text())
     doc["apps"].append({"id": "worker", "mcp": {"url": "http://127.0.0.1:9/mcp"}})
     (h / "apps.json").write_text(json.dumps(doc))
-    assert ba.check(h, tmp_path / "rt", skip={"wizard-ux"}) == {"ok": [], "blank": [], "unchecked": [], "own_tab": []}
+    assert ba.check(h, tmp_path / "rt", skip={"wizard-ux"}) == {"ok": [], "blank": [], "unchecked": [], "own_tab": [], "same_origin": []}
 
 
 def _files_like(tmp_path, apps, path="/files/"):
@@ -177,7 +178,7 @@ def test_files_opens_in_its_own_tab_so_it_never_counts_as_blank(tmp_path, apps):
     seen = _files_like(tmp_path, apps)
     apps("notes", "cors", "Notes")
     res = ba.check(_home(tmp_path), tmp_path / "rt")
-    assert res == {"ok": ["Notes"], "blank": [], "unchecked": [], "own_tab": ["Files"]}
+    assert res == {"ok": ["Notes"], "blank": [], "unchecked": [], "own_tab": ["Files"], "same_origin": []}
     assert ba.reason(res) is None and not seen   # not even asked
     assert ba.check(_home(tmp_path), tmp_path / "rt", only={"files"})["blank"] == []
 
@@ -189,6 +190,48 @@ def test_only_the_shells_own_tab_apps_skip_the_check(tmp_path, apps):
     assert ba.own_tab("files", "/files/") and ba.own_tab("files", "/files/files/")
     assert not ba.own_tab("files", "/app/") and not ba.own_tab("tg-style", "/files/")
     assert not ba.own_tab("__proto__", "/files/") and not ba.own_tab("constructor", "/")
+
+
+def _tg_style(tmp_path, apps, repo="humanitylabs-org/telegram", path="/tg-style/"):
+    """TG style as the App Manager lists it: its window at /tg-style/, installed from its own repo."""
+    seen = apps("tg-style", "plain", "TG style")
+    reg = _home(tmp_path) / "apps.json"
+    doc = json.loads(reg.read_text())
+    for a in doc["apps"]:
+        if a["id"] == "tg-style":
+            a["view"]["url"] = a["view"]["url"].replace("/app/", path)
+            if repo is not None:
+                a["repo"] = repo
+    reg.write_text(json.dumps(doc))
+    return seen
+
+
+def test_tg_style_from_its_own_listing_stays_same_origin_so_it_never_counts_as_blank(tmp_path, apps):
+    # telegram#68 (option A): the shell keeps TG style's window same-origin (wizard-ux SAME_ORIGIN), never sandboxed
+    seen = _tg_style(tmp_path, apps)
+    apps("notes", "cors", "Notes")
+    res = ba.check(_home(tmp_path), tmp_path / "rt")
+    assert res == {"ok": ["Notes"], "blank": [], "unchecked": [], "own_tab": [], "same_origin": ["TG style"]}
+    assert ba.reason(res) is None and not seen   # not even asked
+
+
+def test_a_tg_style_from_anywhere_else_is_checked_like_any_app(tmp_path, apps):
+    for repo, path in (("someone/telegram", "/tg-style/"), (None, "/tg-style/"), ("humanitylabs-org/telegram", "/app/")):
+        _tg_style(tmp_path, apps, repo=repo, path=path)
+        assert [b["name"] for b in ba.check(_home(tmp_path), tmp_path / "rt")["blank"]] == ["TG style"], (repo, path)
+    assert ba.same_origin("tg-style", "/tg-style/", "humanitylabs-org/telegram")
+    assert not ba.same_origin("tg-style", "/tg-style//x", "humanitylabs-org/telegram")
+    assert not ba.same_origin("notes", "/tg-style/", "humanitylabs-org/telegram")
+    assert not ba.same_origin("__proto__", "/tg-style/", "humanitylabs-org/telegram") and not ba.same_origin(None, "/", None)
+
+
+def test_an_existing_box_with_tg_style_from_its_listing_switches_on(monkeypatch, tmp_path, apps):
+    _tg_style(tmp_path, apps)
+    apps("notes", "cors", "Notes")
+    c, recreated, told = _box(monkeypatch, tmp_path)
+    out = cli.bootstrap(c)
+    assert out["browser_boundary"]["on"] is True and out["browser_boundary"]["why"] == "existing box"
+    assert bb.held(c.home) is None
 
 
 
