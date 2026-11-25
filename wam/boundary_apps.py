@@ -21,7 +21,9 @@ and never counted as blank (wizard-app-manager#1046).
 An app the shell keeps same-origin under the boundary (SAME_ORIGIN, the same list as wizard-ux
 `web/core/browser-boundary.js` SAME_ORIGIN: TG style from its own listing, humanitylabs-org/telegram#68) is not a
 sandboxed frame either: it opens as it did before the boundary, so it is listed as `same_origin` and never counted as
-blank. Only by app id AND the repo apps.json says it came from; a copy from anywhere else is probed like any app.
+blank. Only by app id AND the repo apps.json says it came from, AND only while the shell installed on this box has
+that list (its served core/browser-boundary.js names the app in SAME_ORIGIN): a box whose shell is older still frames
+the app sealed, so there it is probed like any app, as is a copy from anywhere else.
 """
 from __future__ import annotations
 
@@ -179,6 +181,37 @@ def probe(app: dict, get=_get) -> dict:
     return {**base, "state": "ok", "files": [urlsplit(u).path for u, _ in files]}
 
 
+# The shell's own boundary code, as the shell serves it (the box front mounts the shell at /wizard-os-home/).
+SHELL_BOUNDARY_JS = ("/wizard-os-home/core/browser-boundary.js", "/core/browser-boundary.js")
+
+
+def shell_same_origin(home, runtipi_root, shell_ids, get=None) -> set:
+    """The app ids the installed shell keeps same-origin under the boundary: read from its served
+    core/browser-boundary.js (its SAME_ORIGIN list), on the shell's loopback port. Empty when the shell is not found
+    or older (no list), so such an app is checked like any other."""
+    from . import app_switches
+    get = get or _get
+    try:
+        reg = json.loads((Path(home) / "apps.json").read_text())
+    except (OSError, ValueError):
+        return set()
+    for a in reg.get("apps") or []:
+        if not isinstance(a, dict) or a.get("id") not in set(shell_ids) or not APP_ID.fullmatch(str(a.get("id"))):
+            continue
+        local = app_switches.loopback(a, Path(runtipi_root), _store_of(a))
+        if not local:
+            continue
+        for path in SHELL_BOUNDARY_JS:
+            status, _, body = get(local.rstrip("/") + path, {"Accept": "*/*"})
+            if status != 200:
+                continue
+            m = re.search(rb"const SAME_ORIGIN = Object\.freeze\(\{(.*?)\}\);", body, re.S)
+            if not m:
+                return set()
+            return {i for i in SAME_ORIGIN if re.search(rb"['\"]" + re.escape(i.encode()) + rb"['\"]\s*:", m.group(1))}
+    return set()
+
+
 def _store_of(a: dict) -> str:
     store = (str(a.get("urn") or "").split(":", 1) + ["wizardapps"])[1] or "wizardapps"
     return store if APP_ID.fullmatch(store) else "wizardapps"
@@ -285,11 +318,13 @@ def check(home, runtipi_root, skip=(), only=None, get=_get, wait_s: float = 0) -
     frame, so neither is probed or ever blank."""
     out = {"ok": [], "blank": [], "unchecked": [], "own_tab": [], "same_origin": []}
     end = time.monotonic() + wait_s
-    for app in windows(home, runtipi_root, skip, only):
+    apps = windows(home, runtipi_root, skip, only)
+    kept = shell_same_origin(home, runtipi_root, skip, get) if any(a.get("same_origin") for a in apps) else set()
+    for app in apps:
         if app.get("own_tab"):
             out["own_tab"].append(app["name"])
             continue
-        if app.get("same_origin"):
+        if app.get("same_origin") and app["id"] in kept:
             out["same_origin"].append(app["name"])
             continue
         while True:

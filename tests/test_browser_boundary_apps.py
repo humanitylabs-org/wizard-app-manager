@@ -206,19 +206,73 @@ def _tg_style(tmp_path, apps, repo="humanitylabs-org/telegram", path="/tg-style/
     return seen
 
 
+NEW_SHELL = b"""(() => { const OWN_TAB = Object.freeze({ files: '/files/' });
+  const SAME_ORIGIN = Object.freeze({ 'tg-style': Object.freeze({ home: '/tg-style/', repo: 'humanitylabs-org/telegram' }) });
+})();"""
+OLD_SHELL = b"(() => { const OWN_TAB = Object.freeze({ files: '/files/' }); })();"
+
+
+def _shell(tmp_path, js):
+    """The installed shell (wizard-ux) serving its own core/browser-boundary.js under /wizard-os-home/."""
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            ok = js is not None and self.path == "/wizard-os-home/core/browser-boundary.js"
+            self.send_response(200 if ok else 404)
+            self.send_header("Content-Type", "text/javascript")
+            self.end_headers()
+            if ok:
+                self.wfile.write(js)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    reg = _home(tmp_path) / "apps.json"
+    reg.parent.mkdir(parents=True, exist_ok=True)
+    doc = json.loads(reg.read_text()) if reg.is_file() else {"apps": []}
+    doc["apps"] = [a for a in doc["apps"] if a["id"] != "wizard-ux"] + [
+        {"id": "wizard-ux", "name": "Wizard", "urn": "wizard-ux:wizardapps", "provides": ["shell"],
+         "view": {"url": f"http://127.0.0.1:{srv.server_address[1]}/wizard-os-home/"}}]
+    reg.write_text(json.dumps(doc))
+    return srv
+
+
 def test_tg_style_from_its_own_listing_stays_same_origin_so_it_never_counts_as_blank(tmp_path, apps):
     # telegram#68 (option A): the shell keeps TG style's window same-origin (wizard-ux SAME_ORIGIN), never sandboxed
     seen = _tg_style(tmp_path, apps)
     apps("notes", "cors", "Notes")
-    res = ba.check(_home(tmp_path), tmp_path / "rt")
+    srv = _shell(tmp_path, NEW_SHELL)
+    try:
+        res = ba.check(_home(tmp_path), tmp_path / "rt", skip={"wizard-ux"})
+    finally:
+        srv.shutdown()
     assert res == {"ok": ["Notes"], "blank": [], "unchecked": [], "own_tab": [], "same_origin": ["TG style"]}
     assert ba.reason(res) is None and not seen   # not even asked
 
 
+def test_with_an_older_shell_tg_style_is_still_checked_so_the_boundary_stays_off(tmp_path, apps):
+    # the shell on the box does not keep it same-origin yet (no SAME_ORIGIN, or no shell answering): it would open blank
+    _tg_style(tmp_path, apps)
+    for js in (OLD_SHELL, None):
+        srv = _shell(tmp_path, js)
+        try:
+            res = ba.check(_home(tmp_path), tmp_path / "rt", skip={"wizard-ux"})
+        finally:
+            srv.shutdown()
+        assert [b["name"] for b in res["blank"]] == ["TG style"] and res["same_origin"] == [], js
+    assert [b["name"] for b in ba.check(_home(tmp_path), tmp_path / "rt")["blank"]] == ["TG style"]   # no shell listed
+
+
 def test_a_tg_style_from_anywhere_else_is_checked_like_any_app(tmp_path, apps):
-    for repo, path in (("someone/telegram", "/tg-style/"), (None, "/tg-style/"), ("humanitylabs-org/telegram", "/app/")):
-        _tg_style(tmp_path, apps, repo=repo, path=path)
-        assert [b["name"] for b in ba.check(_home(tmp_path), tmp_path / "rt")["blank"]] == ["TG style"], (repo, path)
+    srv = _shell(tmp_path, NEW_SHELL)
+    try:
+        for repo, path in (("someone/telegram", "/tg-style/"), (None, "/tg-style/"), ("humanitylabs-org/telegram", "/app/")):
+            _tg_style(tmp_path, apps, repo=repo, path=path)
+            res = ba.check(_home(tmp_path), tmp_path / "rt", skip={"wizard-ux"})
+            assert [b["name"] for b in res["blank"]] == ["TG style"], (repo, path)
+    finally:
+        srv.shutdown()
     assert ba.same_origin("tg-style", "/tg-style/", "humanitylabs-org/telegram")
     assert not ba.same_origin("tg-style", "/tg-style//x", "humanitylabs-org/telegram")
     assert not ba.same_origin("notes", "/tg-style/", "humanitylabs-org/telegram")
@@ -228,8 +282,12 @@ def test_a_tg_style_from_anywhere_else_is_checked_like_any_app(tmp_path, apps):
 def test_an_existing_box_with_tg_style_from_its_listing_switches_on(monkeypatch, tmp_path, apps):
     _tg_style(tmp_path, apps)
     apps("notes", "cors", "Notes")
+    srv = _shell(tmp_path, NEW_SHELL)
     c, recreated, told = _box(monkeypatch, tmp_path)
-    out = cli.bootstrap(c)
+    try:
+        out = cli.bootstrap(c)
+    finally:
+        srv.shutdown()
     assert out["browser_boundary"]["on"] is True and out["browser_boundary"]["why"] == "existing box"
     assert bb.held(c.home) is None
 
