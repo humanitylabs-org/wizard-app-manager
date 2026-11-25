@@ -271,7 +271,10 @@ def _rows(app: dict, j: dict) -> list[dict]:
         out.append({"id": f"{app['id']}:{s['id']}", "kind": "app", "app": app["id"], "app_name": app["name"],
                     "switch": s["id"], "name": str(s.get("name") or s["id"])[:120],
                     "description": str(s.get("description") or "")[:600], "author": app["id"],
-                    "on": s.get("on") is True, "default": s.get("default") is True, "issues": issues, "locked": False})
+                    "on": s.get("on") is True, "default": s.get("default") is True, "issues": issues, "locked": False,
+                    # optional feedback fields (Try new features): only from apps that keep them
+                    **({"tried": s["tried"] is True} if "tried" in s else {}),
+                    **({"vote": s["vote"] if s["vote"] in ("up", "down") else None} if "vote" in s else {})})
     return out
 
 

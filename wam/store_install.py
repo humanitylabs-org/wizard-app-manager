@@ -264,7 +264,7 @@ def gateway_path_ok(path: str) -> bool:
     Connections, the disk encryption line, feature switches, app updates and Start of a stopped app),
     nothing else: removal, host-access and view reverts stay on the root-peer :7791 listener."""
     p = path.strip("/")
-    return (bool(ID.fullmatch(p)) or p in (*GATEWAY_CONTROL[:2], "_disk", "_feature-switches", "_app-updates")
+    return (bool(ID.fullmatch(p)) or p in (*GATEWAY_CONTROL[:2], "_disk", "_feature-switches", "_switch-feedback", "_app-updates")
             or p == "_connections" or p.startswith("_connections/")
             or (p.startswith("_start/") and bool(ID.fullmatch(p.removeprefix("_start/")))))
 

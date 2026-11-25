@@ -12,7 +12,8 @@
     if (!d.querySelector(':scope > .wz-sheet-x')) d.querySelector(':scope > .wz-sheet-grip').insertAdjacentHTML('afterend', '<button type="button" class="wz-sheet-x" aria-label="Close">×</button>');
     d.addEventListener('click', e => {
       if (e.target.closest('.wz-sheet-x')) return close(d);
-      if (e.target === d) { const r = d.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) close(d); }
+      // WizardApp owns backdrop cancellation (including drag/long-press guards).
+      if (!window.WizardApp && !d.hasAttribute('data-wz-no-outside-close') && e.target === d) { const r = d.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) { if (d.dispatchEvent(new Event('cancel', { cancelable: true }))) close(d); } }
     });
     d.addEventListener('close', () => { const i = open.indexOf(d); if (i >= 0) open.splice(i, 1); if (d.__wzBack) { d.__wzBack.release(); d.__wzBack = null; } });
     let y0 = null; const g = d.querySelector('.wz-sheet-grip');

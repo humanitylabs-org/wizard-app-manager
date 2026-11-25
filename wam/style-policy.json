@@ -3,11 +3,11 @@
   "assets": {
     "ui.css": {
       "source": "style/ui.css",
-      "sha256": "5551214c889918e90f7939b695b9434d71407221505d3dce7dacd7b07ebe445f"
+      "sha256": "ba3ad8c73da43b0a2a25517168f9a021429e1087f5338d54fd8c8bc0425dc24d"
     },
     "wizard-ui.css": {
       "source": "style/ui.css",
-      "sha256": "5551214c889918e90f7939b695b9434d71407221505d3dce7dacd7b07ebe445f"
+      "sha256": "ba3ad8c73da43b0a2a25517168f9a021429e1087f5338d54fd8c8bc0425dc24d"
     },
     "tokens.css": {
       "source": "style/tokens.css",
@@ -19,11 +19,11 @@
     },
     "sheet.js": {
       "source": "style/sheet.js",
-      "sha256": "fbec58efa89921d2aed824b75c617c38c67e8f767e06ed8dd3b65b2e1f06178a"
+      "sha256": "6062134676fda28ec09419bc14e962b77dce905a0d57b0882d9ec960f67ea167"
     },
     "wizard-sheet.js": {
       "source": "style/sheet.js",
-      "sha256": "fbec58efa89921d2aed824b75c617c38c67e8f767e06ed8dd3b65b2e1f06178a"
+      "sha256": "6062134676fda28ec09419bc14e962b77dce905a0d57b0882d9ec960f67ea167"
     },
     "standalone-tokens.css": {
       "source": "style/standalone-tokens.css",
@@ -40,8 +40,23 @@
     "controls.css": {
       "source": "style/controls.css",
       "sha256": "dd3f01c7c9f02f19a5d9f342c7a33b11ada5e029c8c54f9d7d34f81eada2caa9"
+    },
+    "try-features.js": {
+      "source": "style/try-features.js",
+      "sha256": "217b88e1e9f64bd8f159ec68a056ceecc8c6cb5c035ec812d521788367207025"
+    },
+    "wizard-try-features.js": {
+      "source": "style/try-features.js",
+      "sha256": "217b88e1e9f64bd8f159ec68a056ceecc8c6cb5c035ec812d521788367207025"
     }
   },
+  "skin_layers": [
+    "web/skins/",
+    "web/tweaks/"
+  ],
+  "generated_vendor": [
+    "web/vendor/"
+  ],
   "exceptions": [
     {
       "path": "web/core/skins.css",

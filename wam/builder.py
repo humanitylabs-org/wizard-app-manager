@@ -367,7 +367,7 @@ def validate_style_snapshot(template):
     lock = json.loads((template / 'appearance-provenance.json').read_text())
     mapping = {'style/tokens.css': 'web/wizard-tokens.css', 'style/ui.css': 'web/wizard-ui.css',
                'style/boot.js': 'web/boot.js', 'style/sheet.js': 'web/wizard-sheet.js',
-               'style/standalone-tokens.css': 'web/standalone-tokens.css'}
+               'style/standalone-tokens.css': 'web/standalone-tokens.css', 'style/try-features.js': 'web/wizard-try-features.js'}
     if (lock.get('schema') != 3 or lock.get('origin_repo') != 'https://github.com/humanitylabs-org/wizard-os'
             or not re.fullmatch(r'[0-9a-f]{40}', str(lock.get('revision', '')))
             or set(lock.get('files', {})) != set(mapping)):

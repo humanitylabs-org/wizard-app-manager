@@ -92,6 +92,16 @@ if (!window.WizardApp || WizardApp.version !== 1) {
   WizardApp.back.register({ canGoBack: () => false, back: () => false });
 }
 
+// Settings: the app's own sheet. Try new features (the shared kit section) is mounted last and hides itself when the
+// app lists no switches (app/server.py SWITCHES).
+let tryFeatures = null;
+el('open-settings').onclick = () => {
+  if (!tryFeatures && window.WzTryFeatures) tryFeatures = WzTryFeatures.mount(el('try-features'), { path: 'api/switches' });
+  else if (tryFeatures) tryFeatures.reload();
+  WzSheet.open(el('settings'));
+};
+fetch('healthz').then(r => r.json()).then(h => { if (h.version) el('about-version').textContent = 'Hello Wizard ' + h.version; }).catch(() => {});
+
 request('api/habits?day=' + localDay()).then(render).catch(error => say(error.message, 'error'));
 // A new day while the app stays open.
 document.addEventListener('visibilitychange', () => {
