@@ -70,6 +70,16 @@ def _no_real_host_dashboard(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_switch_feedback_sends(request, monkeypatch):
+    """The hourly tick's Try new features counts (wam/switch_feedback.py, #701) never read the real box or send in
+    tests; tests/test_switch_feedback.py tests the module itself."""
+    if request.module.__name__.endswith("test_switch_feedback"):
+        return
+    from wam import switch_feedback
+    monkeypatch.setattr(switch_feedback, "tick", lambda *a, **k: {"sent": False})
+
+
+@pytest.fixture(autouse=True)
 def _no_real_private_first_download(monkeypatch):
     """`wam private-first on` starts a detached `wam prefetch --private-first` (WAM#836); a test never does.
     tests/test_recommended.py keeps its own reference to the real function to test it with a fake Popen."""

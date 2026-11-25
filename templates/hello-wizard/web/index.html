@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="styles.css">
   <script defer src="/wizard-os-home/core/app-client.js"></script>
   <script defer src="wizard-sheet.js"></script>
+  <script defer src="wizard-try-features.js"></script>
   <script defer src="app.js"></script>
 </head>
 <body>
@@ -28,6 +29,9 @@
           <p>Add one below, then tap it each day you do it.</p>
         </div>
       </section>
+      <section class="wz-sec" aria-label="More">
+        <ul class="wz-list"><li><button type="button" class="wz-row" id="open-settings"><span class="wz-main"><b>Settings</b></span></button></li></ul>
+      </section>
     </main>
     <p id="status" class="wz-status" role="status" aria-live="polite"></p>
     <form id="add-form" class="wz-field-row" autocomplete="off">
@@ -37,5 +41,13 @@
       </button>
     </form>
   </div>
+  <dialog class="wz-sheet" id="settings" aria-labelledby="settings-h">
+    <h2 id="settings-h">Settings</h2>
+    <section class="wz-sec" aria-label="About">
+      <ul class="wz-list"><li class="wz-row"><span class="wz-main"><b>Habits</b><small id="about-version">Hello Wizard</small></span></li></ul>
+    </section>
+    <!-- Try new features: always the last thing in Settings (wizard-os docs/APP_SWITCHES.md). Hidden when the app has no switches. -->
+    <section class="wz-sec" id="try-features"></section>
+  </dialog>
 </body>
 </html>

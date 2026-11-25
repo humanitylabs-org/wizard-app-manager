@@ -3411,6 +3411,10 @@ def main(argv: list[str] | None = None) -> int:
                                                   "as Settings and the WizardOS Tracker")
     fsg = fsw.add_mutually_exclusive_group()
     fsg.add_argument("--on", metavar="ID"); fsg.add_argument("--off", metavar="ID")
+    sfb = sub.add_parser("switch-feedback", help="anonymous Try new features counts (switch wizard/try-feature-counts): "
+                                                 "what this box sends, or send it now")
+    sfb.add_argument("--dry-run", action="store_true", help="print what would be sent, send nothing")
+    sfb.add_argument("--force", action="store_true", help="send even when nothing changed since the last send")
     arp = sub.add_parser("agent-restart", help="a waiting Agent Service restart (switch wizard/graceful-restart): "
                                                "status, or wait [--minutes N] / now / cancel")
     arp.add_argument("action", nargs="?", default="status", choices=("status", "wait", "now", "cancel"))
@@ -3462,6 +3466,11 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"error": str(e)}, indent=2)); return 1
         print(json.dumps(res, indent=2))
         return 0
+    if args.cmd == "switch-feedback":
+        from . import switch_feedback
+        res = switch_feedback.tick(force=args.force, dry_run=args.dry_run)
+        print(json.dumps(res, indent=2))
+        return 1 if res.get("error") else 0
     if args.cmd == "feature-switches":
         from . import feature_switches as fs
         try:
@@ -3478,6 +3487,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if res.get("done") or res.get("fallback") else 1
     if args.cmd == "app-updates":
         from . import app_updates as au_
+        if args.apply_if_auto:              # the hourly tick also sends Try new features counts (off by default; #701)
+            from . import switch_feedback
+            switch_feedback.tick()
         res = (au_.set_mode("auto") if args.auto else au_.set_mode("ask") if args.ask
                else au_.hold(args.hold) if args.hold else au_.hold(args.unhold, False) if args.unhold
                else au_.ensure_timer() if args.ensure_timer else au_.apply_if_auto() if args.apply_if_auto

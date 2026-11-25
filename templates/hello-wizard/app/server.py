@@ -247,7 +247,8 @@ class Handler(BaseHTTPRequestHandler):
 #   {'id': 'compact-header', 'name': 'Compact top bar', 'description': '...', 'default': False,
 #    'issues': ['humanitylabs-org/<repo>#20']}
 # and gate the feature on switch_on('compact-header'). State lives on the box (DATA_DIR/switches.json), so the app's
-# page, the Tracker (through the App Manager) and the agent see one state. GET/POST /api/switches, owner only, with
+# page, the Tracker (through the App Manager) and the agent see one state. Each switch also lists `tried` (true once it
+# was turned on, never reset) and `vote` ('up', 'down' or None) for the Try new features section (POST {id, vote}). GET/POST /api/switches, owner only, with
 # X-Wizard-Switch: 1 and never a bearer or agent grant. An app with a platform owner-proof key (owner_proof in wizard.md,
 # wizard-os spec/OWNER_PROOF.md) accepts only a valid signed proof: any process on the box can set the other headers.
 # An app without one accepts the box's Tailscale Serve owner login, never a box-local host.
@@ -282,21 +283,47 @@ def _sw_saved():
     return saved if isinstance(saved, dict) else {}
 
 
+def _sw_map(saved, key):
+    m = saved.get(key)
+    return m if isinstance(m, dict) else {}
+
+
 def switches_doc():
     saved = _sw_saved()
-    return {'contract': _SW_CONTRACT, 'switches': [
-        dict(s, on=saved[s['id']] if isinstance(saved.get(s['id']), bool) else bool(s.get('default'))) for s in SWITCHES]}
+    tried, votes = _sw_map(saved, '_tried'), _sw_map(saved, '_votes')
+
+    def row(s):
+        on = saved[s['id']] if isinstance(saved.get(s['id']), bool) else bool(s.get('default'))
+        vote = votes.get(s['id'])
+        return dict(s, on=on, tried=tried.get(s['id']) is True or (on and not s.get('default')),
+                    vote=vote if vote in ('up', 'down') else None)
+    return {'contract': _SW_CONTRACT, 'switches': [row(s) for s in SWITCHES]}
 
 
 def switch_on(switch_id):
     return next((s['on'] for s in switches_doc()['switches'] if s['id'] == switch_id), False)
 
 
-def _sw_set(switch_id, on):
+def _sw_set(switch_id, on=None, vote=False):
+    """Save a flip (`on`) or a vote (`vote`: 'up', 'down' or None; False leaves it alone)."""
     with _sw_lock:
         ids = {s['id'] for s in SWITCHES}
-        saved = {k: v for k, v in _sw_saved().items() if k in ids and isinstance(v, bool)}
-        saved[switch_id] = on
+        old = _sw_saved()
+        saved = {k: v for k, v in old.items() if k in ids and isinstance(v, bool)}
+        tried = {k: True for k, v in _sw_map(old, '_tried').items() if k in ids and v is True}
+        votes = {k: v for k, v in _sw_map(old, '_votes').items() if k in ids and v in ('up', 'down')}
+        if isinstance(on, bool):
+            saved[switch_id] = on
+            if on:
+                tried[switch_id] = True
+        if vote is None:
+            votes.pop(switch_id, None)
+        elif vote in ('up', 'down'):
+            votes[switch_id] = vote
+        if tried:
+            saved['_tried'] = tried
+        if votes:
+            saved['_votes'] = votes
         f = _sw_file()
         f.parent.mkdir(parents=True, exist_ok=True)
         tmp = f.with_name(f.name + '.tmp')
@@ -335,7 +362,10 @@ def _sw_proof(h):
 
 def _sw_owner(h, write):
     hd = h.headers
-    if hd.get('Authorization') or hd.get('X-Wizard-Switch') != '1':
+    # A read from the app's own page (the shared Try new features section) may leave out X-Wizard-Switch: the browser's
+    # Sec-Fetch-Site proves it is same-origin. Every write needs the header.
+    page_read = not write and (hd.get('Sec-Fetch-Site') or '').lower() == 'same-origin'
+    if hd.get('Authorization') or (hd.get('X-Wizard-Switch') != '1' and not page_read):
         return False
     proof = _sw_proof(h)
     if proof is not None:
@@ -388,17 +418,18 @@ def _sw_handle(h):
         if size <= 0 or size > 4096:
             raise ValueError
         body = _sw_json.loads(h.rfile.read(size))
-        if not isinstance(body, dict) or not isinstance(body.get('id'), str) or not isinstance(body.get('on'), bool) \
-                or set(body) - {'id', 'on'}:
+        if not isinstance(body, dict) or not isinstance(body.get('id'), str) or set(body) not in ({'id', 'on'}, {'id', 'vote'}) \
+                or ('on' in body and not isinstance(body['on'], bool)) or ('vote' in body and body['vote'] not in ('up', 'down', None)):
             raise ValueError
     except (ValueError, TypeError):
-        _sw_send(h, 400, {'error': 'Send JSON {"id": "...", "on": true|false}', 'code': 'invalid_input'})
+        _sw_send(h, 400, {'error': 'Send JSON {"id": "...", "on": true|false} or {"id": "...", "vote": "up"|"down"|null}',
+                          'code': 'invalid_input'})
         return True
     if body['id'] not in {s['id'] for s in SWITCHES}:
         _sw_send(h, 404, {'error': 'No such switch', 'code': 'unknown_switch'})
         return True
     try:
-        _sw_send(h, 200, _sw_set(body['id'], body['on']))
+        _sw_send(h, 200, _sw_set(body['id'], on=body.get('on'), vote=body['vote'] if 'vote' in body else False))
     except OSError:
         _sw_send(h, 500, {'error': 'storage_failure'})
     return True

@@ -11,7 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MAPPING = {'style/tokens.css': 'web/wizard-tokens.css', 'style/ui.css': 'web/wizard-ui.css', 'style/boot.js': 'web/boot.js',
-           'style/sheet.js': 'web/wizard-sheet.js', 'style/standalone-tokens.css': 'web/standalone-tokens.css'}
+           'style/sheet.js': 'web/wizard-sheet.js', 'style/standalone-tokens.css': 'web/standalone-tokens.css',
+           'style/try-features.js': 'web/wizard-try-features.js'}
 TEMPLATE = ROOT / 'templates/hello-wizard'
 LOCK = TEMPLATE / 'appearance-provenance.json'
 
