@@ -530,7 +530,9 @@ def install(c: Config, app_id: str, given: dict[str, str] | None = None, wait: b
         except Exception as e:  # noqa: BLE001 - the Store window is optional; never fail the shell install for it
             print(f"note: App Store data not set up ({str(e)[:120]}); run `wam store-data`", file=sys.stderr)
     entry = next((a for a in reg["apps"] if a["id"] == app_id), {})
+    sealed = boundary_after_app(c, app_id) if status == "running" else None   # WAM#1043
     return {"id": app_id, "urn": urn, "status": status, "commit": (entry.get("commit") or "")[:12], "from": rec["repo"],
+            **({"browser_boundary": sealed} if sealed else {}),
             "open": (entry.get("view") or {}).get("url"), "mcp": (entry.get("mcp") or {}).get("url"),
             "installed": [a["id"] for a in reg["apps"]], **({"private": True} if rec.get("private") else {}),
             "networks": _net_brief({k: (net_pre or {}).get(k, []) + (net_post or {}).get(k, [])
@@ -1329,6 +1331,13 @@ def browser_boundary_cmd(c: Config, args) -> int:
             res["restart"] = (recreate_apps(c, rt, res["changed"]) if rt is not None else
                               {a: "error: the App Manager could not reach Runtipi; restart this app" for a in res["changed"]})
         res["next"] = "restart the App Manager (wam serve) so its own routes follow"
+        if args.action == "on":   # WAM#1043: the owner's choice stands; say which apps would open blank
+            try:
+                blank = boundary_app_check(c)["blank"]
+            except Exception:  # noqa: BLE001 - a note only
+                blank = []
+            if blank:
+                res["would_open_blank"] = {b["name"]: b["why"] for b in blank}
     print(json.dumps(res, indent=2) if args.json else "\n".join(f"{k}: {v}" for k, v in res.items()))
     return 1 if any(str(v).startswith("error") for v in (res.get("restart") or {}).values()) else 0
 
@@ -1618,6 +1627,15 @@ def hand_overrides_step(c: Config, rt: Runtipi, dry_run: bool = False) -> list[d
 
 def bootstrap(c: Config) -> dict:
     """Fill every empty parking spot with its default app. Spots that already hold any provider are left alone."""
+    global _BOUNDARY_QUIET
+    _BOUNDARY_QUIET = True   # WAM#1043: the run checks every app window once at its end, not after each install
+    try:
+        return _bootstrap(c)
+    finally:
+        _BOUNDARY_QUIET = False
+
+
+def _bootstrap(c: Config) -> dict:
     release_pins.load()
     rt = c.runtipi()
     before = _installed_or_none(rt)
@@ -1647,7 +1665,13 @@ def bootstrap(c: Config) -> dict:
         settle_connection_mode(c, rt)
     net = network_step(c, rt)   # every installer run (fresh or upgrade) converts/repairs the app networks
     # wizard-os#133: a box that already ran Wizard follows one release later, once the release moved its shell
+    new_box = bool(boundary)
     boundary = boundary or settle_existing_browser_boundary(c, rt, before)
+    # WAM#1043: a box the installer switched on (just now, or by an earlier release) keeps it only while every app
+    # window opens inside it
+    auto = settle_auto_browser_boundary(c, rt, new_box)
+    if auto:
+        boundary = {**(boundary or {}), **auto}
     reg = write_registry(c, rt)
     out = {"installed": done, "updated": updated, "failed": failed, "spots": slots.table(reg), "networks": _net_brief(net)}
     if hand:
@@ -1717,15 +1741,119 @@ def settle_existing_browser_boundary(c: Config, rt, before) -> dict | None:
                                          mac=bb.mac_guest() and not bb.mac_host_sends_token())
         if why_not:
             return None
+        from . import boundary_apps
+        found = boundary_app_check(c)
+        held = boundary_apps.reason(found)
+        if held:   # WAM#1043: an app that would open blank keeps the whole box off; the next installer run retries
+            bb.hold(c.home, held, [b["name"] for b in found["blank"]])
+            print(f"note: browser boundary left off: {held}", file=sys.stderr)
+            return {"on": False, "held": held, "apps": found["blank"]}
         res = bb.set_box(c.home, c.runtipi_root, STORE, apps, True, why="existing box")
+        bb.note_state(c.home, checked=int(time.time()))
         out = {"on": True, "why": "existing box"}
         if res["changed"]:
             out["restart"] = recreate_apps(c, rt, res["changed"])
+        out["told"] = tell_boundary_on(c)
         return out
     except Exception as e:  # noqa: BLE001
         print(f"note: browser boundary left off ({str(e)[:160]}); `wam browser-boundary on` turns it on",
               file=sys.stderr)
         return None
+
+
+_BOUNDARY_QUIET = False   # set while `wam bootstrap` runs: it checks every app window once, at its end
+BOUNDARY_ON_NOTE = ("Apps now open in a sealed window",
+                    "Your Wizard now opens each app in its own sealed window, so an app can't act as you anywhere else "
+                    "in Wizard. Every app on this Wizard was checked and opens in it. If an app ever looks blank, ask "
+                    "your Wizard to run `wam browser-boundary off` to open apps the old way again.")
+
+
+def _boundary_core(c: Config) -> set:
+    """The shell, the Agent Service and the pre-split bundle: the top window and its service, never an app frame."""
+    defaults = slots.load_defaults()
+    core = {d.get("app") for s, d in defaults.items() if s in (alongside.SHELL_SLOT, alongside.SERVICE_SLOT)}
+    return (core | {alongside.LEGACY_BUNDLE, "wizard-ux", "wizard-agent-service"}) - {None}
+
+
+def boundary_app_check(c: Config, only=None, wait_s: float = 0) -> dict:
+    """Which installed app windows would open blank in a sandboxed frame (wam/boundary_apps.py, WAM#1043)."""
+    from . import boundary_apps
+    return boundary_apps.check(c.home, c.runtipi_root, skip=_boundary_core(c), only=only, wait_s=wait_s)
+
+
+def tell_boundary_on(c: Config) -> bool:
+    """Once, in plain words, with the way back (WAM#1043). Retried on later installer runs until Notifications took it."""
+    from . import app_updates, browser_boundary as bb
+    if bb.state(c.home).get("told"):
+        return True
+    if app_updates._notify(c, *BOUNDARY_ON_NOTE, required=True):
+        bb.note_state(c.home, told=True)
+        return True
+    return False
+
+
+def settle_auto_browser_boundary(c: Config, rt, new_box: bool = False) -> dict | None:
+    """WAM#1043: a box the installer switched on by itself (a new box this run, or `new box` / `existing box` from
+    an earlier release that never checked its apps) is checked once its apps are in. An app that would open blank
+    switches it back off (blocks removed, the shell and the Agent Service recreated), with the reason held for
+    `wam doctor` and nothing recorded as a choice, so the next installer run tries again. An owner's own choice is
+    never touched. Never fails the installer."""
+    from . import app_updates, boundary_apps, browser_boundary as bb
+    try:
+        if not bb.automatic(c.home):
+            return None
+        st = bb.state(c.home)
+        if st.get("checked"):
+            tell_boundary_on(c)
+            return None
+        found = boundary_app_check(c, wait_s=90 if new_box else 20)   # apps installed just now may still start
+        held = boundary_apps.reason(found)
+        if not held:
+            bb.note_state(c.home, checked=int(time.time()))
+            tell_boundary_on(c)
+            return None
+        apps = sorted(_alongside_apps(c, rt))
+        res = bb.set_box(c.home, c.runtipi_root, STORE, apps, False)
+        bb.forget_choice(c.home)
+        bb.hold(c.home, held, [b["name"] for b in found["blank"]])
+        print(f"note: browser boundary switched back off: {held}", file=sys.stderr)
+        out = {"on": False, "switched_off": True, "held": held, "apps": found["blank"]}
+        if res["changed"]:
+            out["restart"] = recreate_apps(c, rt, res["changed"])
+        if not new_box:   # it was on before this update: say why apps work again
+            names = ", ".join(b["name"] for b in found["blank"])
+            app_updates._notify(c, "Apps open the old way again",
+                                f"{names} could not open in Wizard's sealed app windows, so your Wizard opens apps "
+                                "the old way again. It switches the sealed windows back on by itself once every app "
+                                "opens in them.")
+        return out
+    except Exception as e:  # noqa: BLE001
+        print(f"note: browser boundary apps not checked ({str(e)[:160]})", file=sys.stderr)
+        return None
+
+
+def boundary_after_app(c: Config, app_id: str, verb: str = "installed") -> dict | None:
+    """WAM#1043: an app installed or updated on a box with the boundary on is checked; one that would open blank is
+    named in the result and in one Notifications line with the way back. It never switches the boundary off by
+    itself (an app must not be able to lower the wall by failing on purpose). Never fails the install or update."""
+    from . import app_updates, browser_boundary as bb
+    try:
+        if _BOUNDARY_QUIET or not bb.box_on(c.home) or app_id in _boundary_core(c):
+            return None
+        found = boundary_app_check(c, only={app_id}, wait_s=30)
+    except Exception as e:  # noqa: BLE001
+        print(f"note: {app_id} not checked against the browser boundary ({str(e)[:120]})", file=sys.stderr)
+        return None
+    if not found["blank"]:
+        return None
+    b = found["blank"][0]
+    print(f"WARNING: {b['name']} may open blank: {b['why']}. `wam browser-boundary off` opens apps the old way.",
+          file=sys.stderr)
+    app_updates._notify(c, f"{b['name']} may open blank",
+                        f"{b['name']} was {verb}, but its page doesn't load inside Wizard's sealed app windows, so it "
+                        "may open as a blank window until its maker fixes it. To open apps the old way meanwhile, ask "
+                        "your Wizard to run `wam browser-boundary off`.")
+    return {"opens_blank": True, "why": b["why"], "way_back": "wam browser-boundary off"}
 
 
 def relink_fresh_agent(c: Config, rt) -> dict | None:
@@ -2120,6 +2248,13 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool | None, str]]:
         out.extend(registry.slot_choices(json.loads(regp.read_text())))
         out.extend(doctor_gateway_keys(c, json.loads(regp.read_text())))
         out.extend(doctor_inbox_tokens(c, json.loads(regp.read_text())))
+    try:   # WAM#1043: why the installer left the browser boundary off (apps that would open blank)
+        from . import browser_boundary as _bb
+        h = _bb.held(c.home)
+        if h and not _bb.box_on(c.home):
+            out.append(("Browser boundary (sealed app windows)", None, f"off: {h['why']}"))
+    except Exception as e:  # noqa: BLE001 - a doctor row, never a crash
+        out.append(("Browser boundary (sealed app windows)", None, str(e)[:120]))
     try:   # wizard-ux#1768: a phone update feed that falls behind, or a mirror that stopped running, shows here
         from . import phone_sync
         row = phone_sync.doctor_row(c.home)
@@ -3115,6 +3250,10 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
             out["backup_prune_warning"] = "; ".join(pruned["errors"])[:300]
             print(f"WARNING: {app_id} updated, but its old backups were not all removed: "
                   f"{out['backup_prune_warning']}", file=sys.stderr)
+    if store == STORE and status == "running" and not out.get("error"):
+        sealed = boundary_after_app(c, app, "updated")   # WAM#1043
+        if sealed:
+            out["browser_boundary"] = sealed
     return out
 
 
@@ -3626,7 +3765,8 @@ def main(argv: list[str] | None = None) -> int:
                 + ("  required" if r["required"] else "") for r in rows))
         elif args.cmd == "bootstrap":
             boot = bootstrap(c)
-            if boot.get("browser_boundary"):   # wizard-os#133: switched on just now; `wam serve` must gate its routes too
+            if (boot.get("browser_boundary") or {}).get("on") or (boot.get("browser_boundary") or {}).get("switched_off"):
+                # wizard-os#133: switched on (or WAM#1043 back off) just now; `wam serve` must follow
                 from . import browser_boundary as _bb
                 boot["browser_boundary"]["serve"] = _bb.restart_serve()
             print(json.dumps(boot, indent=2))
