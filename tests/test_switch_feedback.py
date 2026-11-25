@@ -100,6 +100,12 @@ def test_hello_wizard_settings_end_with_try_new_features():
     settings = html[html.index('<dialog class="wz-sheet" id="settings"'):html.index('</dialog>')]
     assert settings.rstrip().endswith('<section class="wz-sec" id="try-features"></section>'), 'last in Settings'
     assert "WzTryFeatures.mount(el('try-features'), { path: 'api/switches' })" in (web / 'app.js').read_text()
+    # its CSS is a file the template's CSP (default-src 'self') allows, with the id that stops the inline <style>
+    assert '<link rel="stylesheet" href="wizard-try-features.css" id="wz-try-css">' in html
+    js = (web / 'wizard-try-features.js').read_text()
+    assert "doc.getElementById('wz-try-css')" in js
+    body = js[js.index('const CSS = `') + len('const CSS = `'):js.index('`;', js.index('const CSS = `'))]
+    assert (web / 'wizard-try-features.css').read_text().split('*/', 1)[1] == body
     lock = json.loads((REPO / 'templates/hello-wizard/appearance-provenance.json').read_text())
     assert lock['files']['style/try-features.js']['destination'] == 'web/wizard-try-features.js'
     assert 'wizard-try-features.js' in json.loads((REPO / 'wam/style-policy.json').read_text())['assets']
@@ -198,3 +204,78 @@ def test_hourly_tick_calls_the_sender(monkeypatch):
     monkeypatch.setattr(app_updates, 'apply_if_auto', lambda *a, **k: {'started': False})
     assert cli.main(['app-updates', '--apply-if-auto']) == 0
     assert called == [1]
+
+
+def test_browser_rows_count_for_apps_the_app_manager_cannot_call(tmp_path, monkeypatch):
+    # Most boxes have owner proof off, so the App Manager can't read an app's switches as the owner (wizard-os#133).
+    # The owner's browser reads them (same origin) and the shell package posts them; they count the same way.
+    body = {"apps": [
+        {"id": "notes", "switches": [{"id": "a", "name": "Private name", "issues": ["o/r#1", "bad"], "on": True,
+                                      "tried": True, "vote": "down"},
+                                     {"id": "b", "on": False, "tried": False, "vote": None},
+                                     {"id": "Bad Id", "tried": True}]},
+        {"id": "not-installed", "switches": [{"id": "x", "tried": True}]},
+        {"id": "../etc", "switches": []}]}
+    out = sf.record(tmp_path, body, declared_ids={"notes", "calendar"}, now=5)
+    assert out == {"recorded": ["notes"]}
+    server = [{"id": "calendar:c", "kind": "app", "app": "calendar", "issues": [], "tried": False, "vote": "up"}]
+    doc = sf.payload(tmp_path, app_rows=server)
+    assert doc["switches"] == [{"id": "calendar:c", "issues": [], "tried": False, "vote": "up"},
+                               {"id": "notes:a", "issues": ["o/r#1"], "tried": True, "vote": "down"}]
+    assert "Private name" not in json.dumps(doc)
+    # a server-side read of the same app wins over what a browser said earlier
+    server.append({"id": "notes:a", "kind": "app", "app": "notes", "issues": [], "tried": True, "vote": None})
+    assert [r["id"] for r in sf.payload(tmp_path, app_rows=server)["switches"]] == ["calendar:c", "notes:a"]
+    assert sf.payload(tmp_path, app_rows=server)["switches"][1]["vote"] is None
+    # an app that is uninstalled later drops out
+    sf.record(tmp_path, {"apps": []}, declared_ids={"calendar"})
+    assert "notes" not in json.loads((tmp_path / sf.STATE).read_text())["browser"]
+    for bad in (None, [], {"apps": "x"}, {"apps": [{}] * 101}):
+        try:
+            sf.record(tmp_path, bad, declared_ids=set())
+            raise AssertionError(bad)
+        except ValueError:
+            pass
+
+
+def _store_call(home, monkeypatch, body, on=True):
+    import io
+    from wam import cli, store_install as si
+    (home / "links.json").write_text(json.dumps({"host": "box.ts.net"}))
+    monkeypatch.setenv("WIZARD_OS_HOME", str(home))
+    monkeypatch.setattr(si, "peer_uid", lambda *a, **k: 0)
+    monkeypatch.setattr(si, "owner_login", lambda: "owner@example.com")
+    monkeypatch.setattr(si, "served_origins", lambda host: {"https://box.ts.net:8444"})
+    monkeypatch.setattr(si, "own_ips", lambda: {"100.64.0.1"})
+    monkeypatch.setattr(sf, "switch_on", lambda home=None: on)
+    monkeypatch.setattr(app_switches, "declared", lambda h: [{"id": "notes", "name": "Notes"}])
+    sends = []
+    monkeypatch.setattr(sf, "tick", lambda *a, **k: sends.append(1))
+
+    class C:
+        pass
+    C.home = home
+    raw = json.dumps(body).encode()
+    sent = []
+    o = cli.StoreHandler.__new__(cli.StoreHandler)
+    o.cfg, o.path, o.client_address = C(), "/_switch-feedback", ("127.0.0.1", 5555)
+    o.headers = {"X-Forwarded-For": "100.64.0.9", "Tailscale-User-Login": "owner@example.com", "Origin": "https://box.ts.net:8444",
+                 "X-Wizard-Store": "1", "Content-Type": "application/json", "Content-Length": str(len(raw))}
+    o.rfile = io.BytesIO(raw)
+    o._json = lambda code, b: sent.append((code, b))
+    o._go("POST")
+    import time as _t
+    _t.sleep(0.2)
+    return sent[-1], sends
+
+
+def test_store_route_records_and_sends_only_when_on(tmp_path, monkeypatch):
+    body = {"apps": [{"id": "notes", "switches": [{"id": "a", "tried": True, "vote": "up", "issues": []}]}]}
+    (code, out), sends = _store_call(tmp_path, monkeypatch, body, on=False)
+    assert (code, out) == (200, {"on": False, "recorded": []}) and sends == []
+    assert not (tmp_path / sf.STATE).exists()
+    (code, out), sends = _store_call(tmp_path, monkeypatch, body, on=True)
+    assert (code, out) == (200, {"on": True, "recorded": ["notes"]}) and sends == [1]
+    assert json.loads((tmp_path / sf.STATE).read_text())["browser"]["notes"]["rows"][0]["vote"] == "up"
+    (code, out), _ = _store_call(tmp_path, monkeypatch, {"apps": 1}, on=True)
+    assert code == 400

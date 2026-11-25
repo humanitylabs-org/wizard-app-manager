@@ -59,6 +59,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -2406,6 +2407,8 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._updates(method)
         if app_id == FEATURE_SWITCHES_PATH:   # the Tracker's Try it and Settings: same origin, owner only (as _updates)
             return self._feature_switches(method)
+        if app_id == SWITCH_FEEDBACK_PATH:   # the shell's wizard/try-feature-counts package (switch_feedback.record)
+            return self._switch_feedback(method)
         if app_id == APP_UPDATES_PATH:   # Settings → About & updates → Apps (on for everyone, wizard-ux#1191)
             return self._app_updates(method)
         if app_id == DISK_PATH:   # Settings → Network & security: one plain disk encryption line (disk.py)
@@ -2706,6 +2709,26 @@ class StoreHandler(BaseHTTPRequestHandler):
         except fs.SwitchError as e:
             return self._json(e.code, {"error": str(e)})
 
+    def _switch_feedback(self, method: str) -> None:
+        """POST {"apps": [{"id": "<app>", "switches": [...]}]}: the switch listings the owner's browser read, for the
+        anonymous Try new features counts (wam/switch_feedback.py). With the switch off nothing is kept or sent.
+        _go already checked the owner's Tailscale login and, for POST, Origin + X-Wizard-Store."""
+        from . import switch_feedback as sf
+        if method != "POST":
+            return self._json(405, {"error": "POST only"})
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 65536:
+                return self._json(400, {"error": "invalid body size"})
+            body = json.loads(self.rfile.read(size))
+            if not sf.switch_on():
+                return self._json(200, {"on": False, "recorded": []})
+            out = sf.record(None, body)
+        except (ValueError, OSError) as e:
+            return self._json(400, {"error": str(e)[:200]})
+        threading.Thread(target=sf.tick, daemon=True).start()   # send now, not at the next hourly tick
+        return self._json(200, {"on": True, **out})
+
     def _app_updates(self, method: str) -> None:
         """App updates for Settings > About & updates > Apps (wizard-ux#1191; on for everyone, no switch).
         GET: app_updates.owner_status() (mode, holds, failed + reason, last run, due/skipped, notes = one-line
@@ -2805,6 +2828,7 @@ class GatewayStoreHandler(StoreHandler):
 UPDATES_PATH = "_updates"
 APP_UPDATES_PATH = "_app-updates"
 FEATURE_SWITCHES_PATH = "_feature-switches"
+SWITCH_FEEDBACK_PATH = "_switch-feedback"
 MAIN_COMPARE_PATH = "_main-compare"
 DISK_PATH = "_disk"
 

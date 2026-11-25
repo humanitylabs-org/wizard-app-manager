@@ -19,10 +19,10 @@ SHELL = {"Tailscale-User-Login": "owner@x.com",
          "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Dest": "empty"}
 
 # Every route the Store/Settings listener answers (StoreHandler._go). The gate must run before each.
-STORE_ROUTES = ["_connections/api/connections", "_connections/api/agents", "_updates", "_feature-switches",
+STORE_ROUTES = ["_connections/api/connections", "_connections/api/agents", "_updates", "_feature-switches", "_switch-feedback",
                 "_app-updates", "_disk", "_main-compare", "_views/notes", "_slots/chats", "_remove/notes",
                 "_github", "_host-access/notes", "_recommended", "notes"]
-HANDLERS = ["_connections", "_updates", "_feature_switches", "_app_updates", "_view_revert", "_chats_default",
+HANDLERS = ["_connections", "_updates", "_feature_switches", "_switch_feedback", "_app_updates", "_view_revert", "_chats_default",
             "_remove", "_github", "_host_access"]
 
 

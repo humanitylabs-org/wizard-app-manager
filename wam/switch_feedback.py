@@ -15,6 +15,13 @@ counting it twice (each send is this box's whole current state). {relay} is the 
 (`FEEDBACK_RELAY_URL`, else the same default the Feedback app uses). A send happens only when the state changed since
 the last accepted one, or once a day. With the switch off nothing is read or sent. `wam switch-feedback --dry-run`
 prints exactly what would be sent.
+
+Two sources, because the App Manager only calls an app as the owner when it holds the app's owner-proof key
+(wizard-os#133; most boxes have owner proof off): the catalog it reads server-side, and what the owner's own browser
+read from the other apps. The shell's `wizard/try-feature-counts` package (wizard-ux) reads each app's switch listing
+the way the Tracker's Try it does (same origin, the owner's Serve login) and posts it to the owner-only route
+`/wizard-os-home/store-install/_switch-feedback` (`record`), which keeps the rows of installed apps that declare
+switches and sends right away. A server-side read wins over a browser one for the same app.
 """
 from __future__ import annotations
 
@@ -23,6 +30,7 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -37,6 +45,7 @@ BOX = re.compile(r"[0-9a-f]{32}")
 RESEND_S = 24 * 3600
 TIMEOUT = 15
 MAX_ROWS = 200
+_lock = threading.Lock()
 
 
 def _home(home) -> Path:
@@ -74,13 +83,21 @@ def _save(home, s: dict) -> None:
     os.replace(tmp, f)
 
 
+def _update(home, **changes) -> None:
+    with _lock:
+        s = _state(home)
+        s.update(changes)
+        _save(home, s)
+
+
 def box_id(home=None) -> str:
     """This box's random id for de-duplication (made once, kept in the Wizard home; no identity in it)."""
-    s = _state(home)
-    if not BOX.fullmatch(str(s.get("box") or "")):
-        s["box"] = secrets.token_hex(16)
-        _save(home, s)
-    return s["box"]
+    with _lock:
+        s = _state(home)
+        if not BOX.fullmatch(str(s.get("box") or "")):
+            s["box"] = secrets.token_hex(16)
+            _save(home, s)
+        return s["box"]
 
 
 def rows(switches: list[dict]) -> list[dict]:
@@ -97,11 +114,57 @@ def rows(switches: list[dict]) -> list[dict]:
     return sorted(out, key=lambda x: x["id"])[:MAX_ROWS]
 
 
-def payload(home=None, app_rows=None) -> dict:
+def _browser_rows(home, declared_ids, served) -> list[dict]:
+    """Rows the owner's browser reported (record), for installed apps the server-side read didn't answer."""
+    seen = _state(home).get("browser")
+    out = []
+    for app, entry in (seen.items() if isinstance(seen, dict) else []):
+        if app in served or (declared_ids is not None and app not in declared_ids) or not isinstance(entry, dict):
+            continue
+        out += [dict(r, kind="app") for r in entry.get("rows") or [] if isinstance(r, dict)]
+    return out
+
+
+def payload(home=None, app_rows=None, declared_ids=None) -> dict:
+    from . import app_switches
     if app_rows is None:
-        from . import app_switches
-        app_rows, _ = app_switches.listing(home)
-    return {"contract": CONTRACT, "box": box_id(home), "switches": rows(app_rows)}
+        app_rows, status = app_switches.listing(home)
+        served = {s["id"] for s in status if s.get("ok")}
+        declared_ids = {a["id"] for a in app_switches.declared(_home(home))}
+    else:
+        served = {r.get("app") for r in app_rows if isinstance(r, dict)}
+    return {"contract": CONTRACT, "box": box_id(home),
+            "switches": rows(list(app_rows) + _browser_rows(home, declared_ids, served))}
+
+
+def record(home, body, *, declared_ids=None, now=None) -> dict:
+    """The owner's browser reports the switch listings it read: {"apps": [{"id": "<app>", "switches": [<listing rows>]}]}.
+    Kept only while the switch is on, only for installed apps that declare switches, only {id, issues, tried, vote}."""
+    from . import app_switches as aps
+    if not isinstance(body, dict) or not isinstance(body.get("apps"), list) or len(body["apps"]) > 100:
+        raise ValueError('send {"apps": [{"id": "<app id>", "switches": [...]}]}')
+    if declared_ids is None:
+        declared_ids = {a["id"] for a in aps.declared(_home(home))}
+    now = time.time() if now is None else now
+    got = {}
+    for a in body["apps"]:
+        if not isinstance(a, dict) or not aps.APP_ID.fullmatch(str(a.get("id") or "")) or a["id"] not in declared_ids \
+                or not isinstance(a.get("switches"), list):
+            continue
+        rs = []
+        for s in a["switches"][:MAX_ROWS]:
+            if not isinstance(s, dict) or not aps.SWITCH_ID.fullmatch(str(s.get("id") or "")):
+                continue
+            rs.append({"id": f"{a['id']}:{s['id']}", "app": a["id"],
+                       "issues": [str(i) for i in (s.get("issues") or []) if isinstance(i, str) and aps.ISSUE.fullmatch(i)][:12],
+                       "tried": s.get("tried") is True, "vote": s.get("vote") if s.get("vote") in ("up", "down") else None})
+        got[a["id"]] = {"at": now, "rows": rs}
+    with _lock:
+        st = _state(home)
+        prev = st.get("browser") if isinstance(st.get("browser"), dict) else {}
+        st["browser"] = {k: v for k, v in {**prev, **got}.items() if k in declared_ids}
+        _save(home, st)
+    return {"recorded": sorted(got)}
 
 
 def _digest(doc: dict) -> str:
@@ -133,15 +196,12 @@ def tick(home=None, *, force=False, dry_run=False, on=None, now=None, post=_post
         except urllib.error.HTTPError as e:
             code = e.code
         except (OSError, ValueError) as e:
-            s.update(error=str(e)[:200], tried_at=now)
-            _save(home, s)
+            _update(home, error=str(e)[:200], tried_at=now)
             return {"switch": SWITCH, "on": True, "sent": False, "error": str(e)[:200]}
         if 200 <= code < 300:
-            s.update(sent=digest, sent_at=now, error=None, tried_at=now)
-            _save(home, s)
+            _update(home, sent=digest, sent_at=now, error=None, tried_at=now)
             return {"switch": SWITCH, "on": True, "sent": True, "switches": len(doc["switches"])}
-        s.update(error=f"relay answered HTTP {code}", tried_at=now)
-        _save(home, s)
+        _update(home, error=f"relay answered HTTP {code}", tried_at=now)
         return {"switch": SWITCH, "on": True, "sent": False, "error": f"relay answered HTTP {code}"}
     except Exception as e:                  # noqa: BLE001 - counts never break the update tick
         return {"switch": SWITCH, "sent": False, "error": str(e)[:200]}
