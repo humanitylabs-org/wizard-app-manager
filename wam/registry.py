@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import threading
 import time
 from pathlib import Path
@@ -32,24 +33,57 @@ def _front(text: str) -> dict:
     return (yaml.safe_load(m.group(1)) or {}) if m else {}
 
 
-def app_meta(runtipi_root: Path, store: str, app_id: str) -> dict | None:
-    """Installed wizard.md + config.json; the store copy is only a legacy fallback."""
-    for d in (runtipi_root / "apps" / store / app_id, runtipi_root / "repos" / store / "apps" / app_id):
+def _is_file(p: Path) -> bool:
+    """Path.is_file(), except that a folder this user may not enter raises PermissionError on every Python
+    (3.12 raises it from is_file(), 3.14 quietly answers False), so the caller can tell "missing" from "unreadable"."""
+    try:
+        return stat.S_ISREG(os.stat(p).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
+def _unreadable(e: BaseException) -> str:
+    return f"{type(e).__name__}: {getattr(e, 'strerror', None) or e}"[:160]
+
+
+def app_meta(runtipi_root: Path, store: str, app_id: str, problems: list | None = None) -> dict | None:
+    """Installed wizard.md + config.json; the store copy is only a legacy fallback.
+
+    One app's folder that can't be read (a root-owned 0700 recipe folder after a Runtipi restore, a broken
+    wizard.md) never fails the caller (#1053): that copy is skipped, the store copy is tried instead, and the reason
+    goes into `problems` (and into the result as `unreadable` when the store copy stood in)."""
+    installed = runtipi_root / 'apps' / store / app_id
+    why = None
+    for d in (installed, runtipi_root / "repos" / store / "apps" / app_id):
         wm = d / "wizard.md"
-        if wm.is_file():
+        try:
+            if not _is_file(wm):
+                continue
             w = _front(wm.read_text())
-            cfg = json.loads((d / "config.json").read_text()) if (d / "config.json").is_file() else {}
-            installed = runtipi_root / 'apps' / store / app_id
-            identity = installed if (installed / '.wizard-source').is_file() else d
-            src = json.loads((identity / '.wizard-source').read_text()) if (identity / '.wizard-source').is_file() else {}
-            commit = (identity / '.wizard-commit').read_text().strip() if (identity / '.wizard-commit').is_file() else None
-            repo, source = src.get('repo'), src.get('source')
-            if src.get('local') or (isinstance(repo, str) and repo.startswith('local/')):
-                source = 'local'
-            elif not isinstance(source, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', source):
-                source = 'standard'  # legacy installs without a recorded source stay Public
-            return {"w": w, "cfg": cfg, "dir": d, "repo": repo, "commit": commit,
-                    "source": source, "private": src.get("private") is True}
+            cfg = json.loads((d / "config.json").read_text()) if _is_file(d / "config.json") else {}
+            try:
+                identity = installed if _is_file(installed / '.wizard-source') else d
+            except PermissionError:
+                identity = d
+            src = json.loads((identity / '.wizard-source').read_text()) if _is_file(identity / '.wizard-source') else {}
+            commit = (identity / '.wizard-commit').read_text().strip() if _is_file(identity / '.wizard-commit') else None
+        except (OSError, ValueError, yaml.YAMLError) as e:
+            why = why or f"{d.relative_to(runtipi_root)} can't be read ({_unreadable(e)})"
+            continue
+        if not isinstance(src, dict):
+            src = {}
+        repo, source = src.get('repo'), src.get('source')
+        if src.get('local') or (isinstance(repo, str) and repo.startswith('local/')):
+            source = 'local'
+        elif not isinstance(source, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', source):
+            source = 'standard'  # legacy installs without a recorded source stay Public
+        if why and problems is not None:
+            problems.append(f"{app_id}: {why}; shown from its store copy")
+        return {"w": w if isinstance(w, dict) else {}, "cfg": cfg if isinstance(cfg, dict) else {}, "dir": d,
+                "repo": repo, "commit": commit, "source": source, "private": src.get("private") is True,
+                **({"unreadable": why} if why else {})}
+    if why and problems is not None:
+        problems.append(f"{app_id}: {why}; left out of apps.json until it can be read")
     return None
 
 
@@ -107,6 +141,7 @@ def _owner_proof(w: dict) -> dict | None:
 
 def build(installed: list[dict], store: str, host: str, runtipi_root: Path, *, owner_proof_enabled: bool = False) -> dict:
     apps = []
+    problems: list[str] = []   # apps whose folder can't be read: reported, never a reason to fail the others (#1053)
     for row in installed:
         app = row.get("app") or {}
         info = row.get("info") or {}
@@ -114,7 +149,7 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path, *, o
         name, _, st = urn.partition(":")
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", st) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
             continue
-        meta = app_meta(runtipi_root, st, name)
+        meta = app_meta(runtipi_root, st, name, problems)
         if not meta or (st != store and not meta.get("private")):
             continue
         # A fork can retain its canonical app id in a Git-backed store without the
@@ -180,7 +215,8 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path, *, o
         for s in a["provides"]:
             slots.setdefault(s, []).append(a["id"])
     return {"schema": SCHEMA, "updated_at": int(time.time()), "store": store, "apps": apps,
-            "slots": {k: {"default": v[0], "candidates": v} for k, v in sorted(slots.items())}}
+            "slots": {k: {"default": v[0], "candidates": v} for k, v in sorted(slots.items())},
+            **({"warnings": problems} if problems else {})}
 
 
 def public_projection(reg: dict) -> dict:

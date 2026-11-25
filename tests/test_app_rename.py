@@ -82,10 +82,11 @@ def test_grants_carry_both_directions_and_bookkeeping():
     assert doc["grants"][0]["to"] == "wizard-connectors"   # input untouched
 
 
-def test_routes_move_the_apps_own_path_and_carry_staging_label():
+def test_routes_keep_the_gateway_path_and_carry_staging_label():
+    # the gateway path is what the box already serves (#1053): it stays, only the id and staging label move
     doc = {"cinequeue": {"view": "/cinequeue-next/", "staged_as": "cinequeue-next"}, "notes": {"view": "/notes/"}}
     out = ar.rename_in_routes(doc, "cinequeue", "movies")
-    assert out == {"movies": {"view": "/movies-next/", "staged_as": "movies-next"}, "notes": {"view": "/notes/"}}
+    assert out == {"movies": {"view": "/cinequeue-next/", "staged_as": "movies-next"}, "notes": {"view": "/notes/"}}
 
 
 def test_router_routes_and_services():
@@ -285,7 +286,7 @@ def test_migrate_moves_everything_then_retires_the_old_app(box):
     assert fs.read(res["old_data"] + "/data/movies.json") == b'{"movies": [1, 2, 3]}'
     assert json.loads(fs.read("/data/state/wizard-grants.json"))["grants"][0]["from"] == "movies"
     assert b"\n  movies:\n" in fs.read("/data/user-config/wizardapps/movies/docker-compose.yml")
-    assert json.loads((c.home / "routes.json").read_text()) == {"movies": {"view": "/movies-next/", "staged_as": "movies-next"}}
+    assert json.loads((c.home / "routes.json").read_text()) == {"movies": {"view": "/cinequeue-next/", "staged_as": "movies-next"}}
     assert (Path(res["backup"]) / "grants.bak").is_file() and (Path(res["backup"]) / "routes.bak").is_file()
 
 
@@ -439,13 +440,13 @@ def test_nightly_leaves_held_system_and_pinned_apps_alone(tmp_path, monkeypatch)
     monkeypatch.setattr(app_updates, "_selection_pinned", lambda root, store, app: app == "cinequeue")
     assert ar.due(c, rt, fetch=fetch, nightly=True) == []
 
-def test_gateway_view_follows_the_apps_own_address_only():
+def test_gateway_view_stays_what_the_box_serves():
     doc = {"usuals": {"view": "/usuals/"}, "outline-streaming-demo": {"view": "/voice-outline-streaming/"},
            "cinequeue": {"view": "/cinequeue-next/", "staged_as": "cinequeue-next"}, "x": {"view": "/mine/"}}
-    assert ar.rename_in_routes(doc, "usuals", "food", "/usuals/", "/food/")["food"] == {"view": "/food/"}
-    assert ar.rename_in_routes(doc, "outline-streaming-demo", "outline", "/voice-outline-streaming/", "/outline/")["outline"] == {"view": "/outline/"}
-    assert ar.rename_in_routes(doc, "cinequeue", "movies", "/cinequeue/", "/movies/")["movies"] == {"view": "/movies-next/", "staged_as": "movies-next"}
-    assert ar.rename_in_routes(doc, "x", "y", "/x/", "/y/")["y"] == {"view": "/mine/"}
+    assert ar.rename_in_routes(doc, "usuals", "food")["food"] == {"view": "/usuals/"}
+    assert ar.rename_in_routes(doc, "outline-streaming-demo", "outline")["outline"] == {"view": "/voice-outline-streaming/"}
+    assert ar.rename_in_routes(doc, "cinequeue", "movies")["movies"] == {"view": "/cinequeue-next/", "staged_as": "movies-next"}
+    assert ar.rename_in_routes(doc, "x", "y")["y"] == {"view": "/mine/"}
 
 
 def test_uses_of_an_old_id_follow_the_renamed_provider():

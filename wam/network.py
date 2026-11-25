@@ -529,6 +529,8 @@ def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -
     generated (what actually runs), else the recipe from the installed or store copy (before the first install)."""
     root = Path(runtipi_root)
     installed, stored = root / "apps" / store / app_id, root / "repos" / store / "apps" / app_id
+    if installed.is_dir():
+        os.listdir(installed)   # PermissionError for a folder this user can't enter (#1053); read_apps holds the app
     wm = next((d / "wizard.md" for d in (installed, stored) if (d / "wizard.md").is_file()), None)
     gen = installed / "docker-compose.generated.yml"
     order = (stored, installed) if fresh else (installed, stored)   # fresh: the recipe an update is about to apply
@@ -639,12 +641,46 @@ def read_app(runtipi_root: Path, store: str, app_id: str, fresh: bool = False) -
     return out
 
 
+def held_app(app_id: str, e: BaseException) -> dict:
+    """An installed app whose files this user can't read (a root-owned 0700 recipe or settings folder after a
+    Runtipi restore, #1053). Nothing about it is known, so the reconcile leaves it exactly as it is: its override,
+    its containers and every network naming it stay untouched, and the reason is reported as a warning."""
+    why = f"its files can't be read ({type(e).__name__}: {getattr(e, 'strerror', None) or e})"[:200]
+    return {"id": app_id, "name": app_id, "custom": why + "; left as it is", "unreadable": why, "services": {},
+            "uses": [], "provides": [], "renamed_from": [], "host_access": []}
+
+
 def read_apps(runtipi_root: Path, store: str, ids, extra=(), fresh=()) -> list[dict]:
     out = []
     for app_id in sorted(set(ids) | set(extra)):
-        if ID.fullmatch(app_id) and (a := read_app(runtipi_root, store, app_id, fresh=app_id in fresh)):
+        if not ID.fullmatch(app_id):
+            continue
+        try:
+            a = read_app(runtipi_root, store, app_id, fresh=app_id in fresh)
+        except OSError as e:   # one unreadable app never fails the plan for the others (#1053)
+            a = held_app(app_id, e)
+        if a:
             out.append(a)
     return follow_renames(out)
+
+
+def held(p: dict) -> set[str]:
+    return {a["id"] for a in p.get("apps") or [] if a.get("unreadable")}
+
+
+def held_networks(p: dict, live: dict) -> set[str]:
+    """Live Wizard networks that name an app the plan can't read (owner, consumer or provider): never changed."""
+    ids = held(p)
+    if not ids:
+        return set()
+    keys = ("org.wizard-os.owner", "org.wizard-os.consumer", "org.wizard-os.provider")
+    return {name for name, n in (live.get("networks") or {}).items()
+            if ours(name) and any((n.get("labels") or {}).get(k) in ids for k in keys)}
+
+
+def warnings(p: dict) -> list[str]:
+    return [f"{a['id']}: {a['unreadable']}; its networks were left as they are" for a in p.get("apps") or []
+            if a.get("unreadable")]
 
 
 def follow_renames(apps: list[dict]) -> list[dict]:
@@ -1232,7 +1268,10 @@ def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
     """Differences between the plan and running containers: one row per container that is off-plan."""
     rows = []
     shared_docker = os.environ.get("RUNTIPI_DOCKER_NETWORK") or SHARED_DOCKER
+    keep = held_networks(p, live)
     for a in p["apps"]:
+        if a.get("unreadable"):
+            continue   # nothing is known about it: its containers stay as they are (#1053)
         urn = f"{a['id']}:{store}"
         for c in live["containers"]:
             if c["urn"] != urn or not c["running"]:
@@ -1242,7 +1281,7 @@ def drift(p: dict, live: dict, store: str = "wizardapps") -> list[dict]:
             want = set((a.get("want") or {}).get(c["service"]) or {})
             on_shared = shared_docker in c["networks"]
             row = {"app": a["id"], "service": c["service"], "container": c["name"], "missing": sorted(want - have),
-                   "extra": sorted(have - want), "on_shared": on_shared,
+                   "extra": sorted(have - want - keep), "on_shared": on_shared,
                    "should_share": keeps_shared(a, c["service"]) and _bridged(c)}
             bad_alias = [n for n, al in ((a.get("want") or {}).get(c["service"]) or {}).items()
                          if n in c["networks"] and not set(al) <= set(c["networks"][n])]
@@ -1486,6 +1525,8 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
     if not apply:
         out["drift"] = drift(p, live, store)
         out["plan"] = summary(p)
+        if warns := warnings(p):
+            out["warnings"] = warns
         return out
     # 1. networks the plan needs (with labels; subnets from our pool, never overlapping any existing network)
     used = [s for n in live["networks"].values() for s in n["subnets"]]
@@ -1524,6 +1565,8 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
     planned = {a["id"]: a for a in p["apps"]}
     base = Path(c.runtipi_root) / "user-config" / store
     for a in p["apps"]:
+        if a.get("unreadable"):
+            continue   # its override can't be read, so it is never rewritten (#1053)
         f = override_path(c.runtipi_root, store, a["id"])
         if a.get("custom") and not (f.is_file() and MARK in f.read_text()):
             continue   # custom and nothing of ours in its override: never touch it
@@ -1537,9 +1580,12 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
     if base.is_dir():
         for d in sorted(base.iterdir()):
             f = d / "docker-compose.yml"
-            if d.name not in planned and f.is_file() and MARK in f.read_text():
-                if write_overlay(f, None):
-                    out["overrides"].append(d.name)
+            try:
+                if d.name not in planned and f.is_file() and MARK in f.read_text():
+                    if write_overlay(f, None):
+                        out["overrides"].append(d.name)
+            except OSError as e:
+                out["errors"].append(f"{d.name}: override not cleaned up ({str(e)[:160]})")
     # 3. running containers, live (no restart): join the planned networks first, then leave the ones no longer
     #    declared and, for isolated apps, the shared network. Docker moves the default route and keeps published
     #    ports; each published port is checked afterwards and the app is restarted only if one stopped answering.
@@ -1606,8 +1652,10 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
             out["errors"].append(f"restart {app_id}: {str(e)[:160]}")
     # 5. our networks nobody needs any more (an uninstalled app, a dropped declaration)
     live = observe(docker, store)
+    keep = held_networks(p, live)
     for name, n in sorted(live["networks"].items()):
-        if ours(name) and owned_network(name, n) and name not in p["networks"] and name not in rejected:
+        if ours(name) and owned_network(name, n) and name not in p["networks"] and name not in rejected \
+                and name not in keep:
             for cname in n["containers"]:
                 _run(docker, "network", "disconnect", "-f", name, cname, check=False)
             # A container that is not running can still list the network in its settings: one Compose just created
@@ -1626,6 +1674,8 @@ def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:
                 out["removed"].append(name)
     out["drift"] = drift(p, live, store)
     out["plan"] = summary(p)
+    if warns := warnings(p):
+        out["warnings"] = warns
     _save(c.home, out)
     return out
 
@@ -1849,6 +1899,8 @@ def report(c, rt=None, p: dict | None = None, live: dict | None = None) -> dict:
                        for r in p.get("controls") or []]
     res["sensitive"] = sorted(sensitive)
     res["notices"] = list(reversed((state or {}).get("notices") or []))[:20]
+    if warns := warnings(p):
+        res["warnings"] = warns
     if not live_ok:
         res["error"] = f"could not read Docker ({err})"
     return res
@@ -1861,7 +1913,8 @@ def describe(rep: dict) -> str:
             "Declared: apps can't talk to each other unless connected (declared, or connected by you)")
     lines = [f"App isolation: {'on' if rep['enabled'] else 'OFF (every app can reach every app)'}"
              f"{f' ({mode})' if rep['enabled'] else ''}; gateway: {rep['gateway']['detail']}",
-             f"Live check: {'matches the declarations' if rep['ok'] else 'DRIFT (see below)' if rep['live'] else rep.get('error')}", ""]
+             f"Live check: {'matches the declarations' if rep['ok'] else 'DRIFT (see below)' if rep['live'] else rep.get('error')}",
+             *[f"WARNING: {w}" for w in rep.get("warnings") or []], ""]
     word = {"link": "", "gateway": " (gateway network)", "external": " (outside Runtipi: not reachable from apps)",
             "host": " (from the server's network, on its published 127.0.0.1 port)",
             "peer": " (two-way: it uses this app over their link)",

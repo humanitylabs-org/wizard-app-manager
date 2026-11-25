@@ -180,19 +180,14 @@ def rename_in_grants(doc: dict, old: str, new: str) -> dict:
     return out
 
 
-def _view_path(w: dict) -> str | None:
-    v = (w or {}).get("view")
-    p = v.get("path") if isinstance(v, dict) else None
-    return p if isinstance(p, str) and p.startswith("/") else None
-
-
-def rename_in_routes(doc: dict, old: str, new: str, old_view: str | None = None, new_view: str | None = None) -> dict:
+def rename_in_routes(doc: dict, old: str, new: str) -> dict:
     """<wizard-os home>/routes.json: the app's entry moves to the new id; a staging label that carries the old id
-    (cinequeue-next) carries the new one (movies-next). The gateway path (`view`) follows the app's own address when
-    it was the app's old address: the old release's declared view path (or `/<old>/`) becomes the new release's
-    declared path (or `/<new>/`), and a staged `/<old>-next/` becomes `/<new>-next/`. A path the owner chose for
-    themselves stays as it is."""
-    old_view, new_view = old_view or f"/{old}/", new_view or f"/{new}/"
+    (cinequeue-next) carries the new one (movies-next).
+
+    The gateway path (`view`) stays exactly as it is (#1053). It is the path the box's gateway already serves the
+    app at, and the moved app keeps the old app's port, so that route keeps reaching it; the App Manager creates no
+    gateway routes, so a new path would point the tile at nothing. Above all a release's wizard.md `view.path` is a
+    path inside the app (`/` for Finances), never a gateway path: using it made Finances' tile open the gateway root."""
     out = {}
     for k, v in (doc or {}).items():
         if k == old and isinstance(v, dict):
@@ -200,11 +195,6 @@ def rename_in_routes(doc: dict, old: str, new: str, old_view: str | None = None,
             st = v.get("staged_as")
             if isinstance(st, str) and (st == old or st.startswith(old + "-")):
                 v["staged_as"] = new + st[len(old):]
-            view = v.get("view")
-            if view in (old_view, f"/{old}/"):
-                v["view"] = new_view
-            elif isinstance(view, str) and view.startswith(f"/{old}-"):
-                v["view"] = f"/{new}-" + view[len(old) + 2:]
             k = new
         out[k] = v
     return out
@@ -698,6 +688,41 @@ def _verify(c, rt, new: str, want_status: str, *, settle: float, probe_seconds: 
     return None
 
 
+def _old_is_back(c, rt, old: str, status: str, port, reg: dict | None, answered_before: bool | None, *,
+                 settle: float, probe_seconds: float, sleep=time.sleep) -> str | None:
+    """None when the old app is back as it was before the move: Runtipi reports it in its old status on its old
+    port, its containers are up and, when it answered before, its health check / MCP endpoint answers again.
+    Otherwise what is still wrong (#1053: `rolled_back` means this, never "every box refresh worked")."""
+    from . import app_updates, cli
+    urn = f"{old}:{cli.STORE}"
+    row = (rt.app(urn) or {}).get("app") or {}
+    if row.get("status") != status:
+        return f"{old} is {row.get('status') or 'missing'} (it was {status})"
+    if port and str(row.get("port")) != str(port):
+        return f"{old} is on port {row.get('port')} (it was on {port})"
+    if status != "running":
+        return None
+    sleep(settle)
+    states = app_updates._containers(urn)
+    if not states or "restarting" in states or states.count("running") < 1:
+        return f"{old}'s containers are not up ({', '.join(states) or 'none'})"
+    if not answered_before:
+        return None
+    ep = None
+    for a in (reg or {}).get("apps") or []:
+        if a.get("id") == old:
+            ep = (str(a["health"]), False) if a.get("health") else \
+                (str(a["mcp"]["url"]), True) if (a.get("mcp") or {}).get("url") else None
+    ep = ep or app_updates._endpoint(c, rt, old)
+    if ep:
+        deadline = time.monotonic() + probe_seconds
+        while not app_updates._probe(ep[0], ep[1], 10):
+            if time.monotonic() >= deadline:
+                return f"{old} does not answer at {ep[0]}"
+            sleep(5)
+    return None
+
+
 def migrate(c=None, old: str = "", new: str | None = None, *, dry_run: bool = False, settle: float = 15,
             probe_seconds: float = 120, backup_root: Path | None = None, repo: str | None = None,
             staging: bool = False) -> dict:
@@ -761,7 +786,6 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
         return {"error": f"the source of {old} publishes {rec.get('id')}, not {new}"}
     info = (rt.app(new_urn) or {}).get("info") or {}   # fetches the new recipe into the store folder
     w = _wizard_md(c, new)
-    old_view = _view_path(_wizard_md(c, old))
     if old not in renamed_from(w):
         return {"error": f"{new} does not declare renamed_from: [{old}] in its wizard.md; refusing to move {old}'s data"}
     try:
@@ -799,6 +823,11 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
                                                "local": {k: str(p) for k, p in local.items()}}, indent=2))
     (bdir / "app.json").chmod(0o600)
     before = {"files": 0, "bytes": 0}
+    # Whether the old app answered before the move: a rollback then proves it answers again (an app whose check
+    # never answered here, e.g. one that refuses loopback hosts, is judged by Runtipi's status, port and containers).
+    from . import app_updates
+    answered_before = app_updates.baseline(c, rt, old, old_status, endpoint=app_updates._endpoint,
+                                           probe=app_updates._probe)
     steps: list[str] = []
     added: dict = {"secret": None, "host_access": False}
     log = lambda s: (steps.append(s), print(f"rename {old} -> {new}: {s}", file=sys.stderr, flush=True))  # noqa: E731
@@ -819,17 +848,33 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
                                              {**saved, "port": old_port}, timeout=120) if old_port else None),
             ("start old", lambda: (rt.start(old_urn), rt.wait_status(old_urn, {"running"}, 300))
              if old_status == "running" else None),
-            ("networks", lambda: cli.network_step(c, rt)),
-            ("registry", lambda: cli.write_registry(c, rt)),
         ):
             try:
                 fn()
             except Exception as e:  # noqa: BLE001 - every step is tried
                 errs.append(f"{name}: {type(e).__name__}: {str(e)[:160]}")
-        (bdir / "result.json").write_text(json.dumps({"rolled_back": not errs, "reason": reason, "steps": steps,
-                                                      "rollback_errors": errs}, indent=2))
-        return {"from": old, "to": new, "rolled_back": not errs, "error": reason, "steps": steps,
-                **({"rollback_errors": errs} if errs else {}), "backup": str(bdir)}
+        # The box-wide refreshes come last and only warn: they read every installed app, so one other app's
+        # unreadable folder must never make a restored app look half-moved (#1053).
+        warns, reg = [], None
+        try:
+            net = cli.network_step(c, rt) or {}
+            warns += [f"networks: {e}" for e in net.get("errors") or []]
+        except Exception as e:  # noqa: BLE001
+            warns.append(f"networks: {type(e).__name__}: {str(e)[:160]}")
+        try:
+            reg = cli.write_registry(c, rt)
+            warns += [f"registry: {w}" for w in (reg or {}).get("warnings") or []]
+        except Exception as e:  # noqa: BLE001
+            warns.append(f"registry: {type(e).__name__}: {str(e)[:160]}")
+        back = _old_is_back(c, rt, old, old_status, old_port, reg, answered_before,
+                            settle=settle, probe_seconds=probe_seconds)
+        ok = not errs and back is None
+        (bdir / "result.json").write_text(json.dumps({"rolled_back": ok, "reason": reason, "steps": steps,
+                                                      "rollback_errors": errs, "old_app": back or "back",
+                                                      "warnings": warns}, indent=2))
+        return {"from": old, "to": new, "rolled_back": ok, "error": reason, "steps": steps,
+                **({"rollback_errors": errs} if errs else {}), **({"old_app": back} if back else {}),
+                **({"warnings": warns} if warns else {}), "backup": str(bdir)}
 
     try:
         if old_status == "running":
@@ -869,10 +914,10 @@ def _migrate(c, old, new, *, dry_run, settle, probe_seconds, backup_root, repo=N
             log("Connection Router routes carried")
         if (r := saved_local["routes"]) is not None:
             doc = json.loads(r)
-            fixed = rename_in_routes(doc, old, new, old_view, _view_path(w))
+            fixed = rename_in_routes(doc, old, new)
             local["routes"].write_text(json.dumps(fixed, indent=2) + "\n")
-            was, now = (doc.get(old) or {}).get("view"), (fixed.get(new) or {}).get("view")
-            log("gateway route carried" + (f" (view {was} -> {now}: serve {now} and redirect {was} to it)" if was != now else ""))
+            view = (fixed.get(new) or {}).get("view")
+            log("gateway route carried" + (f" (still served at {view})" if view else ""))
         for f in CARRY_STATE_FILES:
             if (s := saved_local[f]) is not None:
                 local[f].write_text(json.dumps(rename_in_updates_state(json.loads(s), old, new),

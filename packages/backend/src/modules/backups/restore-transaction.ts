@@ -215,6 +215,7 @@ export class RestoreTransaction {
             throw new Error(directory.error);
           }
         }
+        await fs.promises.chmod(staged, await this.restoredMode(directory.source));
       }
     } catch (error) {
       for (const replacement of replacements) {
@@ -228,6 +229,17 @@ export class RestoreTransaction {
     }
 
     return replacements;
+  }
+
+  // mkdtemp makes the staging folder 0700, and copying into an existing folder keeps that mode, so every restored
+  // app-data, recipe and user-config folder used to end up root-only (#1053): the box user could no longer read the
+  // app's wizard.md, and every App Manager step that reads all apps failed. These three folders are never private
+  // (the private parts are subfolders, which keep their own modes), so they get the archived mode, at least 0755.
+  private async restoredMode(source: string | null) {
+    if (!source) {
+      return 0o755;
+    }
+    return ((await fs.promises.stat(source)).mode & 0o7777) | 0o755;
   }
 
   private async swapRestoredDirectories(replacements: RestoreDirectory[]) {
