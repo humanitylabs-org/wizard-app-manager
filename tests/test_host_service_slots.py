@@ -1,5 +1,5 @@
 """Host services fill system spots (wizard-agent-service#463): a healthy host Wizard Voice Service fills Voice and
-Transcription in `wam slots` while the owner's wizard/capability-registry switch is on; off, nothing changes."""
+Transcription in `wam slots` (on for everyone: the wizard/capability-registry switch was removed)."""
 from __future__ import annotations
 
 import json
@@ -41,15 +41,17 @@ def rows(reg):
     return {r["slot"]: r for r in slots.table(reg)}
 
 
-def test_switch_off_changes_nothing(voice):
-    reg = dict(BASE)
-    assert host_services.external_slots(reg, on=lambda: False) == {}
-    r = rows(reg)
+def test_no_host_service_entry_leaves_the_spots_empty():
+    r = rows(dict(BASE))
     assert r["voice"]["state"] == "empty" and r["transcription"]["state"] == "empty"
 
 
+def test_the_old_switch_is_gone():
+    assert not hasattr(host_services, "SWITCH") and not hasattr(host_services, "switch_on")
+
+
 def test_healthy_host_voice_service_fills_voice_and_transcription(voice):
-    reg = {**BASE, "external": host_services.external_slots(BASE, on=lambda: True)}
+    reg = {**BASE, "external": host_services.external_slots(BASE)}
     r = rows(reg)
     for slot in ("voice", "transcription"):
         assert r[slot]["state"] == "filled"
@@ -63,14 +65,14 @@ def test_healthy_host_voice_service_fills_voice_and_transcription(voice):
 
 def test_unhealthy_or_absent_service_fills_nothing(voice):
     voice["health"] = {"status": "starting", "provider": "voxtral"}
-    assert host_services.external_slots(BASE, on=lambda: True) == {}
+    assert host_services.external_slots(BASE) == {}
     voice["health"] = None
-    assert host_services.external_slots(BASE, on=lambda: True) == {}
+    assert host_services.external_slots(BASE) == {}
 
 
 def test_an_installed_app_keeps_its_own_spot(voice):
     reg = {"apps": [*BASE["apps"], {"id": "transcriber", "provides": ["transcription", "speech-to-text-engine"]}]}
-    ext = host_services.external_slots(reg, on=lambda: True)
+    ext = host_services.external_slots(reg)
     assert set(ext) == {"voice"}
     assert rows({**reg, "external": ext})["transcription"]["active"] == "transcriber"
 
@@ -101,8 +103,11 @@ def test_wam_slots_command_shows_the_host_voice_service(voice, tmp_path, monkeyp
     c = SimpleNamespace(home=tmp_path / "home", runtipi_root=root, host_ip=lambda: "127.0.0.1",
                         runtipi=lambda: SimpleNamespace(installed=lambda: installed))
     monkeypatch.setattr(cli, "Config", lambda: c)
-    for on, state in ((False, "empty"), (True, "filled")):
-        monkeypatch.setattr(host_services, "switch_on", lambda home=None, _on=on: _on)
+    for up, state in ((False, "empty"), (True, "filled")):
+        if not up:
+            voice["health"] = None
+        else:
+            voice["health"] = {"status": "ok", "provider": "voxtral", "model": "voxtral-mini"}
         assert cli.main(["slots"]) in (0, None)
         text = capsys.readouterr().out
         out = {line.split()[0]: line for line in text.splitlines() if line.split()}

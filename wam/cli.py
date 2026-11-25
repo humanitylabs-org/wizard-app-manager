@@ -183,9 +183,9 @@ def write_registry(c: Config, rt: Runtipi | None = None) -> dict:
             print(f"WARNING: {w}", file=sys.stderr, flush=True)
     reg['grants'] = read_grants(c, rt)
     ext = alongside.external_slots(c.home)
-    try:   # wizard-agent-service#463: a healthy host Wizard Voice Service fills Voice/Transcription (switch, off)
+    try:   # wizard-agent-service#463: a healthy host Wizard Voice Service fills Voice/Transcription
         from . import host_services
-        ext = {**host_services.external_slots(reg, c.home), **ext}
+        ext = {**host_services.external_slots(reg), **ext}
     except Exception:  # noqa: BLE001 - never fail the registry for it
         pass
     if ext:
