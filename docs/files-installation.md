@@ -18,7 +18,7 @@ continue to take precedence.
 ## Release gate
 
 A main merge is not an update of the public installer. A release snapshot must pin
-both the new App Manager revision and `oscarhenrycollins/files`' matching recipe
+both the new App Manager revision and `humanitylabs-org/files`' matching recipe
 commit before stable installs obtain this behavior. Keep historical release JSON
 and `releases/stable` untouched. Existing boxes require the normal approved
 installer/update path; reloading shell assets alone cannot update the recipe.

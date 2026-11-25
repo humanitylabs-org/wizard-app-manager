@@ -249,6 +249,27 @@ def follow(c, app_id: str, *, want: str | None = None, read=_read, write=_write,
         return None
 
 
+def pinned_old_name(src, pinned: str, *, github=None) -> bool:
+    """True when a release pin `pinned` names an old name of the repo the box records in `src` (`.wizard-source`).
+
+    The other order of `follow(want=)`: the box already followed a move (`wam app-updates`) while the release still
+    pins the old name (#1047: files, transcriber, secret-drop and wizard-claude left oscarhenrycollins). It holds
+    when the recorded repo is a public Standard source, GitHub serves `pinned` under the recorded name now, and both
+    owners are first-party. The fetch of the pinned commit still refuses a recipe with another app id."""
+    from . import index
+    if not isinstance(src, dict) or src.get("local") or src.get("source") not in FOLLOWED_SOURCES:
+        return False
+    if src.get("private") and src.get("source") != "standard":
+        return False
+    recorded = src.get("repo")
+    if not (isinstance(recorded, str) and REPO.fullmatch(recorded) and isinstance(pinned, str)
+            and REPO.fullmatch(pinned)) or _same(recorded, pinned):
+        return False
+    if not index.allowed({"repo": recorded}) or not index.allowed({"repo": pinned}):
+        return False
+    return _same(current_name(pinned, github), recorded)
+
+
 def follow_all(c, installed: list[dict], only=None, **kw) -> list[dict]:
     """`follow()` for every installed app of the Wizard store (or only those ids)."""
     from . import cli

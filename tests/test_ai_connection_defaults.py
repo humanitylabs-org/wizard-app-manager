@@ -39,7 +39,7 @@ def test_stock_defaults_install_claude_and_chatgpt_connection_apps():
     d = slots.load_defaults()
     assert d["ai-connection"]["app"] == "wizard-chatgpt" and d["ai-connection"]["multi"]
     assert d["claude-subscription"]["app"] == "wizard-claude"
-    assert d["claude-subscription"]["repo"] == "oscarhenrycollins/claude-connection"   # resolvable before indexing
+    assert d["claude-subscription"]["repo"] == "humanitylabs-org/claude-connection"   # resolvable before indexing
     assert not d["claude-subscription"].get("required")   # the owner may remove it
     todo = slots.to_install({"apps": []}, d)
     assert "wizard-chatgpt" in todo and "wizard-claude" in todo

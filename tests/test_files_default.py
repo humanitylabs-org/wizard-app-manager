@@ -8,7 +8,7 @@ def test_fresh_defaults_bundle_files_with_repo(monkeypatch):
     defaults = slots.load_defaults()
     assert defaults['files']['required'] is True
     assert 'files' in slots.to_install({'apps': []}, defaults)
-    assert slots.repo_for('files', defaults) == 'oscarhenrycollins/files'
+    assert slots.repo_for('files', defaults) == 'humanitylabs-org/files'
 
 
 def test_fresh_files_routes_without_saved_links_or_catalog(tmp_path, monkeypatch):
