@@ -2595,6 +2595,10 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._github(method, app_id.removeprefix('_github').lstrip('/'))
         if app_id.startswith('_host-access/'):   # the owner's own device accepts host access (host_access_gate.py)
             return self._host_access(method, app_id.removeprefix('_host-access/'))
+        if app_id.startswith('_builds/'):   # #997: the Install sheet's read of what the agent built (switch on only)
+            from . import agent_builds
+            if method == 'GET' and agent_builds.switch_on(c.home):
+                return self._builds(app_id.removeprefix('_builds/'))
         if app_id == '_recommended':
             from . import recommended
             if method == 'GET':
@@ -2610,6 +2614,15 @@ class StoreHandler(BaseHTTPRequestHandler):
                 if not si.ID.fullmatch(app_id):
                     raise ValueError("bad app id")
                 selection = store_selection.resolve(c, app_id, selection)
+                if selection.get('source') == 'build':   # #997: the same build again answers at once
+                    from . import agent_builds
+                    if agent_builds.current(c, selection):
+                        return self._json(200, {"app": app_id, "state": "installed", "note": agent_builds.CURRENT,
+                                                "sha256": selection["sha256"]})
+                    try:   # changed since the link, failed check, host access: refused now, nothing installed
+                        agent_builds.precheck(c, selection)
+                    except agent_builds.BuildError as e:
+                        return self._json(e.code, {"error": str(e)[:600]})
                 from . import store_start
                 busy = store_start.busy(c, app_id) if selection.get('operation') != 'install' else None
                 if busy:   # #711: never a second update on top of one Runtipi still runs (a retry after a timeout)
@@ -2625,6 +2638,17 @@ class StoreHandler(BaseHTTPRequestHandler):
         else:
             code, body = si.status(app_id)
         return self._json(code, body)
+
+    def _builds(self, build: str) -> None:
+        """GET _builds/<id>: name, summary, version, source hash, check result and installed state of the app the
+        owner's agent built (agent_builds.describe). Read-only; the owner gate in _go already ran."""
+        from . import agent_builds
+        try:
+            return self._json(200, agent_builds.describe(self.cfg, build))
+        except agent_builds.BuildError as e:
+            return self._json(e.code, {"error": str(e)[:300]})
+        except (ValueError, OSError) as e:
+            return self._json(400, {"error": str(e)[:200]})
 
     def _start(self, method: str, app: str) -> None:
         """POST _start/<app> {}: start a stopped app; GET _start/<app>: that job (store_start.py). The owner gate in
@@ -3447,7 +3471,8 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "verify":   # one fixed pre-install check: build, API round trip, restart, check, screenshots
         from .verify import main as verify_main
         return verify_main(argv[1:])
-    if argv and argv[0] in {"new", "check", "install-local", "update-local", "publish", "builder-skill", "package-inline"}:
+    if argv and argv[0] in {"new", "check", "install-local", "update-local", "publish", "builder-skill", "package-inline",
+                            "build-link"}:
         from .builder import main as builder_main
         return builder_main(argv)
     if argv and argv[0] == "views":
@@ -3901,6 +3926,8 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"note: gateway store install listener not started ({e})", file=sys.stderr)
             start_network_watch(c)
             start_connections_watch(c)
+            from . import agent_builds   # #997: tells the agents' `wam build-link` whether install links work
+            agent_builds.start_watch(c)
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
             print(f"wizard-app-manager API on http://{c.bind}:{c.port} (index {c.index})", flush=True)
             srv.serve_forever()

@@ -13,6 +13,12 @@ ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
 
 def resolve(c, app_id, body):
+    if isinstance(body, dict) and body.get('source') == 'build':
+        # #997: what the owner's agent built on this box (agent_builds.py), only with wizard/install-agent-builds
+        # on. Off, the body falls through and is refused below exactly as before.
+        from . import agent_builds
+        if agent_builds.switch_on(getattr(c, 'home', None)):
+            return agent_builds.resolve(c, app_id, body)
     if body == {}:
         # Backward-compatible old Standard Get. Never let an ID-only caller opt into
         # a private source, first-result repository, update or channel switch.
@@ -86,6 +92,9 @@ def _private_to_standard(existing, selection):
 
 def execute(c, app_id, selection):
     from . import cli, private
+    if selection['source'] == 'build':   # #997: resolved only with the switch on (resolve above)
+        from . import agent_builds
+        return agent_builds.execute(c, app_id, selection)
     source, entry = selection['source'], selection['entry']
     if app_id == 'hermes-agent':
         from . import hermes_lock

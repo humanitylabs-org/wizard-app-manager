@@ -55,10 +55,10 @@ fails, report the missing piece and repair with the Wizard installer, not a priv
    configured build worker when the installation names one: copy the bundle alongside the source
    (`rsync -a "$(readlink -f ~/.wizard-os/builder/current)/" worker:wizard-builder/`) and run
    `wizard-builder/bin/wam verify <source>` there by path.
-5. **If it passes, install and hand over.** Install through the installation's App Manager lifecycle with its
-   authenticated same-origin route (for a local proof, `wam install-local <source> --run`), open it in Wizard at
-   `?open=<app-id>`, and give the owner the link. Fix what he
-   reports in the app and ship the fix the same way. Finally ask: "is there a component here other apps could share?"
+5. **If it passes, hand it over: `wam build-link <source>`.** Pass on its `say` line as is (the link and "Tap Install to
+   add it to your Apps."), or do its `do` line. Never give the owner a terminal command or call the app installed
+   before he says so; every change needs a new link.
+   Finally ask: "is there a component here other apps could share?"
 6. **Stop rule.** Five failed `wam verify` runs in total ends the loop: stop and report what works, what fails (the
    last receipt) and the one decision or fix needed.
 
@@ -137,4 +137,4 @@ signing require the owner's explicit approval of that prepared artifact. `--exec
   `wam builder-bundle install` only when doctor fails; it keeps a newer bundle. Never copy it into personal skills.
 - A `summary` containing `: ` is fine; `wam package-inline` quotes it.
 - `<source>` and `<id>` are placeholders you resolve, not text to paste.
-- `install-local` is a developer proof; production install and same-origin routing belong to App Manager.
+- `install-local` is a developer proof; the owner installs through the `wam build-link` link.

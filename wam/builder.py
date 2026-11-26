@@ -629,6 +629,52 @@ def prepare_publish(root, repo):
                           'next': 'Human approves this exact source hash, repo/visibility/topic/catalog and signing separately. Release owner then patches source in an isolated copy, checks it, creates/pushes repo, relists and reads back.'}}
 
 
+OFF_STEP = ('Install through the installation\'s App Manager lifecycle with its authenticated same-origin route '
+            '(for a local proof, `wam install-local <source> --run`), open it in Wizard at `?open=<app-id>`, and give '
+            'the owner the link.')
+TAP = 'Tap Install to add it to your Apps.'
+
+
+def build_link(root, os_home=None, env=None):
+    """`wam build-link <source>` (#997): the link the owner taps to install (or update) what the agent built here.
+
+    The box writes `<dev>/.install-agent-builds.json` into the agent's dev folder while the owner has switch
+    wizard/install-agent-builds on (agent_builds.sync_markers); without it, install links don't work on this Wizard
+    and the answer is the builder skill's earlier step 5, word for word. The link carries only the app id and the
+    source hash: the box finds the folder itself and refuses the link once a file changes."""
+    env = os.environ if env is None else env
+    root = Path(root).resolve()
+    os_home = (Path(os_home) if os_home is not None else _home()).resolve()
+    dev = os_home / 'dev'
+    try:
+        marker = json.loads((dev / '.install-agent-builds.json').read_text())
+    except (OSError, ValueError):
+        marker = {}
+    if not (isinstance(marker, dict) and marker.get('on') is True):
+        return {'state': 'install_links_off', 'do': OFF_STEP, 'note': 'install links are off on this Wizard'}
+    doc = wizardmd.front_matter((root / 'wizard.md').read_text())
+    app_id = _id(str(doc.get('id', '')))
+    if root != (dev / app_id).resolve() or (dev / app_id).is_symlink():
+        raise ValueError(f'The App Manager finds builds only in {dev}/<app id>; move this source to {dev / app_id} '
+                         f'(not a link) and run wam build-link again.')
+    report = check_app(root, proposal=True)
+    if not report['ok']:
+        raise ValueError('App check failed, so the owner could not install it: ' +
+                         json.dumps([r for r in report['rules'] if not r['ok'] and r['severity'] == 'error']))
+    digest = source_hash(root)
+    origin = ''
+    for cand in (env.get('WIZARD_SHELL_ORIGIN'), marker.get('origin')):
+        if isinstance(cand, str) and re.fullmatch(r'https://[A-Za-z0-9.-]+(:\d{1,5})?/?', cand.strip()):
+            origin = cand.strip().rstrip('/')
+            break
+    link = f'{origin}/wizard-os-home/?view=install&build={app_id}&sha256={digest}'
+    return {'state': 'link', 'id': app_id, 'name': doc.get('name'), 'sha256': digest, 'link': link,
+            'say': f'{link}\n{TAP}',
+            'note': 'End with this link and these words. Never give the owner a terminal command, and never call the '
+                    'app installed until the owner says so. After any later change run wam build-link again: the old '
+                    'link stops working once a file changes.'}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='wam builder', description=__doc__)
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -641,6 +687,7 @@ def main(argv=None):
     up = sub.add_parser('update-local'); up.add_argument('source', type=Path); up.add_argument('--run', action='store_true')
     sk = sub.add_parser('builder-skill'); sk.add_argument('--hermes-home', type=Path)
     inline = sub.add_parser('package-inline'); inline.add_argument('source', type=Path)
+    bl = sub.add_parser('build-link', help='The install link for the owner (switch wizard/install-agent-builds).'); bl.add_argument('source', type=Path)
     a = ap.parse_args(argv)
     try:
         if a.cmd == 'new':
@@ -663,6 +710,8 @@ def main(argv=None):
             out = update_local(a.source, run=a.run)
         elif a.cmd == 'builder-skill':
             out = install_skill(hermes_home=a.hermes_home)
+        elif a.cmd == 'build-link':
+            out = build_link(a.source)
         elif a.cmd == 'package-inline':
             from .builder_assets import package_inline
             package_inline(a.source)

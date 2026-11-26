@@ -370,7 +370,10 @@ def listing(home: Path | None = None, fetch=_get, pages: Pages | None = None, ap
     apps, status = _app_rows(home, app_rows)
     return {"channel": chan, "channel_name": "For testers" if chan == "latest" else "For everyone", "locked": locked,
             "note": ("Feature switches are for testers: choose For testers in Settings › About & updates."
-                     if locked else ""), "switches": rows + list(apps), "apps": list(status)}
+                     if locked else ""), "switches": rows + list(apps), "apps": list(status),
+            # What this App Manager can do, so the shell only offers what the box supports (#997: the Install
+            # sheet for an app the agent built, used while wizard/install-agent-builds is on)
+            "install_agent_builds": True}
 
 
 def is_on(tid: str, home: Path | None = None, pages: Pages | None = None, timeout: float = 10) -> bool:

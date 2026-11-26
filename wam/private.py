@@ -326,48 +326,69 @@ def prepare(runtipi_root: Path, store: str, repo: str, tok: str | None = None, *
         if have == commit and not release and not source_pin and 'chats' not in (d.get('provides') or []):
             return rec
 
-        cfg = json.loads(cfg_p.read_text())
-        cfg["id"] = app_id
-        # Runtipi requires source even when a valid private manifest omitted it.
-        # Bind it to the fetched repository, never to a catalog/browser URL.
-        cfg["source"] = f"https://github.com/{repo}"
-        cat = d.get("category")
-        cfg["categories"] = [cat if cat in CATEGORIES else ("agent" if d.get("type") == "agent" else "app")]
-        cfg["tipi_version"] = max(int(cfg.get("tipi_version") or 1), old_tipi + 1 if have else old_tipi)   # new commit = update
-        cfg["short_desc"] = cfg.get("short_desc") or str(d.get("summary") or "")
-        for svc in (compose.get("services") or {}).values():   # box-only by default, like the App Manager does
-            xr = (svc or {}).get("x-runtipi") or {}
-            if xr.get("is_main") and xr.get("internal_port") and not svc.get("ports"):
-                svc["ports"] = [f"127.0.0.1:${{APP_PORT}}:{xr['internal_port']}"]
-
-        # Runtipi otherwise adds its public shared network to every is_main service.
-        # Preserve the declared internal bootstrap through a final Compose override.
-        if (d.get('private_inference') or {}).get('provisioning_service'):
-            write_sealed_bootstrap(runtipi_root, store, app_id, compose)
-
-
-        tmp = dst.with_name(f"{app_id}.tmp-{os.getpid()}")
-        shutil.rmtree(tmp, ignore_errors=True)
-        (tmp / "metadata").mkdir(parents=True)
-        (tmp / "config.json").write_text(json.dumps(cfg, indent=2) + "\n")
-        (tmp / "docker-compose.yml").write_text(yaml.safe_dump(compose, sort_keys=False))
-        body = wizardmd.body(wtext)
-        (tmp / "metadata" / "description.md").write_text(("" if body.startswith("# ") else f"# {d.get('name') or app_id}\n\n") + body + "\n")
-        (tmp / "wizard.md").write_text(wtext)
-        from . import chats_views
-        chats_views.prepare(src, tmp, d, commit)
-        if isinstance(d.get("skill"), str) and (src / d["skill"]).is_file():
-            shutil.copy2(src / d["skill"], tmp / "SKILL.md")
-        for cand in (cfg_p.parent / "metadata" / "logo.jpg", src / str(d.get("icon") or "-"), cfg_p.parent / "logo.jpg"):
-            if cand.is_file():
-                shutil.copy2(cand, tmp / "metadata" / "logo.jpg")
-                break
-        if (cfg_p.parent / "data").is_dir():
-            shutil.copytree(cfg_p.parent / "data", tmp / "data")
-        (tmp / ".wizard-commit").write_text(commit + "\n")
-        (tmp / ".wizard-source").write_text(json.dumps({"repo": repo, "git": f"https://github.com/{repo}", "private": True, "source": source}) + "\n")
-        if release or source_pin:
-            (tmp / ".wizard-selection").write_text(json.dumps({"repo": repo, "commit": commit}) + "\n")
-        # Never rmtree-then-rename: Runtipi (root) rewrites this folder, so rmtree can silently leave files.
-        dirswap.replace_dir(tmp, dst)
+        write_recipe(runtipi_root, store, src, d, wtext, cfg_p, compose, commit,
+                     source_url=f"https://github.com/{repo}",
+                     source_doc={"repo": repo, "git": f"https://github.com/{repo}", "private": True, "source": source},
+                     selection={"repo": repo, "commit": commit} if (release or source_pin) else None)
     return rec
+
+
+def write_recipe(runtipi_root: Path, store: str, src: Path, d: dict, wtext: str, cfg_p: Path, compose: dict,
+                 commit: str, *, source_url: str, source_doc: dict, selection: dict | None) -> None:
+    """Write the checked app `src` (manifest `d`, text `wtext`) into the Wizard store folder
+    `repos/<store>/apps/<id>`: config, compose, description, wizard.md, skill, logo, `.wizard-commit`,
+    `.wizard-source` = `source_doc` and, when given, the `.wizard-selection` pin. Shared by prepare (a GitHub fetch)
+    and agent_builds (a snapshot of what the owner's agent built on this box)."""
+    app_id = str(d["id"])
+    dst = runtipi_root / "repos" / store / "apps" / app_id
+    old_tipi = 0
+    if (dst / "config.json").is_file():
+        try:
+            old_tipi = int(json.loads((dst / "config.json").read_text()).get("tipi_version") or 0)
+        except (ValueError, json.JSONDecodeError):
+            old_tipi = 0
+    have = (dst / ".wizard-commit").read_text().strip() if (dst / ".wizard-commit").is_file() else ""
+    cfg = json.loads(cfg_p.read_text())
+    cfg["id"] = app_id
+    # Runtipi requires source even when a valid private manifest omitted it.
+    # Bind it to the fetched repository, never to a catalog/browser URL.
+    cfg["source"] = source_url
+    cat = d.get("category")
+    cfg["categories"] = [cat if cat in CATEGORIES else ("agent" if d.get("type") == "agent" else "app")]
+    cfg["tipi_version"] = max(int(cfg.get("tipi_version") or 1), old_tipi + 1 if have else old_tipi)   # new commit = update
+    cfg["short_desc"] = cfg.get("short_desc") or str(d.get("summary") or "")
+    for svc in (compose.get("services") or {}).values():   # box-only by default, like the App Manager does
+        xr = (svc or {}).get("x-runtipi") or {}
+        if xr.get("is_main") and xr.get("internal_port") and not svc.get("ports"):
+            svc["ports"] = [f"127.0.0.1:${{APP_PORT}}:{xr['internal_port']}"]
+
+    # Runtipi otherwise adds its public shared network to every is_main service.
+    # Preserve the declared internal bootstrap through a final Compose override.
+    if (d.get('private_inference') or {}).get('provisioning_service'):
+        write_sealed_bootstrap(runtipi_root, store, app_id, compose)
+
+
+    tmp = dst.with_name(f"{app_id}.tmp-{os.getpid()}")
+    shutil.rmtree(tmp, ignore_errors=True)
+    (tmp / "metadata").mkdir(parents=True)
+    (tmp / "config.json").write_text(json.dumps(cfg, indent=2) + "\n")
+    (tmp / "docker-compose.yml").write_text(yaml.safe_dump(compose, sort_keys=False))
+    body = wizardmd.body(wtext)
+    (tmp / "metadata" / "description.md").write_text(("" if body.startswith("# ") else f"# {d.get('name') or app_id}\n\n") + body + "\n")
+    (tmp / "wizard.md").write_text(wtext)
+    from . import chats_views
+    chats_views.prepare(src, tmp, d, commit)
+    if isinstance(d.get("skill"), str) and (src / d["skill"]).is_file():
+        shutil.copy2(src / d["skill"], tmp / "SKILL.md")
+    for cand in (cfg_p.parent / "metadata" / "logo.jpg", src / str(d.get("icon") or "-"), cfg_p.parent / "logo.jpg"):
+        if cand.is_file():
+            shutil.copy2(cand, tmp / "metadata" / "logo.jpg")
+            break
+    if (cfg_p.parent / "data").is_dir():
+        shutil.copytree(cfg_p.parent / "data", tmp / "data")
+    (tmp / ".wizard-commit").write_text(commit + "\n")
+    (tmp / ".wizard-source").write_text(json.dumps(source_doc) + "\n")
+    if selection:
+        (tmp / ".wizard-selection").write_text(json.dumps(selection) + "\n")
+    # Never rmtree-then-rename: Runtipi (root) rewrites this folder, so rmtree can silently leave files.
+    dirswap.replace_dir(tmp, dst)
