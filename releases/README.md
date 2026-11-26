@@ -2610,3 +2610,8 @@ Channel: on latest only.
 
 Canonical: https://github.com/humanitylabs-org/wizard-os/pull/952 (release train). `releases/stable` → 0.3.419; `promotions/0.3.419.json` sha256 `c5b0508e41f0e4b8518381afd1c60d3850297ce5ef6148e767c467c57d47b290`.
 Soaked 72h on For testers. Installed upgrade 0.3.346 → 0.3.419 passed: wizard-os docs/acceptance/promote-0.3.419.md.
+
+## stable 0.3.435
+
+Canonical: https://github.com/humanitylabs-org/wizard-os/pull/958 (release train). `releases/stable` → 0.3.435; `promotions/0.3.435.json` sha256 `5a7de4c2f9fb2c2dcaa2cbacccd7e8f210284d993012a83e3c3d3d6e49f1bf44`.
+Soaked 72h on For testers. Installed upgrade 0.3.419 → 0.3.435 passed: wizard-os docs/acceptance/promote-0.3.435.md.
