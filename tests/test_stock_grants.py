@@ -206,3 +206,11 @@ def test_a_malformed_app_file_is_never_replaced(box):
     with pytest.raises(ValueError, match="refusing to replace"):
         sg.Grants(root, rt, home).reconcile()
     assert (p / "grants.json").read_text() == '{"outgoing": []}'
+
+
+def test_files_never_leave_the_runtipi_root(tmp_path):
+    f = sg.Files(tmp_path / "runtipi")
+    with pytest.raises(ValueError, match="outside the Runtipi root"):
+        f.read(tmp_path / "runtipi" / "repos" / ".." / ".." / "etc")
+    with pytest.raises(ValueError, match="outside the Runtipi root"):
+        f.write(tmp_path / "elsewhere.json", "{}")

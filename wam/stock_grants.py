@@ -333,9 +333,19 @@ class Files:
             self._rt = RuntipiFiles(self.root)
         return self._rt
 
+    def _inside(self, p: Path) -> Path:
+        """Every file this module touches is under the Runtipi root; anything else (an id that slipped through as
+        `..`) is refused before it is opened."""
+        base = os.path.normpath(str(self.root))
+        full = os.path.normpath(os.path.join(base, str(p)))
+        if not full.startswith(base + os.sep):
+            raise ValueError(f"{p} is outside the Runtipi root")
+        return Path(full)
+
     def read(self, p: Path) -> str | None:
+        p = self._inside(p)
         try:
-            return Path(p).read_text()
+            return p.read_text()
         except FileNotFoundError:
             return None
         except PermissionError:
@@ -344,7 +354,7 @@ class Files:
 
     def write(self, p: Path, text: str, mode: int = 0o644) -> bool:
         """Replace p with text (nothing when it already holds exactly that). True when it changed."""
-        p = Path(p)
+        p = self._inside(p)
         if self.read(p) == text:
             return False
         try:
