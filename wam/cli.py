@@ -1975,8 +1975,8 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
     `only` limits it to those apps (the quick shell update must never touch another default the owner moved).
     """
     from . import stock_runtipi
-    if stock_runtipi.on(c.home):   # wizard-os#822: the stock store carries each app's commit; Runtipi updates it
-        return []
+    if stock_runtipi.on(c.home):   # wizard-os#822: the stock store carries the release's commits
+        return stock_release_updates(c, rt, failed, only)
     doc = release_pins.load() or {}
     if not doc.get("default_apps"):
         return []
@@ -2056,6 +2056,69 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
             out.append(app_id)
         except (SystemExit, RuntimeError, RuntipiError, OSError, ValueError, yaml.YAMLError, private.PrivateError) as e:
             failed[app_id] = f"update to release source failed: {e}"[:200]
+    return out
+
+
+def stock_release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None = None) -> list[str]:
+    """release_updates on a stock box (wizard-os#822). The generated store carries the For testers release's default
+    apps at the release's commits (wizard-app-store scripts/stock-store), so an installer run moves every installed
+    default whose store copy is newer (tipi_version) to it, through the same checked update path, and checks the
+    commit afterwards. The store is pulled first so a rerun sees the newest release."""
+    try:
+        rt.pull()
+    except Exception as e:  # noqa: BLE001 - an unreachable store still lets the installed apps run
+        print(f"note: the Wizard store could not be refreshed ({str(e)[:120]}); defaults stay as they are",
+              file=sys.stderr)
+    have = set(installed_ids(rt))
+    defaults = [d.get("app") for d in slots.load_defaults().values() if (d or {}).get("app")]
+
+    def tipi(p: Path) -> int:
+        try:
+            return int(json.loads((p / "config.json").read_text()).get("tipi_version") or 0)
+        except (OSError, ValueError, TypeError, AttributeError):
+            return 0
+    out = []
+    for app_id in dict.fromkeys(defaults):
+        if app_id not in have or (only is not None and app_id not in only):
+            continue
+        store_copy = c.runtipi_root / "repos" / STORE / "apps" / app_id
+        live = c.runtipi_root / "apps" / STORE / app_id
+        if tipi(store_copy) <= tipi(live):
+            continue
+        if app_id == "hermes-agent":
+            from .hermes_lock import authorize
+            try:
+                authorize()
+            except (ValueError, OSError):
+                continue   # independent Hermes pause
+        try:
+            want = (store_copy / ".wizard-commit").read_text().strip()
+            print(f"updating {app_id} to the Wizard store's {want[:12]}", file=sys.stderr)
+            rec = stock_record(c, app_id)
+            urn = f"{app_id}:{STORE}"
+            before = (rt.app(urn) or {}).get("app") or {}
+            info = json.loads((store_copy / "config.json").read_text())
+
+            def fill(rt_, urn_, info=info, uses=rec.get("uses") or []):
+                current = ((rt_.app(urn_) or {}).get("app") or {}).get("config") or {}
+                form, missing = build_form(c, app_id, info, current, uses=uses)
+                if missing:
+                    return missing
+                form = {**form, **current}
+                if form != current:
+                    rt_.req("PATCH", f"/app-lifecycle/{urn_}/update-config", form, timeout=120)
+                return []
+            res = app_update(c, app_id, settings=fill)
+            if res.get("error"):
+                raise RuntimeError(res["error"])
+            expected_status = 'running' if before.get('status') == 'running' or res.get('revived') else 'stopped'
+            if res.get('status') != expected_status:
+                raise RuntimeError("app update did not finish in its previous running/stopped state")
+            if (live / ".wizard-commit").read_text().strip() != want:
+                raise RuntimeError("installed app does not match the Wizard store (update may have rolled back)")
+            out.append(app_id)
+        except (SystemExit, RuntimeError, RuntipiError, OSError, ValueError, index.IndexError_) as e:
+            failed[app_id] = f"update to the Wizard store failed: {e}"[:200]
     return out
 
 

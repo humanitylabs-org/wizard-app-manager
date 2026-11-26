@@ -118,11 +118,34 @@ def test_stock_store_refuses_a_wizardapps_store_pointing_elsewhere(box, monkeypa
     assert rt.calls == []
 
 
-def test_release_updates_leave_a_stock_box_to_its_store(box, monkeypatch):
+def test_release_updates_on_stock_follow_the_store_not_the_release_pins(box, monkeypatch):
     c, home, root = box
     stock_runtipi.write_marker(home, store=TRIAL)
-    monkeypatch.setattr(cli.release_pins, "load", lambda: (_ for _ in ()).throw(AssertionError("no release pins")))
-    assert cli.release_updates(c, FakeRt(root), {}) == []
+    monkeypatch.setattr(cli.release_pins, "resolve", lambda ref: (_ for _ in ()).throw(AssertionError("no release pins")))
+    for app_id, repo in (("wizard-ux", "humanitylabs-org/wizard-ux"), ("files", "humanitylabs-org/files")):
+        store_app(root, app_id, repo, commit="b" * 40)
+        live = root / "apps" / "wizardapps" / app_id
+        live.mkdir(parents=True)
+        (live / "config.json").write_text(json.dumps({"tipi_version": 1}))
+        (live / ".wizard-commit").write_text("a" * 40)
+    # the store's wizard-ux is newer (tipi 2); files is the same
+    cfg = root / "repos" / "wizardapps" / "apps" / "wizard-ux" / "config.json"
+    cfg.write_text(json.dumps({"id": "wizard-ux", "tipi_version": 2}))
+    rt = FakeRt(root, stores=[{"slug": "wizardapps", "name": "Wizard Apps", "url": TRIAL, "enabled": True}])
+    rt.installed = lambda: [{"app": {"id": a, "appName": a}, "urn": f"{a}:wizardapps"} for a in ("wizard-ux", "files")]
+    monkeypatch.setattr(cli, "installed_ids", lambda rt_: ["wizard-ux", "files"])
+    rt.app = lambda urn: {"app": {"status": "running", "config": {}}}
+    monkeypatch.setattr(cli.Config, "runtipi", lambda self: rt)
+    updated = []
+
+    def fake_update(c_, app_id, **k):
+        updated.append(app_id)
+        (root / "apps" / "wizardapps" / app_id / ".wizard-commit").write_text("b" * 40)
+        return {"status": "running"}
+    monkeypatch.setattr(cli, "app_update", fake_update)
+    failed = {}
+    assert cli.release_updates(c, rt, failed) == ["wizard-ux"] and updated == ["wizard-ux"] and failed == {}
+    assert ("POST", "/marketplace/pull", None) in rt.calls
 
 
 def test_switch_off_keeps_the_index_store(box, monkeypatch):
