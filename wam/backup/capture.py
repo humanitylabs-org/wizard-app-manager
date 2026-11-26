@@ -645,12 +645,15 @@ def _room(box: Box, agents: list[Agent], sizes: dict, app_sizes: list[int]) -> d
 
 
 @datafs.with_access
-def stream_room(box: Box) -> dict:
+def stream_room(box: Box, host_home: Path | None = None) -> dict:
     """The scheduled backup's work-space estimate for this box as it is now, the same one a streamed run makes
-    first (`wam alongside` shows it before the host Hermes joins the backup, #960)."""
+    first (`wam alongside` shows it before the host Hermes joins the backup, #960). `host_home`: count that host
+    Hermes in as the main agent, as alongside mode would (Resources' Include it asks before it turns it on)."""
     rows = box.registry_rows()
     found = box.installed()
     agents = box.agents(found)
+    if host_home is not None and not any(a.runtime == "host" for a in agents):
+        agents = [Agent(MAIN_AGENT, True, Path(host_home), "host"), *(a for a in agents if not a.main)]
     installed, _ = one_copy_per_app(found, rows, prefer={a.urn for a in agents if a.urn})
     sizes = {a.id: _agent_sizes(a.home) for a in agents}
     return _room(box, agents, sizes, _app_sizes(box, installed, {a.urn for a in agents if a.urn}))

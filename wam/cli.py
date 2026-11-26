@@ -2582,6 +2582,8 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._switch_feedback(method)
         if app_id == APP_UPDATES_PATH:   # Settings → About & updates → Apps (on for everyone, wizard-ux#1191)
             return self._app_updates(method)
+        if app_id == BACKUP_HEALTH_PATH:   # Home → Resources → Health: backup rows (switch wizard/backup-health)
+            return self._backup_health(method)
         if app_id == DISK_PATH:   # Settings → Network & security: one plain disk encryption line (disk.py)
             if method != "GET":
                 return self._json(405, {"error": "GET only"})
@@ -2967,6 +2969,28 @@ class StoreHandler(BaseHTTPRequestHandler):
         return self._json(400, {"error": 'send {"mode": "auto"|"ask"}, {"hold": id}, {"unhold": id} or '
                                          '{"action": "apply"} (optional "app": id or "apps": [ids])'})
 
+    def _backup_health(self, method: str) -> None:
+        """Home > Resources > Health rows from this box's own backup (wizard-ux#1743): 404 while the switch
+        wizard/backup-health is off. GET: backup_health.status() ({available, checks: [rows]}). POST
+        {"action": "include-main-agent"}: Include it (disk estimate first, then `wam alongside`); 200 either way, with
+        ok + message or reason in plain words. _go already checked the owner (and Origin + X-Wizard-Store for POST)."""
+        from . import backup_health as bh
+        c = self.cfg
+        if not bh.switch_on(c.home):
+            return self._json(404, {"error": "not found"})
+        if method == "GET":
+            return self._json(200, bh.status(c.home))
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 256:
+                return self._json(400, {"error": "invalid body size"})
+            body = json.loads(self.rfile.read(size))
+        except (ValueError, OSError) as e:
+            return self._json(400, {"error": str(e)[:200]})
+        if body != {"action": "include-main-agent"}:
+            return self._json(400, {"error": 'send {"action": "include-main-agent"}'})
+        return self._json(200, bh.include(c))
+
     def _updates(self, method: str) -> None:
         """GET: installed vs the channel's release and the owner's mode. POST {"mode": "auto"|"ask"} saves the choice;
         POST {"channel": "stable"|"latest"} saves the channel;
@@ -3022,6 +3046,7 @@ class GatewayStoreHandler(StoreHandler):
 
 UPDATES_PATH = "_updates"
 APP_UPDATES_PATH = "_app-updates"
+BACKUP_HEALTH_PATH = "_backup-health"
 FEATURE_SWITCHES_PATH = "_feature-switches"
 SWITCH_FEEDBACK_PATH = "_switch-feedback"
 MAIN_COMPARE_PATH = "_main-compare"
