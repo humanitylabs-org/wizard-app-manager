@@ -129,6 +129,21 @@ def _agent_binding(w: dict):
     return {"required": value.get("required") is True, "purpose": str(value.get("purpose") or "").strip()[:120]}
 
 
+def _personal_data(w: dict):
+    """wizard.md `personal_data` (wizard-os spec/WIZARD_MD.md "Personal data", wizard-os#929): the app holds the owner's
+    personal data. A one-line phrase of what it reads ("reads your email", at most 80 characters) or `true`. Anything
+    else (false, empty, a list or a map) is dropped here, never the app. Only a label: unlike `privacy: private` it
+    changes nothing about which agents can use the app; the Privacy check and the install sheet's private AI card read
+    it, each behind its own switch."""
+    value = w.get("personal_data") if isinstance(w, dict) else None
+    if value is True:
+        return True
+    if not isinstance(value, str):
+        return None
+    line = " ".join(value.split())[:80].strip().rstrip(".")
+    return line or None
+
+
 # Browser permissions an app frame may be granted (wizard-os spec/WIZARD_MD.md, wizard-ux#1629). The shell's
 # switch wizard/app-location decides whether a declared one is used; apps.json only carries the declaration.
 BROWSER_PERMISSIONS = ("geolocation",)
@@ -205,6 +220,8 @@ def build(installed: list[dict], store: str, host: str, runtipi_root: Path, *, o
             # Optional tag (James, 23 Oct 2026): `privacy: private` keeps the app off every non-private agent until
             # the owner ticks one. Anything else, or no line at all, is a standard app.
             **({"privacy": "private"} if str(w.get("privacy", "")).strip().lower() == "private" else {}),
+            # Optional label (wizard-os#929): the app holds personal data, with a line of what it reads.
+            **({"personal_data": pd} if (pd := _personal_data(w)) is not None else {}),
             # Optional (wizard-os spec/OWNER_PROOF.md): the platform's owner edge signs this app's owner requests.
             # A malformed declaration is dropped here (wam check reports it), so the app keeps its own sign-in.
             **({"owner_proof": proof} if owner_proof_enabled and (proof := _owner_proof(w)) else {}),
