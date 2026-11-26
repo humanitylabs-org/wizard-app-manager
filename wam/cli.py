@@ -2149,6 +2149,7 @@ def partly_running(urn: str, status: str | None) -> bool:
 # install runs recover right after bootstrap, while apps are still coming up on a busy box.
 RECOVER_LIST_TRIES = 5
 RECOVER_SETTLE_S = 90
+STOCK_STRANDED_STATES = ("starting", "restarting", "updating")   # recover(): stock statuses a reboot can strand
 STARTING_STATES = {"created", "restarting"}   # docker states of a container that is on its way up
 
 
@@ -2204,6 +2205,12 @@ def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
     from . import update_strand
     stranded = [u for u, st in installed.items() if u not in want and update_strand.stranded(c, u, st)]
     want += stranded
+    # wizard-os#822: stock Runtipi never settles a status its queue left mid-way (the fork's status sync did), so an
+    # app caught by a reboot while starting, restarting or updating keeps that status with its containers stopped.
+    # It was meant to run: start it like an app recorded running. Stopping/uninstalling ones stay as they are.
+    from . import stock_runtipi
+    if stock_runtipi.on(getattr(c, "home", None)):
+        want += [u for u, st in installed.items() if u not in want and st in STOCK_STRANDED_STATES]
     started, failed, skipped = [], {}, []
     for urn in dict.fromkeys(want):
         app_id = urn.split(":", 1)[0]

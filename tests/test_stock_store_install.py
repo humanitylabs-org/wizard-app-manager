@@ -175,3 +175,24 @@ def test_installer_reads_the_switch_like_wam(box, monkeypatch, tmp_path):
     stock_runtipi.write_marker(home, store=TRIAL)
     assert stock() == "1"
     assert stock(WIZARD_STOCK_RUNTIPI="0") == "0"
+
+
+@pytest.mark.parametrize("on", [True, False])
+def test_recover_starts_an_app_a_reboot_left_restarting_only_on_stock(box, monkeypatch, on):
+    """Seen on a stock box rebooted mid-installer: hermes-agent kept status `restarting` with its containers stopped
+    (stock Runtipi never settles it), so the rerun left the agent down. A stopping app stays stopped."""
+    c, home, _ = box
+    if on:
+        stock_runtipi.write_marker(home, store=TRIAL)
+    rows = [("wizard-ux:wizardapps", "updating"), ("hermes-agent:wizardapps", "restarting"),
+            ("browser:wizardapps", "stopping")]
+    rt = type("RT", (), {"installed": lambda self: [{"info": {"urn": u}, "app": {"status": s}} for u, s in rows]})()
+    monkeypatch.setattr(c, "runtipi", lambda: rt, raising=False)
+    started = []
+    monkeypatch.setattr(cli.slots, "load_defaults", lambda: {"shell": {"app": "wizard-ux"}})
+    monkeypatch.setattr(cli, "_recover_states", lambda urn, settle: ["running"] if "ux" in urn else ["exited"])
+    monkeypatch.setattr(cli, "app_lifecycle", lambda c, verb, urn: started.append(urn) or {"status": "running"})
+    monkeypatch.setattr(cli, "write_registry", lambda c, rt=None: {})
+    res = cli.recover(c)
+    assert started == (["hermes-agent:wizardapps"] if on else [])
+    assert res["failed"] == {}
