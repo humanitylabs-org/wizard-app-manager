@@ -391,4 +391,78 @@ describe('BackupArchive Linux filesystem security', () => {
       await fs.promises.rm(rootDir, { recursive: true, force: true });
     }
   });
+
+  // wizard-app-manager#1074: the app data is copied once while the app runs; the stopped copy moves unchanged files.
+  it.runIf(process.platform === 'linux')('moves unchanged warm copies into place and copies changed files again', async () => {
+    const rootDir = await fs.promises.mkdtemp('/tmp/runtipi-backup-warm-');
+    const source = path.join(rootDir, 'app-data');
+    const warmDir = path.join(rootDir, 'warm');
+    const destination = path.join(rootDir, 'content', 'app-data');
+    const logger = createLogger();
+    const manager = new BackupArchive(new FilesystemService(logger), logger);
+    const realNow = Date.now();
+    try {
+      await writeFile(path.join(source, 'media', 'photo.bin'), 'photo-1');
+      await writeFile(path.join(source, 'db.sqlite'), 'page-A');
+      await writeFile(path.join(source, 'linked.txt'), 'linked');
+      await fs.promises.link(path.join(source, 'linked.txt'), path.join(source, 'media', 'linked-too.txt'));
+      // the files were written well before the warm copy (their times are older than the settle margin)
+      const now = vi.spyOn(Date, 'now').mockReturnValue(realNow + 10_000);
+      const warm = await manager.prestageBackupDirectory(source, warmDir);
+      now.mockRestore();
+
+      expect(warm && [...warm.files.keys()].sort()).toEqual([path.join(source, 'db.sqlite'), path.join(source, 'media', 'photo.bin')]);
+      // while the app still ran: the database page changed in place (same size) and a new file came
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      await fs.promises.writeFile(path.join(source, 'db.sqlite'), 'page-B');
+      await writeFile(path.join(source, 'media', 'new.bin'), 'new');
+
+      await manager.stageBackupDirectory(source, destination, 'app data', undefined, { warm, move: true });
+
+      const read = (name: string) => fs.promises.readFile(path.join(destination, name), 'utf8');
+      await expect(read('media/photo.bin')).resolves.toBe('photo-1');
+      await expect(read('db.sqlite')).resolves.toBe('page-B');
+      await expect(read('media/new.bin')).resolves.toBe('new');
+      await expect(read('linked.txt')).resolves.toBe('linked');
+      await expect(read('media/linked-too.txt')).resolves.toBe('linked');
+      // the unchanged photo was moved out of the warm copy, the changed database was not used
+      await expect(fs.promises.access(path.join(warmDir, 'media', 'photo.bin'))).rejects.toThrow();
+      await expect(fs.promises.readFile(path.join(warmDir, 'db.sqlite'), 'utf8')).resolves.toBe('page-A');
+      await expect(fs.promises.access(path.join(rootDir, 'content', '.backup-quarantine'))).rejects.toThrow();
+    } finally {
+      vi.restoreAllMocks();
+      await fs.promises.rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === 'linux')('never records a file changed just before the warm copy (a live database)', async () => {
+    const rootDir = await fs.promises.mkdtemp('/tmp/runtipi-backup-warm-');
+    const source = path.join(rootDir, 'app-data');
+    const logger = createLogger();
+    const manager = new BackupArchive(new FilesystemService(logger), logger);
+    try {
+      await writeFile(path.join(source, 'db.sqlite'), 'live');
+
+      const warm = await manager.prestageBackupDirectory(source, path.join(rootDir, 'warm'));
+
+      expect(warm?.files.size).toBe(0);
+      await expect(fs.promises.readFile(path.join(rootDir, 'warm', 'db.sqlite'), 'utf8')).resolves.toBe('live');
+    } finally {
+      await fs.promises.rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === 'linux')('a warm copy that fails leaves nothing behind and the stopped copy takes everything', async () => {
+    const rootDir = await fs.promises.mkdtemp('/tmp/runtipi-backup-warm-');
+    const logger = createLogger();
+    const manager = new BackupArchive(new FilesystemService(logger), logger);
+    try {
+      const warm = await manager.prestageBackupDirectory(path.join(rootDir, 'missing'), path.join(rootDir, 'warm'));
+
+      expect(warm).toBeUndefined();
+      await expect(fs.promises.access(path.join(rootDir, 'warm'))).rejects.toThrow();
+    } finally {
+      await fs.promises.rm(rootDir, { recursive: true, force: true });
+    }
+  });
 });

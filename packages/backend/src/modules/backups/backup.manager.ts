@@ -20,6 +20,11 @@ import type { AppJobContext } from '../app-lifecycle/services/app-job.service';
 
 export class BackupRecoveryError extends Error {}
 
+// Wizard (#1074, switch wizard/shorter-app-updates): `prestage` copies the app data while the app still runs, so the
+// stopped copy only re-copies what changed; `restart` replaces starting the old version again after the stopped copy
+// (an update starts its new version there instead).
+export type BackupOptions = { prestage?: boolean; restart?: () => Promise<void> };
+
 export type MigrationBackupState = {
   version: 1;
   initialized: boolean;
@@ -109,8 +114,8 @@ export class BackupManager implements OnModuleInit {
     }
   }
 
-  public async backupApp(appUrn: AppUrn, wasRunning = false, context?: AppJobContext) {
-    const filename = await this.createBackup(appUrn, wasRunning, context);
+  public async backupApp(appUrn: AppUrn, wasRunning = false, context?: AppJobContext, options?: BackupOptions) {
+    const filename = await this.createBackup(appUrn, wasRunning, context, options);
 
     try {
       const app = await this.appsRepository.getAppByUrn(appUrn);
@@ -123,7 +128,7 @@ export class BackupManager implements OnModuleInit {
     return filename;
   }
 
-  public async createBackup(appUrn: AppUrn, wasRunning = false, context?: AppJobContext) {
+  public async createBackup(appUrn: AppUrn, wasRunning = false, context?: AppJobContext, options: BackupOptions = {}) {
     context?.signal.throwIfAborted();
     await this.reconcileRestore(appUrn);
 
@@ -146,23 +151,30 @@ export class BackupManager implements OnModuleInit {
 
             context?.signal.throwIfAborted();
             let snapshotError: unknown;
+            const { appDataDir, appInstalledDir } = manager.appFilesManager.getAppPaths(appUrn);
+            const copyFilter = () => {
+              context?.signal.throwIfAborted();
+              return true;
+            };
+            // Wizard: only the app's own top-level backups folder, never an app folder that is merely named backups.
+            const appDataFilter = (source: string) => copyFilter() && source !== path.join(appDataDir, 'backups');
+
+            // Wizard (#1074): copy the app data once while the app still runs, so the stopped copy only has to take
+            // what changed since. Best effort: without it the stopped copy takes everything, as before.
+            const warmDirectory = path.join(temporaryDirectory, 'warm');
+            const warm = options.prestage ? await manager.archiveFiles.prestageBackupDirectory(appDataDir, warmDirectory, appDataFilter) : undefined;
 
             try {
               context?.progress('stopping');
               await manager.docker.composeApp(appUrn, 'stop');
               context?.progress('copying');
-              const { appDataDir, appInstalledDir } = manager.appFilesManager.getAppPaths(appUrn);
-              const copyFilter = () => {
-                context?.signal.throwIfAborted();
-                return true;
-              };
 
               await manager.archiveFiles.stageBackupDirectory(
                 appDataDir,
                 path.join(contentDirectory, 'app-data'),
                 'app data',
-                // Wizard: only the app's own top-level backups folder, never an app folder that is merely named backups.
-                (source) => copyFilter() && source !== path.join(appDataDir, 'backups'),
+                appDataFilter,
+                options.prestage ? { warm, move: true } : undefined,
               );
 
               await manager.archiveFiles.stageBackupDirectory(appInstalledDir, path.join(contentDirectory, 'app'), 'app files', copyFilter);
@@ -203,7 +215,10 @@ export class BackupManager implements OnModuleInit {
 
             if (wasRunning) {
               try {
-                await manager.docker.composeApp(appUrn, 'up --detach --remove-orphans');
+                // Wizard (#1074): an update asks to start its new version here instead (one stop per update), but
+                // only from a complete copy; a failed or cancelled copy starts the old version as before.
+                if (options.restart && !snapshotError && !context?.signal.aborted) await options.restart();
+                else await manager.docker.composeApp(appUrn, 'up --detach --remove-orphans');
               } catch (error) {
                 const original = snapshotError instanceof Error ? `${snapshotError.message}. ` : '';
                 const message = error instanceof Error ? error.message : String(error);
@@ -211,6 +226,7 @@ export class BackupManager implements OnModuleInit {
               }
             }
 
+            if (warm) await fs.promises.rm(warmDirectory, { recursive: true, force: true }).catch(() => undefined);
             if (snapshotError) throw snapshotError;
             context?.signal.throwIfAborted();
 
@@ -373,7 +389,13 @@ export class BackupManager implements OnModuleInit {
 
     // Wizard: confine the live directories to Runtipi's own folders before any filesystem call (CodeQL path-injection).
     const safe = (directory: string) => this.filesystem.getSafeFilePath(directory);
-    return new RestoreTransaction(appUrn, [safe(appDataDir), safe(appInstalledDir), safe(userConfigDir)], this.filesystem, this.appsRepository, this.logger);
+    return new RestoreTransaction(
+      appUrn,
+      [safe(appDataDir), safe(appInstalledDir), safe(userConfigDir)],
+      this.filesystem,
+      this.appsRepository,
+      this.logger,
+    );
   }
 
   // This admission is only for a local source checkout. Restore archives still

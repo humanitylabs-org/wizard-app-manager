@@ -30,6 +30,7 @@ const createCommand = (
     stubEnsureAppDir?: boolean;
     initialSubnet?: string | null;
     context?: AppJobContext;
+    shortDowntime?: boolean;
   } = {},
 ) => {
   const logger = mock<LoggerService>();
@@ -114,7 +115,14 @@ const createCommand = (
   ]);
 
   const moduleRef = { get: (token: unknown) => services.get(token) } as ModuleRef;
-  const command = new UpdateAppCommand(moduleRef, docker, options.performBackup ?? true, options.wasRunningBeforeUpdate ?? false, options.context);
+  const command = new UpdateAppCommand(
+    moduleRef,
+    docker,
+    options.performBackup ?? true,
+    options.wasRunningBeforeUpdate ?? false,
+    options.context,
+    options.shortDowntime ?? false,
+  );
   const ensureAppDir =
     options.stubEnsureAppDir === false
       ? undefined
@@ -774,4 +782,71 @@ test.each(['unavailable', 'missing'] as const)('retains recovery resources when 
     'down --remove-orphans',
     'up --detach --force-recreate --remove-orphans',
   ]);
+});
+
+// wizard-app-manager#1074 (switch wizard/shorter-app-updates): one stop per update of a running app with a backup.
+test('with short downtime the backup stop is the only stop: the new version starts from it, never the old one', async () => {
+  const { command, dockerService, backupManager } = createCommand({ wasRunningBeforeUpdate: true, shortDowntime: true });
+  const order: string[] = [];
+  dockerService.composeApp.mockImplementation(async (_urn, step) => {
+    order.push(step);
+    return { success: true, stdout: '', stderr: '' };
+  });
+  backupManager.backupApp.mockImplementation(async (_urn, _running, _context, options) => {
+    order.push('backup stop');
+    expect(options?.prestage).toBe(true);
+    await options?.restart?.();
+    order.push('archive');
+    return 'test-backup.tar.gz';
+  });
+
+  const result = await command.execute(appUrn, {});
+
+  expect(result).toEqual({ success: true, message: `App ${appUrn} updated successfully` });
+  expect(order).toEqual(['pull', 'backup stop', 'down --remove-orphans', 'up --detach --force-recreate --remove-orphans', 'archive']);
+  expect(backupManager.backupApp).toHaveBeenCalledWith(appUrn, true, undefined, expect.objectContaining({ prestage: true }));
+});
+
+test('with short downtime a backup that did not start the new version is followed by the usual update', async () => {
+  const { command, dockerService } = createCommand({ wasRunningBeforeUpdate: true, shortDowntime: true });
+
+  const result = await command.execute(appUrn, {});
+
+  expect(result.success).toBe(true);
+  expect(dockerService.composeApp.mock.calls.map(([, step]) => step)).toEqual([
+    'pull',
+    'down --remove-orphans',
+    'up --detach --force-recreate --remove-orphans',
+  ]);
+});
+
+test('with short downtime a failed archive after the switch puts the previous version back', async () => {
+  const { command, dockerService, backupManager, filesystem } = createCommand({ wasRunningBeforeUpdate: true, shortDowntime: true });
+  backupManager.backupApp.mockImplementation(async (_urn, _running, _context, options) => {
+    await options?.restart?.();
+    throw new Error('archive failed');
+  });
+
+  const result = await command.execute(appUrn, {});
+
+  expect(result).toMatchObject({ success: false, rollbackSucceeded: true });
+  const steps = dockerService.composeApp.mock.calls.map(([, step]) => step);
+  expect(steps).toEqual([
+    'pull',
+    'down --remove-orphans',
+    'up --detach --force-recreate --remove-orphans',
+    'up --detach --force-recreate --remove-orphans',
+  ]);
+  expect(filesystem.copyDirectory).toHaveBeenLastCalledWith('/tmp/runtipi-update-abc/previous-app', '/data/apps/test');
+});
+
+test.each([
+  { shortDowntime: false, wasRunningBeforeUpdate: true },
+  { shortDowntime: true, wasRunningBeforeUpdate: false },
+])('without short downtime or for a stopped app the backup is taken as before (%o)', async (options) => {
+  const { command, backupManager } = createCommand(options);
+
+  await command.execute(appUrn, {});
+
+  expect(backupManager.backupApp).toHaveBeenCalledWith(appUrn, options.wasRunningBeforeUpdate, undefined);
 });

@@ -27,6 +27,10 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     private readonly performBackup: boolean = false,
     private readonly wasRunningBeforeUpdate: boolean = false,
     private readonly context?: AppJobContext,
+    // Wizard (wizard-app-manager#1074, switch wizard/shorter-app-updates): a running app with a backup is stopped once.
+    // Its data is copied while it runs, only what changed is copied again while it is stopped, and the update goes
+    // straight to the new version from there (no start of the old version in between).
+    private readonly shortDowntime: boolean = false,
   ) {
     super(moduleRef, docker);
   }
@@ -154,31 +158,49 @@ export class UpdateAppCommand extends AppLifecycleCommand {
 
         const app = await appsRepository.getAppByUrn(appUrn);
         backupMaxBackups = app?.maxBackups ?? config.get('userSettings').maxBackups;
-      } else if (this.performBackup) {
+      }
+
+      const switchToTarget = async () => {
+        this.context?.disableCancellation();
+        this.context?.progress('updating');
+        logger.info(`Updating app ${appUrn}`);
+        deploymentMayHaveStopped = true;
+        await dockerService.composeApp(appUrn, 'down --remove-orphans');
+
+        await marketplaceService.copyAppFromRepoToInstalled(appUrn);
+        await this.ensureAppDir(appUrn, targetForm, { pruneContainers: false, ...permissionOptions() });
+        await appHelpers.generateEnvFile(appUrn, targetForm, { pruneSources: false });
+
+        if (hasPendingMigrations) {
+          await appMigrationService.runMigrations(appUrn, pendingMigrations);
+        }
+
+        if (this.wasRunningBeforeUpdate) {
+          this.context?.progress('restarting');
+          await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
+          // Docker creates bind-mount folders a new version adds during `up`, after ensureAppDir's chmod; open them
+          // here too (as install does) so a non-root container can write them before the app's next restart.
+          if (!preservePermissions) await appFilesManager.setAppDataDirPermissions(appUrn);
+        }
+      };
+
+      let switched = false;
+      if (!hasPendingMigrations && this.performBackup && this.shortDowntime && this.wasRunningBeforeUpdate) {
+        // #1074: the backup's stop is the update's only stop. The backup starts the new version instead of the old
+        // one, then packs its archive while the new version runs; a backup that fails after that still rolls back.
+        await backupManager.backupApp(appUrn, true, this.context, {
+          prestage: true,
+          restart: async () => {
+            deploymentMayHaveStopped = true;
+            await switchToTarget();
+            switched = true;
+          },
+        });
+      } else if (!hasPendingMigrations && this.performBackup) {
         await backupManager.backupApp(appUrn, this.wasRunningBeforeUpdate, this.context);
       }
 
-      this.context?.disableCancellation();
-      this.context?.progress('updating');
-      logger.info(`Updating app ${appUrn}`);
-      deploymentMayHaveStopped = true;
-      await dockerService.composeApp(appUrn, 'down --remove-orphans');
-
-      await marketplaceService.copyAppFromRepoToInstalled(appUrn);
-      await this.ensureAppDir(appUrn, targetForm, { pruneContainers: false, ...permissionOptions() });
-      await appHelpers.generateEnvFile(appUrn, targetForm, { pruneSources: false });
-
-      if (hasPendingMigrations) {
-        await appMigrationService.runMigrations(appUrn, pendingMigrations);
-      }
-
-      if (this.wasRunningBeforeUpdate) {
-        this.context?.progress('restarting');
-        await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
-        // Docker creates bind-mount folders a new version adds during `up`, after ensureAppDir's chmod; open them
-        // here too (as install does) so a non-root container can write them before the app's next restart.
-        if (!preservePermissions) await appFilesManager.setAppDataDirPermissions(appUrn);
-      }
+      if (!switched) await switchToTarget();
 
       // Only now does no container run from the old source copy (wizard-recorder#17). Cleanup never fails the update.
       try {

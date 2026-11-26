@@ -7,6 +7,24 @@ import type { LoggerService } from '@/core/logger/logger.service';
 
 export const migrationMetadataFilename = 'runtipi-migrations.json';
 
+// Wizard (#1074): a copy of an app's data made while the app still ran. `files` maps each copied file's source path
+// to where its copy is and the exact stats the source had while it was copied.
+export type WarmCopy = { files: Map<string, { copy: string; stats: ExactStats }> };
+type ExactStats = { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint };
+// A file changed within this long before the warm copy started may change again within the same timestamp tick
+// without its times moving (a live database): such a file is always copied again while the app is stopped.
+const WARM_SETTLED_NS = 2_000_000_000n;
+const exactStats = (stats: fs.BigIntStats): ExactStats => ({
+  dev: stats.dev,
+  ino: stats.ino,
+  size: stats.size,
+  mtimeNs: stats.mtimeNs,
+  ctimeNs: stats.ctimeNs,
+});
+const sameStats = (a: ExactStats, b: ExactStats) =>
+  a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
+type WarmMode = { record: WarmCopy; settledBefore: bigint } | { reuse: WarmCopy };
+
 export class BackupArchive {
   constructor(
     private readonly filesystem: FilesystemService,
@@ -143,13 +161,39 @@ export class BackupArchive {
     await Promise.all(workers);
   }
 
-  public async stageBackupDirectory(source: string, destination: string, name: string, filter?: fs.CopyOptions['filter']) {
+  // Wizard (#1074): copy `source` into `destination` while the app still runs. Only plain files with one name that
+  // did not change while (or shortly before) they were copied are recorded; anything else is left for the stopped
+  // copy. Best effort: any failure leaves no warm copy, and the stopped copy then takes everything as before.
+  public async prestageBackupDirectory(source: string, destination: string, filter?: fs.CopyOptions['filter']): Promise<WarmCopy | undefined> {
+    if (process.platform !== 'linux') return undefined;
+    const warm: WarmCopy = { files: new Map() };
+    try {
+      const settledBefore = BigInt(Date.now()) * 1_000_000n - WARM_SETTLED_NS;
+      await this.copySourceToQuarantine(source, destination, filter, source, false, undefined, { record: warm, settledBefore });
+      return warm;
+    } catch (error) {
+      this.logger.warn('The app data could not be copied ahead while the app runs; it is copied while stopped:', error);
+      await fs.promises.rm(destination, { recursive: true, force: true }).catch(() => undefined);
+      return undefined;
+    }
+  }
+
+  public async stageBackupDirectory(
+    source: string,
+    destination: string,
+    name: string,
+    filter?: fs.CopyOptions['filter'],
+    // Wizard (#1074): `warm` files whose source is unchanged are moved into place instead of copied; `move` moves the
+    // checked quarantine into place instead of copying it a second time.
+    options?: { warm?: WarmCopy; move?: boolean },
+  ) {
     const quarantine = path.join(path.dirname(destination), '.backup-quarantine', path.basename(destination));
     try {
       // Wizard: hard links whose every name lives inside this folder (a uv/pip cache, a lock file) are the app's own
       // data and are copied as plain files. A file also linked from outside the folder is still refused.
       const internalLinks = await this.internalHardLinks(source, filter, quarantine);
-      await this.copySourceToQuarantine(source, quarantine, filter, source, false, internalLinks);
+      const warm = options?.warm ? { reuse: options.warm } : undefined;
+      await this.copySourceToQuarantine(source, quarantine, filter, source, false, internalLinks, warm);
     } catch (error) {
       this.logger.error(`Error copying ${name} to backup quarantine:`, error);
       throw new Error(`Failed to copy ${name} for backup`, { cause: error });
@@ -162,7 +206,13 @@ export class BackupArchive {
 
     await this.validateRestoreDirectory(quarantine, { allowSymlinks: true, rejectHardLinks: true });
 
-    const copiedToArchive = await this.filesystem.copyDirectory(quarantine, destination, { dereference: false, verbatimSymlinks: true });
+    const moved = options?.move
+      ? await fs.promises.rename(quarantine, destination).then(
+          () => true,
+          () => false,
+        )
+      : false;
+    const copiedToArchive = moved || (await this.filesystem.copyDirectory(quarantine, destination, { dereference: false, verbatimSymlinks: true }));
     if (!copiedToArchive) {
       throw new Error(`Failed to copy ${name} for backup`);
     }
@@ -253,6 +303,7 @@ export class BackupArchive {
     filterSource = source,
     child = false,
     internalLinks?: Map<string, number>,
+    warm?: WarmMode,
   ): Promise<void> {
     if (process.platform !== 'linux') {
       await this.copySourceToQuarantineOutsideLinux(source, destination, filter, filterSource, internalLinks);
@@ -303,14 +354,31 @@ export class BackupArchive {
       const sourceHandlePath = `/proc/self/fd/${sourceHandle.fd}`;
 
       if (stats.isFile()) {
+        if (warm && 'record' in warm) {
+          // The warm copy (app still running) only takes files with one name; the stopped copy checks links as always.
+          if (stats.nlink > 1) return;
+          const before = exactStats(await sourceHandle.stat({ bigint: true }));
+          await this.copyFileFromHandle(sourceHandlePath, destination);
+          const after = exactStats(await sourceHandle.stat({ bigint: true }));
+          if (sameStats(before, after) && after.ctimeNs < warm.settledBefore && after.mtimeNs < warm.settledBefore) {
+            warm.record.files.set(filterSource, { copy: destination, stats: after });
+          }
+          return;
+        }
+
         if (stats.nlink > 1 && !this.internalHardLink(stats, internalLinks)) {
           throw new Error('Backup contains unsupported file types');
+        }
+
+        if (warm && 'reuse' in warm && (await this.reuseWarmFile(warm.reuse, filterSource, sourceHandle, destination))) {
+          return;
         }
 
         await this.copyFileFromHandle(sourceHandlePath, destination);
         return;
       }
       if (!stats.isDirectory()) {
+        if (warm && 'record' in warm) return;
         throw new Error('Backup contains unsupported file types');
       }
 
@@ -328,12 +396,29 @@ export class BackupArchive {
           path.join(filterSource, entry.name),
           true,
           internalLinks,
+          warm,
         );
       }
       // Wizard: keep a folder's own mode (e.g. an app's 0700 private folder), as `cp -r` did before 4.11.
       await fs.promises.chmod(destination, stats.mode & 0o7777);
     } finally {
       await sourceHandle.close().catch((error) => this.logger.warn(`Failed to close backup file ${source}`, error));
+    }
+  }
+
+  // Wizard (#1074): move the warm copy of this file into place when the source has exactly the stats it had while it was
+  // copied (same inode, size, modification and change time). Anything else, or a failed move, means copy it again.
+  private async reuseWarmFile(warm: WarmCopy, filterSource: string, sourceHandle: fs.promises.FileHandle, destination: string): Promise<boolean> {
+    const hit = warm.files.get(filterSource);
+    if (!hit) return false;
+    warm.files.delete(filterSource);
+    try {
+      if (!sameStats(hit.stats, exactStats(await sourceHandle.stat({ bigint: true })))) return false;
+      await fs.promises.mkdir(path.dirname(destination), { recursive: true });
+      await fs.promises.rename(hit.copy, destination);
+      return true;
+    } catch {
+      return false;
     }
   }
 
