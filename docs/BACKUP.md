@@ -20,6 +20,14 @@ provisioned by the same `os.sh`), so one engine serves all of them; the Mac app 
   AWS S3, Backblaze B2, MinIO), an SFTP server or a local/external folder; daily by default; only changes upload
   after the first run; keeps 7 daily, 4 weekly and 6 monthly snapshots; checked after every run and read back
   weekly.
+- **Backup health in Home › Resources** (switch `wizard/backup-health`, wizard-ux#1743, `wam/backup_health.py`): with
+  scheduled backups on, Health has a Backup row built from `backup-status.json` (green: last backup, checked, kept;
+  amber: older than 36 h, not checked, or warnings in plain words; red: older than 48 h, failed, or never succeeded;
+  7x the ages on a weekly schedule), read by the shell at `store-install/_backup-health` (owner only, 404 while
+  off). While the last backup left the main agent out (#885), a Main agent row offers **Include it**: the #960 disk
+  estimate with the host Hermes counted in, then `wam alongside` only when it fits; otherwise it says how much is
+  needed and free. The first run that leaves it out sends one Notifications message (link: `?view=backup-health`);
+  it is sent again only after a backup included it in between.
 
 ## Interrupted restores and Undo
 

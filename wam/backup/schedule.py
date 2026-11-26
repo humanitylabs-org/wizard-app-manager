@@ -410,11 +410,17 @@ def run(box: Box, scheduled: bool = False, now: float | None = None) -> dict:
         return {"ok": True, "skipped": "scheduled backups are off"}
     try:
         with lock(box):
-            return _run(box, cfg, now)
+            st = _run(box, cfg, now)
     except Busy as e:
         if scheduled:
             _note_skipped(box, str(e))
         raise
+    try:   # Home > Resources: tell the owner once when the main agent is left out (wizard-ux#1743, switch-gated)
+        from .. import backup_health
+        backup_health.after_run(box.home, st)
+    except Exception as e:  # noqa: BLE001 - telling the owner never fails the backup
+        log(f"backup health note not sent: {str(e)[:120]}")
+    return st
 
 
 def _note_skipped(box: Box, reason: str) -> None:

@@ -909,7 +909,7 @@ def reconcile_settings(c, rt, app_id: str) -> list[str]:
     return []
 
 
-def _notify(c, title: str, message: str, priority: str = "default", required: bool = False) -> bool:
+def _notify(c, title: str, message: str, priority: str = "default", required: bool = False, link: str = "") -> bool:
     """Best effort: one line in the owner's Notifications inbox when that app is installed. True when it was taken
     (`required`: a JSON-RPC error counts as not delivered, so the caller can try again later)."""
     try:
@@ -919,7 +919,8 @@ def _notify(c, title: str, message: str, priority: str = "default", required: bo
         if not url:
             return False
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-            "name": "notify", "arguments": {"title": title, "message": message, "priority": priority}}}).encode()
+            "name": "notify", "arguments": {"title": title, "message": message, "priority": priority,
+                                            **({"link": link} if link else {})}}}).encode()
         got = urllib.request.urlopen(urllib.request.Request(url, data=body, method="POST", headers={
             "content-type": "application/json", "accept": "application/json, text/event-stream"}), timeout=15).read()
         if required:
