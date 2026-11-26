@@ -86,8 +86,15 @@ class NotInStore(LookupError):
 def record(root: Path, store: str, app_id: str) -> dict:
     """An index-like record for one app, read from the git store Runtipi cloned (repos/<store>/apps/<id>), so an
     install on a stock box never asks the App Index: {id, repo, uses, provides, install: {commit}, commit, source}."""
+    import re
     from . import wizardmd
-    d = Path(root) / "repos" / store / "apps" / app_id
+    # Ids and store slugs are single path names (Runtipi's own rule), so the folder stays inside the store.
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", app_id or "") or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", store or ""):
+        raise NotInStore(f"'{app_id}' is not an app id in the Wizard store ({store})")
+    base = (Path(root) / "repos" / store / "apps").resolve()
+    d = (base / app_id).resolve()
+    if d.parent != base:
+        raise NotInStore(f"'{app_id}' is not an app id in the Wizard store ({store})")
     if not (d / "config.json").is_file():
         raise NotInStore(f"no app with id '{app_id}' in the Wizard store ({store})")
     try:

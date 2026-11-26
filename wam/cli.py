@@ -131,7 +131,7 @@ def store_ok(c: Config, s: dict | None) -> bool:
 def ensure_store(c: Config, rt: Runtipi) -> None:
     """The Wizard store is the index itself (no git catalog): it must exist and be enabled."""
     from . import stock_runtipi
-    if stock_runtipi.on(c.home):
+    if stock_runtipi.on(getattr(c, "home", None)):
         return ensure_stock_store(c, rt)
     s = {x.get("slug"): x for x in rt.stores()}.get(STORE)
     if store_ok(c, s):
@@ -157,7 +157,7 @@ def ensure_stock_store(c: Config, rt: Runtipi) -> None:
     renamed, as above. A `wizardapps` store pointing anywhere else (an App Index URL left by the fork) is refused
     by name: stock Runtipi can't read an index, and changing a store's URL is the owner's call."""
     from . import stock_runtipi
-    url = stock_runtipi.box_store_url(c.home)
+    url = stock_runtipi.box_store_url(getattr(c, "home", None))
     s = {x.get("slug"): x for x in rt.stores()}.get(STORE)
     if s and str(s.get("url") or "").rstrip("/") != url.rstrip("/"):
         raise SystemExit(f"the Wizard store ({STORE}) on this Runtipi reads {s.get('url')}, not the stock store {url}; "
@@ -201,7 +201,7 @@ def stock_record(c: Config, ref: str) -> dict:
         return find()
     except stock_runtipi.NotInStore as e:
         raise index.IndexError_(f"{e}; this box installs only apps in the Wizard store "
-                                f"({stock_runtipi.box_store_url(c.home)})") from None
+                                f"({stock_runtipi.box_store_url(getattr(c, "home", None))})") from None
 
 
 def read_grants(c: Config, rt) -> list:
@@ -1608,7 +1608,7 @@ def resolve_any(c: Config, ref: str, *, pin_repo: str | None = None) -> dict:
     On a stock-Runtipi box (wizard-os#822) the git store is the only source: see stock_record.
     """
     from . import stock_runtipi
-    if stock_runtipi.on(c.home):
+    if stock_runtipi.on(getattr(c, "home", None)):
         return stock_record(c, ref)
     pinned = release_pins.resolve(ref)
     if pinned:
@@ -1975,7 +1975,7 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
     `only` limits it to those apps (the quick shell update must never touch another default the owner moved).
     """
     from . import stock_runtipi
-    if stock_runtipi.on(c.home):   # wizard-os#822: the stock store carries the release's commits
+    if stock_runtipi.on(getattr(c, "home", None)):   # wizard-os#822: the stock store carries the release's commits
         return stock_release_updates(c, rt, failed, only)
     doc = release_pins.load() or {}
     if not doc.get("default_apps"):
