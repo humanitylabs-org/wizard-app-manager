@@ -550,6 +550,15 @@ def running_all(home: Path | None = None) -> list[dict]:
 
 # ---------------------------------------------------------------- verify / roll back
 
+def was_up(status: str | None, states: list[str]) -> str | None:
+    """#1063: the state an update must bring an app back to. Runtipi records `stopped` for an app with one container
+    up and another crash-looping or stopped (it says `running` only when every container runs); that app was meant
+    to run, so it counts as `running` and must be running again after its update. Otherwise Runtipi's status."""
+    if status == "stopped" and any(s in ("running", "restarting") for s in states):
+        return "running"
+    return status
+
+
 def _containers(urn: str) -> list[str]:
     from . import cli
     try:
@@ -717,7 +726,9 @@ def rollback(c, rt, urn: str, started_ms: int, before: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         print(f"WARNING: networks after rolling back {urn}: {e}", file=sys.stderr)
     after = ((rt.app(urn) or {}).get("app") or {})
-    ok = status == before["status"] and int(after.get("version") or 0) == before["from"]
+    # a half-running app (#1063) may come back as Runtipi recorded it before: `stopped`, some containers up
+    ok = status in (before["status"], before.get("recorded_status") or before["status"]) \
+        and int(after.get("version") or 0) == before["from"]
     return {"rolled_back": ok, "status": status, "version": after.get("version"),
             **({} if ok else {"error": f"rollback left the app {status} on version {after.get('version')}"})}
 
@@ -822,9 +833,10 @@ def store_update(c, app_id: str, update, *, settle: float = SETTLE_SECONDS, prob
     to, to_name = _recipe_version(Path(c.runtipi_root) / "repos" / cli.STORE / "apps" / app_id)
     _, from_name = _recipe_version(Path(c.runtipi_root) / "apps" / cli.STORE / app_id)
     name = display_name(c.runtipi_root, cli.STORE, app_id)
-    status = row.get("status")
+    states = containers(urn)
+    status = was_up(row.get("status"), states)   # #1063: half running counts as running
     before = {"id": app_id, "name": name, "from": have, "to": to if to is not None else have, "status": status,
-              "running": containers(urn).count("running"),
+              "recorded_status": row.get("status"), "running": states.count("running"),
               "endpoint_ok": baseline(c, rt, app_id, status, endpoint=endpoint, probe=probe)}
     started_ms = int(time.time() * 1000)
     try:
@@ -945,7 +957,9 @@ def _summary(done: list, rolled: list, failed: list, needs: list, renamed: list 
         parts.append("Moved " + ", ".join(nm(r) for r in renamed) + " to " + ("its" if len(renamed) == 1 else "their")
                      + " new release; everything you saved came along.")
     if done:
-        parts.append("Updated " + ", ".join(f"{nm(d)} ({d['to_version'] or d['to']})" for d in done) + ".")
+        parts.append("Updated " + ", ".join(f"{nm(d)} ({d['to_version'] or d['to']})"
+                                            + (", left stopped as you had it" if d.get("left_stopped") else "")
+                                            for d in done) + ".")
     if rolled:
         parts.append("Kept the previous version of " + ", ".join(nm(r) for r in rolled)
                      + " because the new one did not work; it is tried again when a newer version ships.")
@@ -1308,7 +1322,9 @@ def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: 
         _set_running(h, r, "preparing", started)   # #733: pages read it via owner_status()
         urn = f"{r['id']}:{cli.STORE}"
         states = _containers(urn)
-        before = {**r, "running": states.count("running"), "endpoint_ok": baseline(c, rt, r["id"], r["status"])}
+        up = was_up(r["status"], states)   # #1063: half running (a container crash-looping) counts as running
+        before = {**r, "status": up, "recorded_status": r["status"], "running": states.count("running"),
+                  "endpoint_ok": baseline(c, rt, r["id"], up)}
         started_ms = int(time.time() * 1000)
         print(f"updating {r['id']} {r['from']} -> {r['to']}", file=sys.stderr, flush=True)
 
@@ -1331,7 +1347,9 @@ def _apply_locked(c, h: Path, only: list[str] | None, *, dry_run: bool, notify: 
         step = "update" if res.get("error") else "check after update"
         if problem is None:
             fails.pop(r["id"], None)
-            done.append({**r, "version": res.get("version")})
+            done.append({**r, "version": res.get("version"), "status": res.get("status"),
+                         **({"left_stopped": True} if before["status"] == "stopped" else {}),
+                         **({"started_again": True} if up != r["status"] else {})})
             continue
         fails[r["id"]] = {"to": r["to"], "at": int(time.time()), "reason": problem[:300]}
         try:

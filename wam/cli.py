@@ -2006,6 +2006,19 @@ def _app_container_states(urn: str) -> list[str]:
     return p.stdout.split()
 
 
+def partly_running(urn: str, status: str | None) -> bool:
+    """#1063: Runtipi records an app `running` only while EVERY container runs, so an app with one container up and
+    another crash-looping (or stopped) is recorded `stopped`. Such an app was not stopped by its owner: any container
+    running or restarting means it was meant to run. Docker unreadable: False (Runtipi's status is all there is)."""
+    if status != "stopped":
+        return False
+    try:
+        states = _app_container_states(urn)
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        return False
+    return any(s in ("running", "restarting") for s in states)
+
+
 # #754: how long `wam recover` waits for Runtipi to answer and for an app that is still starting to settle. A fresh
 # install runs recover right after bootstrap, while apps are still coming up on a busy box.
 RECOVER_LIST_TRIES = 5
@@ -3185,10 +3198,12 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
     if not before:
         raise SystemExit(f"{app_id} is not installed")
     was_running = before.get("status") == "running"
+    # #1063: half running (a container crash-looping) is recorded `stopped`, yet it was running: start it afterwards
+    partly = not was_running and partly_running(urn, before.get("status"))
     from . import update_strand
     # #730: an app an earlier update left stopped (#711) was running before it: this update brings it back
-    revive = not was_running and update_strand.stranded(c, urn, before.get("status"))
-    was_running = was_running or revive
+    revive = not was_running and not partly and update_strand.stranded(c, urn, before.get("status"))
+    was_running = was_running or revive or partly
     app, store = urn.split(":", 1)
     if store == STORE and app in alongside.PIN_VARS and alongside.load(c.home):
         # Runtipi merges user-config after the recipe: a stale alongside image wins unless refreshed BEFORE update.
@@ -3268,6 +3283,10 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
            "from_version": before.get("version"), "restarted": restarted}
     if revive:
         out["revived"] = True   # it was left stopped by a failed update, so it is started again (#730)
+    if partly:
+        out["partly_running"] = True   # #1063: it ran with some containers down before; started again
+    if not was_running and status == "stopped":
+        out["left_stopped"] = True   # #1063: the owner had it stopped; the update keeps it that way
     if status != "running" and was_running:
         out["error"] = "the app did not come back; see `docker logs runtipi`"
         update_strand.mark(getattr(c, "home", None), urn, f"update ended {status}")
