@@ -130,10 +130,24 @@ def deliver(c, rt, state: dict | None, send=None, now=None) -> list[str]:
     return sent
 
 
+def stock_tick(c, rt) -> None:
+    """Stock Runtipi (wizard-os#822): no App Manager reconciles the grants when an app is installed, removed or asks
+    for a connection at runtime, so this poll does (cheap file stamps; a full reconcile only on a change)."""
+    from . import stock_runtipi
+    if not stock_runtipi.on(getattr(c, "home", None)):
+        return
+    from . import stock_grants
+    try:
+        stock_grants.tick(c.runtipi_root, rt, c.home)
+    except Exception as e:  # noqa: BLE001 - tried again on the next poll
+        print(f"connections: app grants not reconciled ({str(e)[:160]})", file=sys.stderr, flush=True)
+
+
 def step(c, rt, last: str, apply_fn, registry_fn, now: float | None = None) -> str:
     """One poll: reconcile when the connections changed, then deliver notices. Returns the signature handled."""
     from . import network
     now = time.time() if now is None else now
+    stock_tick(c, rt)
     state = network.connection_state(c, rt)
     sig = signature(state)
     handled = last
