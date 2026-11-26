@@ -130,6 +130,9 @@ def store_ok(c: Config, s: dict | None) -> bool:
 
 def ensure_store(c: Config, rt: Runtipi) -> None:
     """The Wizard store is the index itself (no git catalog): it must exist and be enabled."""
+    from . import stock_runtipi
+    if stock_runtipi.on(c.home):
+        return ensure_stock_store(c, rt)
     s = {x.get("slug"): x for x in rt.stores()}.get(STORE)
     if store_ok(c, s):
         return
@@ -146,6 +149,59 @@ def ensure_store(c: Config, rt: Runtipi) -> None:
             rt.req("DELETE", "/marketplace/wizard-apps")
     rt.req("POST", "/marketplace/create", {"name": STORE, "url": c.index})
     rt.req("PATCH", f"/marketplace/{STORE}", {"name": STORE_NAME, "enabled": True})
+
+
+def ensure_stock_store(c: Config, rt: Runtipi) -> None:
+    """Stock Runtipi (wizard-os#822): `wizardapps` is a plain git store, the generated wizard-app-store branch
+    (stock_runtipi.box_store_url). Runtipi derives the slug from the name, so it is created as "wizardapps" and
+    renamed, as above. A `wizardapps` store pointing anywhere else (an App Index URL left by the fork) is refused
+    by name: stock Runtipi can't read an index, and changing a store's URL is the owner's call."""
+    from . import stock_runtipi
+    url = stock_runtipi.box_store_url(c.home)
+    s = {x.get("slug"): x for x in rt.stores()}.get(STORE)
+    if s and str(s.get("url") or "").rstrip("/") != url.rstrip("/"):
+        raise SystemExit(f"the Wizard store ({STORE}) on this Runtipi reads {s.get('url')}, not the stock store {url}; "
+                         f"remove it in Runtipi's App Store settings (no apps may use it) or set {stock_runtipi.STORE_ENV}")
+    if s and s.get("enabled"):
+        return
+    if s:
+        rt.req("PATCH", f"/marketplace/{STORE}", {"name": s.get("name") or STORE_NAME, "enabled": True})
+        return
+    rt.req("POST", "/marketplace/create", {"name": STORE, "url": url})
+    rt.req("PATCH", f"/marketplace/{STORE}", {"name": STORE_NAME, "enabled": True})
+    rt.pull()
+
+
+def stock_record(c: Config, ref: str) -> dict:
+    """resolve_any on a stock box: the app's record comes from the git store Runtipi holds, never the App Index.
+    An app missing from the local copy gets one store pull (a newer store may list it) before it is refused."""
+    from . import stock_runtipi
+    rt = c.runtipi()
+    ensure_stock_store(c, rt)
+
+    def find() -> dict:
+        if "/" not in ref:
+            return stock_runtipi.record(c.runtipi_root, STORE, ref)
+        want = ref.strip("/").removeprefix("https://github.com/").lower()
+        apps = c.runtipi_root / "repos" / STORE / "apps"
+        for d in sorted(apps.iterdir()) if apps.is_dir() else []:
+            try:
+                if str(json.loads((d / ".wizard-source").read_text()).get("repo") or "").lower() == want:
+                    return stock_runtipi.record(c.runtipi_root, STORE, d.name)
+            except (OSError, ValueError, AttributeError):
+                continue
+        raise stock_runtipi.NotInStore(f"no app from {ref} in the Wizard store ({STORE})")
+
+    try:
+        return find()
+    except stock_runtipi.NotInStore:
+        pass
+    try:
+        rt.pull()
+        return find()
+    except stock_runtipi.NotInStore as e:
+        raise index.IndexError_(f"{e}; this box installs only apps in the Wizard store "
+                                f"({stock_runtipi.box_store_url(c.home)})") from None
 
 
 def read_grants(c: Config, rt) -> list:
@@ -1549,7 +1605,11 @@ def resolve_any(c: Config, ref: str, *, pin_repo: str | None = None) -> dict:
     inside prepare before any image load/pull or store mutation.
     `pin_repo`: fetch the release pin's commit from this repo instead (the repo's current name when the release
     still pins its old one, #1047), so the box keeps the name it already follows.
+    On a stock-Runtipi box (wizard-os#822) the git store is the only source: see stock_record.
     """
+    from . import stock_runtipi
+    if stock_runtipi.on(c.home):
+        return stock_record(c, ref)
     pinned = release_pins.resolve(ref)
     if pinned:
         if pin_repo:
@@ -1914,6 +1974,9 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
     Only apps installed from the release's own repo are moved; anything else the owner chose stays.
     `only` limits it to those apps (the quick shell update must never touch another default the owner moved).
     """
+    from . import stock_runtipi
+    if stock_runtipi.on(c.home):   # wizard-os#822: the stock store carries each app's commit; Runtipi updates it
+        return []
     doc = release_pins.load() or {}
     if not doc.get("default_apps"):
         return []

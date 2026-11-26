@@ -31,6 +31,16 @@ retry_curlrc() {
 
 # Fail before private access, Docker, files or services change. Validation needs no YAML dependency.
 (cd "$HERE" && python3 -m wam.release_pins)
+# Stock Runtipi (wizard-os#822, off by default): WIZARD_STOCK_RUNTIPI=1 installs Runtipi as Runtipi ships it, with the
+# generated Wizard store (wizard-app-store `stock` branch, or WIZARD_STOCK_STORE) as its `wizardapps` store: no App
+# Manager image, no App Index. Recorded in ~/.wizard-os/stock-runtipi.json, so a rerun stays stock; =0 or unset on a
+# box without that file: everything below runs exactly as before.
+STOCK="$(cd "$HERE" && python3 -c 'from wam import stock_runtipi as s; print(1 if s.on() else 0)' 2>/dev/null || echo 0)"
+if [ "$STOCK" = 1 ] && grep -qs 'wizard-app-manager' "$RUNTIPI_ROOT/user-config/tipi-compose.yml"; then
+  echo "WizardOS install stopped: WIZARD_STOCK_RUNTIPI=1 is for new boxes, and this one already runs the App Manager" >&2
+  echo "($RUNTIPI_ROOT/user-config/tipi-compose.yml). Run the command without WIZARD_STOCK_RUNTIPI to update it as it is." >&2
+  exit 1
+fi
 
 # Default private-access provider is native Tailscale. Existing tailnets are preserved; Cloudflare is opt-in.
 if [ "${WIZARD_MODE:-fresh}" = fresh ]; then
@@ -69,7 +79,11 @@ YML
   # `runtipi-cli app stop/start` answered 401 on boxes whose image was older than the CLI. A Wizard image tag names
   # its base (`v4.12.0-wizard.<n>-<sha>`; a release's digest-only image is looked up in WIZARD_RELEASE_PINS); the
   # fallback is the base .github/workflows/image.yml builds today.
-  RUNTIPI_BASE_VERSION="${WIZARD_RUNTIPI_VERSION:-$(cd "$HERE" && python3 -m wam.release_pins --runtipi-base "$IMAGE" 2>/dev/null || true)}"
+  if [ "$STOCK" = 1 ]; then   # stock: the Runtipi release itself, CLI and image alike
+    RUNTIPI_BASE_VERSION="${WIZARD_RUNTIPI_VERSION:-v4.12.0}"
+  else
+    RUNTIPI_BASE_VERSION="${WIZARD_RUNTIPI_VERSION:-$(cd "$HERE" && python3 -m wam.release_pins --runtipi-base "$IMAGE" 2>/dev/null || true)}"
+  fi
   RUNTIPI_BASE_VERSION="${RUNTIPI_BASE_VERSION:-v4.12.0}"
   base_failed() {
     rm -rf "$ENVF" "$SETUP_DIR"
@@ -122,8 +136,18 @@ docker info >/dev/null 2>&1 || DOCKER=(sudo docker)
 mkdir -p "$RUNTIPI_ROOT/app-data/wizard-os" 2>/dev/null || { sudo mkdir -p "$RUNTIPI_ROOT/app-data/wizard-os" && sudo chown "$(id -u):$(id -g)" "$RUNTIPI_ROOT/app-data/wizard-os"; }
 
 # 1) Run the Wizard App Manager image instead of Runtipi's (user-config override; survives Runtipi's own files).
+#    Stock (wizard-os#822): Runtipi's own image stays; only its containers are made sure to run. wam adds the store.
 mkdir -p "$RUNTIPI_ROOT/user-config"
 OVR="$RUNTIPI_ROOT/user-config/tipi-compose.yml"
+if [ "$STOCK" = 1 ]; then
+  [ -f "$OVR" ] || printf 'services: {}\n' > "$OVR"
+  (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-recreate --wait runtipi-db runtipi-queue)
+  RUNNING_APPS="$("${DOCKER[@]}" exec runtipi-db psql -U tipi -d tipi -Atc "SELECT app_name || ':' || app_store_slug FROM app WHERE status = 'running'" 2>/dev/null || true)"
+  (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-recreate --no-deps runtipi runtipi-reverse-proxy)
+  mkdir -p "$HOME/.wizard-os"
+  (cd "$HERE" && "$PY" -c 'from wam import stock_runtipi as s; print("stock Runtipi: Wizard store", s.box_store_url()); s.write_marker(store=s.box_store_url())')
+else
+
 [ -f "$OVR" ] && cp "$OVR" "$OVR.bak-$(date -u +%Y%m%dT%H%M%SZ)"
 # Preserve owner settings and Compose tags (!override/!reset), including box-only bindings.
 (cd "$HERE" && "$PY" -m wam.release_pins "$OVR" "$IMAGE")
@@ -155,6 +179,7 @@ fi
 (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d "${RECREATE[@]}" --no-deps runtipi)
 # The reverse proxy answers the health check below; recreate it only when it is missing (wam#95).
 (cd "$RUNTIPI_ROOT" && "${DOCKER[@]}" compose -p runtipi -f docker-compose.yml -f user-config/tipi-compose.yml up -d --no-recreate --no-deps runtipi-reverse-proxy)
+fi
 
 # 2) wam command + box-only API service
 mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/.wizard-os"
