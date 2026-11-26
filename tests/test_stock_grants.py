@@ -214,3 +214,104 @@ def test_files_never_leave_the_runtipi_root(tmp_path):
         f.read(tmp_path / "runtipi" / "repos" / ".." / ".." / "etc")
     with pytest.raises(ValueError, match="outside the Runtipi root"):
         f.write(tmp_path / "elsewhere.json", "{}")
+
+
+# ---------------------------------------------------------------- file shares (the Claude sign-in pair)
+
+class RunningRt(FakeRt):
+    def __init__(self, ids):
+        super().__init__(ids)
+        self.restarted = []
+
+    def app(self, urn):
+        return {"app": {"status": "running"}}
+
+    def restart(self, urn):
+        self.restarted.append(urn)
+        return {}
+
+
+def claude_pair(root: Path):
+    """The two apps as the generated stock store ships them: the Claude app's legacy volume is its own data/claude, the
+    Hermes Agent's is a placeholder folder in its engine service; neither wizard.md declares the share."""
+    for app_id, services in (
+        ("wizard-claude", {"wizard-claude": {"image": "x", "x-runtipi": {"is_main": True, "internal_port": 8799}},
+                           "wizard-claude-engine": {"image": "y", "user": "1000:1000",
+                                                    "volumes": ["${APP_DATA_DIR}/data/claude:/claude"]}}),
+        ("hermes-agent", {"hermes-agent": {"image": "x", "x-runtipi": {"is_main": True, "internal_port": 9119}},
+                          "hermes-agent-engine": {"image": "y", "volumes": [
+                              "${APP_DATA_DIR}/data:/opt/data", "${APP_DATA_DIR}/volumes/claude-login:/claude"]}}),
+    ):
+        d = root / "apps" / "wizardapps" / app_id
+        d.mkdir(parents=True)
+        (d / "wizard.md").write_text("---\n" + json.dumps({"id": app_id, "name": app_id}) + "\n---\n# x\n")
+        (d / "docker-compose.yml").write_text(json.dumps({"services": services}))
+        (d / "config.json").write_text("{}")
+        (root / "app-data" / "wizardapps" / app_id).mkdir(parents=True)
+
+
+def test_claude_share_is_proposed_then_mounted_in_the_engine_and_revoked(tmp_path, monkeypatch):
+    root, home = tmp_path / "runtipi", tmp_path / "home"
+    monkeypatch.setenv("WIZARD_OS_HOME", str(home))
+    claude_pair(root)
+    override = root / "user-config" / "wizardapps" / "hermes-agent" / "docker-compose.yml"
+    override.parent.mkdir(parents=True)
+    override.write_text("# App networks: the block marked x-wizard-networks is written by wam (`wam network reconcile`).\n"
+                        "services:\n  hermes-agent-engine:\n    networks: !override\n      wizard-core: null\n"
+                        "x-wizard-networks:\n  services: [hermes-agent-engine]\n  networks: []\n")
+    rt = RunningRt(["wizard-claude", "hermes-agent"])
+    g = sg.Grants(root, rt, home)
+    g.reconcile()
+    # A new pair needs consent: proposed, not mounted.
+    assert g.proposed("hermes-agent")[:1] == [
+        {"kind": "share", "from": "hermes-agent", "to": "wizard-claude", "share": "claude-login", "reason": "mounts"}]
+    assert "x-wizard-shares" not in override.read_text()
+    sg.handle(g, "POST", "/apps/hermes-agent:wizardapps/share-grants",
+              {"to": "wizard-claude", "share": "claude-login", "approve": True})
+    from wam.network import load_yaml
+    doc = load_yaml(override.read_text())
+    engine = doc["services"]["hermes-agent-engine"]
+    assert engine["volumes"] == [{"type": "bind", "source": f"{root}/app-data/wizardapps/wizard-claude/data/claude",
+                                  "target": "/claude", "bind": {"create_host_path": False}}]
+    assert engine["networks"].tag == "!override"            # wam's network block is kept
+    assert doc["x-wizard-networks"]["services"] == ["hermes-agent-engine"]
+    assert doc["x-wizard-shares"] == {"services": {"hermes-agent-engine": ["/claude"]}}
+    assert "hermes-agent" not in doc["services"]             # only the service that mounts /claude gets it
+    assert (root / "app-data" / "wizardapps" / "wizard-claude" / "data" / "claude").is_dir()
+    assert rt.restarted == ["hermes-agent:wizardapps"]
+    g.reconcile()                                           # idempotent: no second restart
+    assert rt.restarted == ["hermes-agent:wizardapps"]
+    sg.handle(g, "POST", "/apps/hermes-agent:wizardapps/share-grants",
+              {"to": "wizard-claude", "share": "claude-login", "approve": False})
+    doc = load_yaml(override.read_text())
+    assert "volumes" not in doc["services"]["hermes-agent-engine"] and "x-wizard-shares" not in doc
+    assert doc["services"]["hermes-agent-engine"]["networks"].tag == "!override"
+    assert rt.restarted == ["hermes-agent:wizardapps"] * 2
+    g.reconcile()                                           # a revoke is sticky
+    assert "x-wizard-shares" not in override.read_text()
+
+
+def test_share_override_alone_is_removed_cleanly_and_provider_gone_unmounts(tmp_path, monkeypatch):
+    root, home = tmp_path / "runtipi", tmp_path / "home"
+    monkeypatch.setenv("WIZARD_OS_HOME", str(home))
+    claude_pair(root)
+    rt = RunningRt(["wizard-claude", "hermes-agent"])
+    g = sg.Grants(root, rt, home)
+    g.change({"kind": "share", "from": "hermes-agent", "to": "wizard-claude", "share": "claude-login"}, True)
+    override = root / "user-config" / "wizardapps" / "hermes-agent" / "docker-compose.yml"
+    assert "/claude" in override.read_text()
+    rt.ids = ["hermes-agent"]                              # the Claude app was removed
+    g.reconcile()
+    assert override.read_text() == "services: {}\n"
+    assert not (root / "user-config" / "wizardapps" / "wizard-claude").exists()
+
+
+def test_switch_off_never_writes_share_mounts(tmp_path, monkeypatch):
+    monkeypatch.delenv("WIZARD_STOCK_RUNTIPI", raising=False)
+    monkeypatch.setenv("WIZARD_OS_HOME", str(tmp_path / "home"))
+    claude_pair(tmp_path / "runtipi")
+    client = runtipi.Runtipi("http://127.0.0.1:9/api", "s", root=tmp_path / "runtipi")
+    with pytest.raises(OSError):
+        client.req("POST", "/apps/hermes-agent:wizardapps/share-grants",
+                   {"to": "wizard-claude", "share": "claude-login", "approve": True}, timeout=2)
+    assert not (tmp_path / "runtipi" / "user-config").exists()

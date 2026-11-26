@@ -27,9 +27,11 @@ reconciles instead: on every owner change here, and from `tick` (called before e
 or an app's request file changed. A provider learns a new consumer's key hash before the consumer gets the key
 (providers are written first), as on the fork.
 
-File shares (`mounts:`/`shares:`, DECISIONS #79/#80) are recorded like on the fork, but stock Runtipi does not mount
-them yet: no app in the stock store declares one today (the store generator turns the legacy Claude login volume into
-the app's own folder).
+File shares (`mounts:`/`shares:`, DECISIONS #79/#80; today the Claude sign-in the Hermes Agent app mounts from the
+Claude app) are granted like on the fork and mounted through the consumer's stock user-config override: a bind of the
+provider's data/<share path> at the mount path, in a block marked `x-wizard-shares` (the rest of the file is kept).
+Compose merges service volumes by target, so the share replaces the recipe's placeholder there; a revoke takes it out
+and recreates the app, so the placeholder comes back.
 """
 from __future__ import annotations
 
@@ -438,6 +440,202 @@ def _compose(text: str | None) -> dict:
     return doc if isinstance(doc, dict) else {"services": {}}
 
 
+# ---------------------------------------------------------------- file shares on stock (DECISIONS #79/#80)
+
+CLAUDE_SHARE = {"id": "claude-login", "path": "claude"}
+CLAUDE_MOUNT = {"app": "wizard-claude", "share": "claude-login", "path": "/claude"}
+SHARES_MARK = "x-wizard-shares"          # top-level key in the app's user-config override: the share mounts wam wrote
+SHARES_HEADER = "# File shares: the mounts listed under x-wizard-shares are written by wam (owner share grants).\n"
+
+
+def _vol_target(v) -> str | None:
+    if isinstance(v, str):
+        parts = v.split(":")
+        return parts[1] if len(parts) > 1 else parts[0]
+    if isinstance(v, dict):
+        t = v.get("target")
+        return t if isinstance(t, str) else None
+    return None
+
+
+def _vol_source(v) -> str | None:
+    if isinstance(v, str):
+        return v.split(":")[0]
+    if isinstance(v, dict):
+        s = v.get("source")
+        return s if isinstance(s, str) else None
+    return None
+
+
+def _service_volumes(compose: dict):
+    for name, s in ((compose.get("services") or {}) if isinstance(compose.get("services"), dict) else {}).items():
+        if isinstance(s, dict):
+            vols = s.get("volumes")
+            vols = getattr(vols, "value", vols)
+            yield name, s, [v for v in vols or [] if isinstance(v, (str, dict))] if isinstance(vols, list) else []
+
+
+def legacy_claude_share(app_id: str, manifest: dict, compose: dict) -> None:
+    """The fork's narrow shim for the Claude sign-in pair (wizard-storage.ts apps()): the Claude app shares its
+    `claude-login` folder and the Hermes Agent app mounts it at /claude, although neither wizard.md declares it.
+    On the fork it keys on the legacy fixed volume `wizard-ai-accounts-claude`; the generated stock store already
+    turned that volume into a folder (the Claude app's own data/claude, a placeholder folder in the Hermes Agent app),
+    so on stock it also keys on those generated mounts."""
+    legacy = any(isinstance(v, dict) and v.get("name") == LEGACY_CLAUDE for v in (compose.get("volumes") or {}).values())
+    if app_id == "wizard-claude":
+        own = any(_vol_target(v) == "/claude" and (_vol_source(v) or "").startswith("${APP_DATA_DIR}/data/claude")
+                  for _, _, vols in _service_volumes(compose) for v in vols)
+        if legacy or own:
+            manifest.setdefault("shares", [dict(CLAUDE_SHARE)])
+    elif app_id == "hermes-agent":
+        mounts = any(_vol_target(v) == "/claude" for _, _, vols in _service_volumes(compose) for v in vols)
+        if legacy or mounts:
+            manifest.setdefault("mounts", [dict(CLAUDE_MOUNT)])
+
+
+def share_mounts(app: dict, apps: list[dict], f: dict) -> dict[str, list[dict]]:
+    """The fork's prepare step for one consumer, as an override: for every granted `mounts:` entry, a bind of the
+    provider's data/<share path> at the mount path, in the services whose recipe mounts that path (Claude Code runs in
+    the Hermes Agent's engine service), otherwise the main service. Service name -> volume entries."""
+    out: dict[str, list[dict]] = {}
+    me = _id(app)
+    for m in app["manifest"].get("mounts") or []:
+        if not isinstance(m, dict) or not isinstance(m.get("path"), str) or not m["path"].startswith("/"):
+            continue
+        if not any(g.get("kind") == "share" and g.get("from") == me and g.get("to") == m.get("app")
+                   and g.get("share") == m.get("share") for g in f.get("grants") or []):
+            continue
+        p = next((x for x in apps if _id(x) == m.get("app")), None)
+        share = next((s for s in (p["manifest"].get("shares") or []) if isinstance(s, dict) and s.get("id") == m.get("share")),
+                     None) if p else None
+        rel = str((share or {}).get("path") or "")
+        if not p or not share or not rel or rel.startswith("/") or any(x in ("", ".", "..") for x in rel.split("/")):
+            continue                                    # the fork refuses to start; here the share just isn't mounted
+        carriers = [n for n, _, vols in _service_volumes(app["compose"]) if any(_vol_target(v) == m["path"] for v in vols)]
+        if not carriers:
+            carriers = [n for n, s, _ in _service_volumes(app["compose"]) if (s.get("x-runtipi") or {}).get("is_main")]
+            if len(carriers) != 1:
+                continue
+        for n in carriers:
+            out.setdefault(n, []).append({"type": "bind", "source": f"{p['hostData']}/data/{rel}", "target": m["path"],
+                                          "bind": {"create_host_path": False}})
+    return out
+
+
+def _provider_folders(app: dict, apps: list[dict], f: dict, files: Files) -> None:
+    """A granted share's provider folder exists before the consumer starts, owned by the provider service's uid
+    (never the consumer's), as on the fork. Docker would otherwise make it root-owned."""
+    me = _id(app)
+    for m in app["manifest"].get("mounts") or []:
+        if not isinstance(m, dict) or not any(g.get("kind") == "share" and g.get("from") == me and g.get("to") == m.get("app")
+                                              and g.get("share") == m.get("share") for g in f.get("grants") or []):
+            continue
+        p = next((x for x in apps if _id(x) == m.get("app")), None)
+        share = next((s for s in (p["manifest"].get("shares") or []) if isinstance(s, dict) and s.get("id") == m.get("share")),
+                     None) if p else None
+        if not p or not share or not p.get("data"):
+            continue
+        rel = f"data/{share.get('path')}"
+        full = Path(p["data"]) / rel
+        if full.is_dir():
+            continue
+        try:
+            files.folder(Path(p["data"]), rel, 0o700)
+        except (OSError, ValueError):
+            continue
+        svc = next((s for _, s, vols in _service_volumes(p["compose"])
+                    if any((_vol_source(v) or "").startswith(f"${{APP_DATA_DIR}}/{rel}") for v in vols)), None) \
+            or next((s for _, s, _ in _service_volumes(p["compose"]) if (s.get("x-runtipi") or {}).get("is_main")), None) or {}
+        user = str(svc.get("user") or "0:0")
+        if re.fullmatch(r"\d+(?::\d+)?", user):
+            uid, _, gid = user.partition(":")
+            try:
+                os.chown(full, int(uid), int(gid or uid))
+            except OSError:
+                try:
+                    from .app_rename import _ok, _sh
+                    inner = files.rt()._inner(full)
+                    _ok(_sh('[ ! -L "$1" ] || exit 1; chown "$2" "$1"', inner, f"{uid}:{gid or uid}"), f"chown {full}")
+                except Exception:  # noqa: BLE001 - the consumer still starts; the provider owns its folder on first write
+                    pass
+
+
+def write_share_overlay(files: Files, path: Path, mounts: dict[str, list[dict]]) -> bool:
+    """Put (or with {}, remove) the share mounts in one app's user-config override; keep everything else in the file
+    (wam's network block, the owner's own lines). Compose merges service volumes by target, so a share replaces the
+    recipe's own placeholder at that path, and removing it brings the placeholder back. True when the file changed."""
+    from .network import dump_yaml, load_yaml
+    before = files.read(path)
+    doc = (load_yaml(before) or {}) if before else {}
+    if not isinstance(doc, dict):
+        raise ValueError(f"{path}: expected a compose mapping")
+    if not mounts and SHARES_MARK not in doc:
+        return False
+    mark = doc.pop(SHARES_MARK, None)
+    svcs = doc.get("services") if isinstance(doc.get("services"), dict) else {}
+    for name, targets in ((mark or {}).get("services") or {}).items() if isinstance(mark, dict) else []:
+        s = svcs.get(name)
+        if not isinstance(s, dict):
+            continue
+        vols = s.get("volumes")
+        tagged = vols if hasattr(vols, "tag") else None
+        lst = tagged.value if tagged is not None else vols
+        if isinstance(lst, list):
+            lst[:] = [v for v in lst if not (isinstance(v, dict) and v.get("target") in (targets or []))]
+            if not lst:
+                s.pop("volumes", None)
+        if not s:
+            svcs.pop(name)
+    if "services" in doc and not doc["services"]:
+        doc.pop("services")
+    if mounts:
+        svcs = doc.setdefault("services", {})
+        for name, entries in mounts.items():
+            s = svcs.setdefault(name, {})
+            vols = s.get("volumes")
+            lst = vols.value if hasattr(vols, "tag") else vols
+            if not isinstance(lst, list):
+                lst = []
+                s["volumes"] = lst
+            lst[:] = [v for v in lst if _vol_target(v) not in {e["target"] for e in entries}] + entries
+        doc[SHARES_MARK] = {"services": {n: sorted(e["target"] for e in es) for n, es in sorted(mounts.items())}}
+    head = []
+    for line in (before or "").splitlines():
+        if not line.startswith("#"):
+            break
+        if line + "\n" != SHARES_HEADER:
+            head.append(line + "\n")
+    if not doc:
+        # Only our block was in it: an override with nothing in it (an empty file is not valid compose).
+        text = "".join(head) + "services: {}\n"
+    else:
+        text = "".join(head) + (SHARES_HEADER if SHARES_MARK in doc else "") + dump_yaml(doc)
+    if text == (before or ""):
+        return False
+    return files.write(path, text, 0o644)
+
+
+def apply_shares(apps: list[dict], f: dict, root: Path, files: Files) -> list[str]:
+    """Every installed consumer's override carries exactly its granted shares. Returns the urns whose override changed
+    (a running one is recreated by the caller: a plain restart keeps the old mounts)."""
+    changed = []
+    for a in apps:
+        store = a["urn"].partition(":")[2] or STORE
+        path = Path(root) / "user-config" / store / _id(a) / "docker-compose.yml"
+        mounts = share_mounts(a, apps, f)
+        if mounts:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+            except PermissionError:
+                pass                    # a root-owned user-config: the write goes through the runtipi container
+            _provider_folders(a, apps, f, files)
+        if not mounts and files.read(path) is None:
+            continue
+        if write_share_overlay(files, path, mounts):
+            changed.append(a["urn"])
+    return changed
+
+
 def installed_urns(rt) -> list[tuple[str, str]]:
     out = []
     for r in rt.installed():
@@ -465,9 +663,7 @@ def read_apps(root: Path, installed: list[tuple[str, str]], files: Files, warn=N
         if manifest.get("id") != app_id:
             raise ValueError("Installed manifest identity mismatch")
         compose = _compose(files.read(d / "docker-compose.yml"))
-        if app_id == "wizard-claude" and any(isinstance(v, dict) and v.get("name") == LEGACY_CLAUDE
-                                             for v in (compose.get("volumes") or {}).values()):
-            manifest.setdefault("shares", [{"id": "claude-login", "path": "claude"}])
+        legacy_claude_share(app_id, manifest, compose)
         data = root / "app-data" / store / app_id
         env = files.read(data / "app.env") or ""
         m = re.search(r"^APP_DATA_DIR=['\"]?([^\n'\"]+)", env, re.M)
@@ -772,6 +968,20 @@ class Grants:
 
     def _reconcile(self, apps: list[dict], f: dict, exclude: str | None = None) -> None:
         reconcile_app_grants(apps, f, self.root, self.write, self.files, exclude)
+        self.shares(apps, f)
+
+    def shares(self, apps: list[dict], f: dict) -> list[str]:
+        """Write every consumer's share mounts; recreate the running ones whose mounts changed (Runtipi's restart
+        runs compose up again with the override, which recreates the containers). The urns that changed."""
+        changed = apply_shares(apps, f, self.root, self.files)
+        for urn in changed:
+            try:
+                status = ((self.rt.app(urn) or {}).get("app") or {}).get("status") if hasattr(self.rt, "app") else None
+                if status == "running" and hasattr(self.rt, "restart"):
+                    self.rt.restart(urn)
+            except Exception:  # noqa: BLE001 - the mounts apply on the app's next start; never fails the reconcile
+                pass
+        return changed
 
     @staticmethod
     def state(f: dict) -> dict:
@@ -801,8 +1011,9 @@ class Grants:
                 m = _front(text)
                 if not m or m.get("id") != app_id:
                     raise GrantError("Invalid candidate manifest")
-                apps.append({"urn": f"{app_id}:{slug}", "manifest": m, "compose": _compose(self.files.read(d / "docker-compose.yml")),
-                             "data": "", "hostData": ""})
+                cand = _compose(self.files.read(d / "docker-compose.yml"))
+                legacy_claude_share(app_id, m, cand)
+                apps.append({"urn": f"{app_id}:{slug}", "manifest": m, "compose": cand, "data": "", "hostData": ""})
                 break
         if app_id:
             consumer = next((a for a in apps if _id(a) == app_id), None)
@@ -816,8 +1027,9 @@ class Grants:
                 m = _front(text)
                 if not m or m.get("id") != dep:
                     raise GrantError("Invalid dependency manifest")
-                apps.append({"urn": f"{dep}:{STORE}", "manifest": m, "compose": _compose(self.files.read(d / "docker-compose.yml")),
-                             "data": "", "hostData": ""})
+                cand = _compose(self.files.read(d / "docker-compose.yml"))
+                legacy_claude_share(dep, m, cand)
+                apps.append({"urn": f"{dep}:{STORE}", "manifest": m, "compose": cand, "data": "", "hostData": ""})
         f = self.read()
         key = lambda g: (g.get("kind"), g.get("from"), g.get("to"), g.get("share") or "")  # noqa: E731
         known = {key(g) for g in [*f["grants"], *f["denied"]]}
@@ -888,6 +1100,7 @@ class Grants:
             (f["grants"] if approve else f["denied"]).append(
                 {"kind": "share", "from": frm, "to": to, "share": share, "reason": "mounts", "approved": "owner", "created_at": now})
             self.write(f)
+            self.shares(apps, f)        # the fork recreates the consumer (compose down + up); a revoke is durable first
             return consumer["urn"]
 
     def set_sensitive(self, app_id: str, on: bool) -> dict:
