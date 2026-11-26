@@ -233,12 +233,13 @@ def installed(c, app_id: str) -> dict | None:
     from . import cli
     if not isinstance(app_id, str) or not ID.fullmatch(app_id):
         return None
-    apps = (Path(c.runtipi_root) / "apps" / cli.STORE).resolve()
-    folder = (apps / app_id).resolve()
-    if folder.parent != apps:   # an app id names one folder in the store, nothing else
+    apps = os.path.realpath(os.path.join(str(c.runtipi_root), "apps", cli.STORE))
+    record = os.path.realpath(os.path.join(apps, app_id, ".wizard-source"))
+    if not record.startswith(apps + os.sep):   # an app id names one folder in the store, nothing else
         return None
     try:
-        src = json.loads((folder / ".wizard-source").read_text())
+        with open(record, encoding="utf-8") as f:
+            src = json.loads(f.read())
     except (OSError, ValueError):
         return None
     return src if isinstance(src, dict) and src.get("source") == SOURCE else None
