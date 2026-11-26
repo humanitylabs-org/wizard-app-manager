@@ -157,6 +157,36 @@ test('cancellation cleans up the snapshot and restarts the app without publishin
   expect(await fs.promises.readdir(snapshotRoot)).toEqual([]);
 });
 
+// wizard-app-manager#1074: an update asks the backup to start its new version from the backup's stop (one stop).
+test('starts what the update asks for instead of the old version, before packing the snapshot', async () => {
+  const { manager, archive, docker } = await setup();
+  const order: string[] = [];
+  docker.composeApp.mockImplementation(async (_urn, command) => {
+    order.push(command);
+    return { success: true, stdout: '', stderr: '' };
+  });
+  archive.createTarGz.mockImplementation(async (_source, destination) => {
+    order.push('archive');
+    await fs.promises.writeFile(destination, 'complete archive');
+    return { stdout: '', stderr: '' };
+  });
+
+  await manager.backupApp(appUrn, true, undefined, { prestage: true, restart: async () => void order.push('new version') });
+
+  expect(order).toEqual(['stop', 'new version', 'archive']);
+});
+
+test('a failed copy starts the old version again, never what the update asked for', async () => {
+  const { manager, docker, appInstalledDir } = await setup();
+  await fs.promises.rm(appInstalledDir, { recursive: true });
+  const restart = vi.fn();
+
+  await expect(manager.backupApp(appUrn, true, undefined, { prestage: true, restart })).rejects.toThrow();
+
+  expect(restart).not.toHaveBeenCalled();
+  expect(docker.composeApp).toHaveBeenLastCalledWith(appUrn, 'up --detach --remove-orphans');
+});
+
 test('applies retention after publishing the completed backup', async () => {
   const { manager, apps, backupDir } = await setup();
   apps.getAppByUrn.mockResolvedValue(fromPartial({ maxBackups: 1 }));

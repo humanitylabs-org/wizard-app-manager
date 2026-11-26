@@ -76,6 +76,7 @@ export class AppLifecycleController {
       appUrn: castAppUrn(urn),
       performBackup: body.performBackup,
       hermesPromotion: body.hermesPromotion,
+      ...(body.wizardShortDowntime === true ? { shortDowntime: true } : {}),
     });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }

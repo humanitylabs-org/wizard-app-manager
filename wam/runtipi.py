@@ -202,8 +202,10 @@ class Runtipi:
     def install(self, urn: str, form: dict | None = None) -> dict:
         return self.req("POST", f"/app-lifecycle/{urn}/install", form or {}, timeout=120)
 
-    def update(self, urn: str, perform_backup: bool = True) -> dict:
+    def update(self, urn: str, perform_backup: bool = True, short_downtime: bool = False) -> dict:
         body = {"performBackup": perform_backup}
+        if short_downtime:   # #1074 (wizard/shorter-app-updates): one stop per update; older images ignore it
+            body["wizardShortDowntime"] = True
         if urn.split(':', 1)[0] == 'hermes-agent':
             from .hermes_lock import authorize
             body['hermesPromotion'] = authorize()

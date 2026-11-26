@@ -11,6 +11,7 @@ from wam import host_dashboard as hd
 from wam import mirrors
 from wam import network
 from wam import session_mounts
+from wam import short_updates
 from wam import store_install
 
 
@@ -29,6 +30,9 @@ def _no_real_host_dashboard(request, tmp_path, monkeypatch):
     # Unit installs must not query live registries. Mirror tests inject their own
     # probe and real-git fixture, rather than changing a live Docker daemon.
     monkeypatch.setattr(mirrors, "image_available", lambda image: True)
+    # #1074: app updates read wizard/shorter-app-updates; off unless a test turns it on (no Pages read per update)
+    if request.module.__name__.rsplit(".", 1)[-1] != "test_shorter_app_updates":
+        monkeypatch.setattr(short_updates, "on", lambda home=None: False)
     # Feature switches (#726): never probe a real Agent Service on the box's default port or read its process
     # environment; tests that need either set their own.
     monkeypatch.setattr(feature_switches, "_looks_like_service", lambda origin, timeout=2: False)

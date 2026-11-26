@@ -142,7 +142,6 @@ test('rejects a second update with different backup options while the first is a
   await waitForQueueResult();
 });
 
-
 // Real UI/controller and batch service paths share the pre-job guard.
 test('Hermes UI updates refuse before repository, status or job access', async () => {
   const { handler, appRepository, statusManager, commandFactory } = await createHandler();
@@ -172,4 +171,19 @@ test('update-all leaves Hermes untouched and still updates unrelated apps', asyn
   expect(appRepository.getAppByUrn).toHaveBeenCalledTimes(1);
   expect(commandFactory.execute).toHaveBeenCalledTimes(1);
   expect(commandFactory.execute).toHaveBeenCalledWith(expect.objectContaining({ appUrn: 'files:wizardapps' }), expect.anything());
+});
+
+// wizard-app-manager#1074: the App Manager's wizardShortDowntime reaches the update command; without it nothing changes.
+test.each([
+  [{ performBackup: true, wizardShortDowntime: true }, true],
+  [{ performBackup: true }, undefined],
+  [{ performBackup: true, wizardShortDowntime: false }, undefined],
+])('the update request %o reaches the command with shortDowntime %s', async (body, expected) => {
+  const { handler, logger, commandFactory } = await createHandler();
+  const service = Object.assign(Object.create(AppLifecycleService.prototype), { updateAppHandler: handler, logger }) as AppLifecycleService;
+  await new AppLifecycleController(service, mock<AppJobService>()).updateApp('files:wizardapps', body);
+  await waitForQueueResult();
+  const [event] = commandFactory.execute.mock.calls[0] ?? [];
+  expect(event).toMatchObject({ command: 'update', performBackup: true });
+  expect((event as { shortDowntime?: boolean }).shortDowntime).toBe(expected);
 });

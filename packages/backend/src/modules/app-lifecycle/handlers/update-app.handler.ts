@@ -12,7 +12,7 @@ import { StatusManagerService } from '../services/status-manager.service';
 import { type HandlerResult, type ILifecycleHandler } from './base-handler';
 import { assertHermesUpdate } from '../hermes-lock';
 
-export type UpdateAppParams = { performBackup: boolean; hermesPromotion?: string };
+export type UpdateAppParams = { performBackup: boolean; hermesPromotion?: string; shortDowntime?: boolean };
 
 @Injectable()
 export class UpdateAppHandler implements ILifecycleHandler<UpdateAppParams> {
@@ -54,6 +54,7 @@ export class UpdateAppHandler implements ILifecycleHandler<UpdateAppParams> {
             form: app.config,
             performBackup: params?.performBackup ?? false,
             wasRunningBeforeUpdate: app.status === 'running',
+            ...(params?.shortDowntime ? { shortDowntime: true } : {}),
           },
           context,
         );
