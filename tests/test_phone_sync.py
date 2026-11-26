@@ -135,6 +135,15 @@ def mirror(tmp_path, monkeypatch):
             elif self.path == '/release.json':
                 body = json.dumps(state.get('release')).encode()
                 self.send_response(200 if state.get('release') else 404)
+            elif self.path in ('/releases', '/tester.json') and state.get(self.path[1:]) is not None:
+                body = json.dumps(state[self.path[1:]]).encode()
+                self.send_response(200)
+            elif self.path == '/tester.apk':
+                body = state['tester_apk']
+                self.send_response(200)
+            elif self.path in ('/good.json', '/good.apk') and 'good.apk' in state:
+                body = json.dumps(state['good.json']).encode() if self.path.endswith('json') else state['good.apk']
+                self.send_response(200)
             elif self.path == '/redirect.apk':
                 self.send_response(302); self.send_header('Location', '/phone.apk'); self.end_headers(); return
             else:
@@ -690,3 +699,159 @@ def test_a_feed_held_back_by_the_box_snapshot_gate_is_reported(owner):
     assert owner.go(1 * H).endswith('behind:mirror,owner')
     assert len(owner.told) == 2 and all('skipped:min_box_snapshot' in m for _, m in owner.told)
     assert ps.doctor_row(owner.home, now=1 * H)[1] is False
+
+
+# ---- Tester builds (#799): a box with wizard/phone-tester-builds on also mirrors the newest android-v* prerelease ----
+
+def _tester(m, version='0.10.15', code=79, apk=None, prerelease=True, draft=False, extra=()):
+    """The fixture serves a public release (m.pointer, 0.10.14) plus a GitHub-shaped release list with one tester build."""
+    origin = m.url.rsplit('/', 1)[0]
+    m.state['tester_apk'] = apk if apk is not None else build_apk(payload=b'tester build ' + version.encode())
+    m.state['tester.json'] = dict(m.pointer, versionCode=code, versionName=version, asset_url=origin + '/tester.apk',
+                                  sha256=hashlib.sha256(m.state['tester_apk']).hexdigest(), bytes=len(m.state['tester_apk']))
+    rel = lambda tag, pre, dr, link: {'tag_name': tag, 'prerelease': pre, 'draft': dr,
+                                      'assets': [{'name': 'phone.json', 'browser_download_url': link}]}
+    m.state['releases'] = [*extra, rel(f'android-v{version}', prerelease, draft, origin + '/tester.json'),
+                           rel('android-v0.10.14', False, False, m.url)]
+    return lambda **kw: ps.sync(m.home, m.root, pointer_url=m.url, fixture=True, releases_url=origin + '/releases', **kw)
+
+
+def test_tester_box_mirrors_newest_prerelease(mirror):
+    run, seen = _tester(mirror), {}
+    assert run(tester=True, seen=seen) == 'updated:versionCode=79'
+    feed = json.loads((mirror.feed / 'latest.json').read_text())
+    assert (feed['versionName'], feed['url']) == ('0.10.15', 'wizard-os-0.10.15.apk')
+    assert (mirror.feed / 'wizard-os-0.10.15.apk').read_bytes() == mirror.state['tester_apk']
+    assert seen['tester'] == '0.10.15' and seen['newest']['versionCode'] == 79
+
+
+def test_normal_box_never_reads_prereleases(mirror):
+    run = _tester(mirror)
+    assert run(tester=False) == 'updated:versionCode=78'
+    assert json.loads((mirror.feed / 'latest.json').read_text())['versionName'] == '0.10.14'
+    assert '/releases' not in mirror.state['hits'] and '/tester.json' not in mirror.state['hits']
+
+
+def test_switch_off_by_default_reads_no_release_list(mirror, monkeypatch):
+    monkeypatch.setattr(ps, 'tester_builds_on', lambda home: False)
+    _tester(mirror)
+    monkeypatch.setattr(ps, 'POINTER', mirror.url)
+    assert ps.sync(mirror.home, mirror.root, release_url=mirror.url, fixture=True,
+                   releases_url=mirror.url.rsplit('/', 1)[0] + '/releases') == 'updated:versionCode=78'
+    assert '/releases' not in mirror.state['hits']
+
+
+def test_switch_is_read_from_feature_switches(mirror, monkeypatch):
+    calls = []
+    from wam import feature_switches
+    monkeypatch.setattr(feature_switches, 'is_on', lambda tid, home=None, timeout=10: calls.append((tid, timeout)) or True)
+    assert ps.tester_builds_on(mirror.home) is True
+    assert calls == [('wizard/phone-tester-builds', 4)]
+    monkeypatch.setattr(feature_switches, 'is_on', lambda *a, **k: (_ for _ in ()).throw(OSError('no pages')))
+    assert ps.tester_builds_on(mirror.home) is False
+
+
+def test_tester_build_with_foreign_signer_refused_on_both(mirror):
+    run = _tester(mirror, apk=build_apk('someone-else'))
+    seen = {}
+    # Tester box: the prerelease's APK is really signed by another key; it is refused and the public one stays.
+    assert run(tester=True, seen=seen) == 'updated:versionCode=78'
+    assert json.loads((mirror.feed / 'latest.json').read_text())['versionName'] == '0.10.14'
+    assert not (mirror.feed / 'wizard-os-0.10.15.apk').exists()
+    assert seen['rejected'] == ['0.10.15 (unavailable_or_invalid)']
+    # Normal box: never even read.
+    mirror.state['hits'].clear()
+    assert run(tester=False) == 'unchanged' and '/tester.apk' not in mirror.state['hits']
+
+
+def test_tester_build_signer_field_must_match(mirror):
+    run = _tester(mirror)
+    mirror.state['tester.json']['signer'] = '0' * 64
+    assert run(tester=True) == 'updated:versionCode=78'
+    assert '/tester.apk' not in mirror.state['hits']
+
+
+def test_tester_build_capped_like_ci_releases(mirror):
+    run = _tester(mirror, code=78 + ps.MAX_CI_LEAD + 1)
+    assert run(tester=True) == 'updated:versionCode=78'
+    assert '/tester.apk' not in mirror.state['hits']
+
+
+def test_tester_build_bytes_and_size_checked(mirror):
+    run = _tester(mirror)
+    mirror.state['tester.json']['sha256'] = '0' * 64
+    assert run(tester=True) == 'updated:versionCode=78'
+    mirror.state['tester.json'] = dict(mirror.state['tester.json'], sha256=hashlib.sha256(mirror.state['tester_apk']).hexdigest(),
+                                       bytes=len(mirror.state['tester_apk']) + 1)
+    assert run(tester=True) == 'unchanged'
+    assert not (mirror.feed / 'wizard-os-0.10.15.apk').exists()
+
+
+def test_public_release_wins_once_it_passes_the_tester_build(mirror):
+    run = _tester(mirror)
+    mirror.pointer.update(versionCode=80, versionName='0.10.16')
+    assert run(tester=True) == 'updated:versionCode=80'
+    assert json.loads((mirror.feed / 'latest.json').read_text())['versionName'] == '0.10.16'
+
+
+def test_only_published_prereleases_with_matching_phone_json(mirror):
+    run = _tester(mirror, draft=True)
+    assert run(tester=True) == 'updated:versionCode=78'
+    run = _tester(mirror, prerelease=False)          # a public release is read from releases/latest, not here
+    assert run(tester=True) == 'unchanged'
+    run = _tester(mirror)
+    mirror.state['tester.json']['versionName'] = '0.10.17'   # phone.json naming another version than its tag
+    assert run(tester=True) == 'unchanged'
+    assert '/tester.apk' not in mirror.state['hits']
+
+
+def test_newest_prerelease_picked_by_version(mirror):
+    origin = mirror.url.rsplit('/', 1)[0]
+    older = {'tag_name': 'android-v0.10.9', 'prerelease': True, 'draft': False,
+             'assets': [{'name': 'phone.json', 'browser_download_url': origin + '/old.json'}]}
+    run = _tester(mirror, extra=[older])
+    assert ps.tester_pointer_urls(__import__('urllib.request').request.build_opener(ps._Redirect(True)),
+                                  origin + '/releases', True) == [('0.10.15', origin + '/tester.json'), ('0.10.9', origin + '/old.json')]
+    assert ps.tester_pointer_urls(__import__('urllib.request').request.build_opener(ps._Redirect(True)),
+                                  origin + '/releases', True, limit=1) == [('0.10.15', origin + '/tester.json')]
+    assert run(tester=True) == 'updated:versionCode=79'
+
+
+def test_production_tester_asset_url_is_pinned(mirror):
+    origin = mirror.url.rsplit('/', 1)[0]
+    mirror.state['releases'] = [
+        {'tag_name': 'android-v0.10.20', 'prerelease': True, 'draft': False,
+         'assets': [{'name': 'phone.json', 'browser_download_url': 'https://evil.test/phone.json'}]},
+        {'tag_name': 'android-v0.10.19', 'prerelease': True, 'draft': False,
+         'assets': [{'name': 'phone.json', 'browser_download_url': ps.TESTER_ASSET.format(version='0.10.19')}]}]
+    opener = __import__('urllib.request').request.build_opener(ps._Redirect(False))
+    assert ps.tester_pointer_urls(opener, origin + '/releases', False) == [(
+        '0.10.19', 'https://github.com/humanitylabs-org/wizard-ux/releases/download/android-v0.10.19/phone.json')]
+
+
+def test_release_list_unreadable_keeps_public_sync(mirror):
+    run = _tester(mirror)
+    mirror.state['releases'] = None   # 404
+    assert run(tester=True) == 'updated:versionCode=78'
+
+
+def test_run_line_names_the_tester_build(mirror, monkeypatch):
+    run = _tester(mirror)
+    monkeypatch.setattr(ps, 'sync', lambda home, root, seen, **kw: seen.update(tester='0.10.15', read=True) or 'updated:versionCode=79')
+    assert ps.run(mirror.home, mirror.root, owners=[], notify=lambda *a: True).startswith('updated:versionCode=79 tester-newest:0.10.15')
+
+
+def test_bad_newest_tester_build_falls_back_to_the_one_before(mirror):
+    """The newest prerelease is really signed by someone else: the previous tester build is offered, not the public one."""
+    origin = mirror.url.rsplit('/', 1)[0]
+    run = _tester(mirror, version='0.10.16', code=80, apk=build_apk('someone-else'))
+    good = build_apk(payload=b'tester build 0.10.15')
+    mirror.state['good.apk'] = good
+    mirror.state['good.json'] = dict(mirror.pointer, versionCode=79, versionName='0.10.15', asset_url=origin + '/good.apk',
+                                     sha256=hashlib.sha256(good).hexdigest(), bytes=len(good))
+    mirror.state['releases'].insert(1, {'tag_name': 'android-v0.10.15', 'prerelease': True, 'draft': False,
+                                        'assets': [{'name': 'phone.json', 'browser_download_url': origin + '/good.json'}]})
+    seen = {}
+    assert run(tester=True, seen=seen) == 'updated:versionCode=79'
+    assert (mirror.feed / 'wizard-os-0.10.15.apk').read_bytes() == good
+    assert seen['rejected'] == ['0.10.16 (unavailable_or_invalid)'] and seen['tester'] == '0.10.16'

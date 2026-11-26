@@ -1,4 +1,7 @@
-"""Mirror the public Android release onto this box. No installs, restarts, or maintain-mode decisions."""
+"""Mirror the public Android release onto this box. No installs, restarts, or maintain-mode decisions.
+
+A box on For testers with the feature switch `wizard/phone-tester-builds` on also mirrors the newest phone tester
+build (an `android-v<version>` GitHub prerelease, wizard-os#720), with the same checks (#799)."""
 from __future__ import annotations
 
 import fcntl
@@ -29,6 +32,14 @@ SIGNER = "3bf74d0b597bc170761079909d3692428702ba057f753ee1ffd62da3c76ed1fd"
 # A CI release may run at most this far ahead of the reviewed pointer; bigger jumps go through a pointer PR (#789),
 # so one forged or mistaken huge versionCode can never freeze the feed above every real release.
 MAX_CI_LEAD = 20
+# Tester builds (#799): with release lanes on (wizard-ux WOS_RELEASE_LANES) every phone merge is published as a
+# GitHub prerelease, which `releases/latest` never names. A box whose owner turned this switch on (feature switches
+# are only on for boxes on For testers) also reads the newest android-v* prerelease's phone.json from this list.
+SWITCH = "wizard/phone-tester-builds"
+RELEASES = "https://api.github.com/repos/humanitylabs-org/wizard-ux/releases?per_page=30"
+TESTER_ASSET = "https://github.com/humanitylabs-org/wizard-ux/releases/download/android-v{version}/phone.json"
+MAX_RELEASES = 4 * 1024 * 1024
+TESTER_CANDIDATES = 3   # newest tester builds read per run
 UNIT = "wizard-phone-sync"
 MAX_POINTER = 64 * 1024
 MAX_APK = 200 * 1024 * 1024
@@ -198,26 +209,91 @@ def _publish(directory, opener, p, ceiling=None):
     return f"updated:versionCode={p['versionCode']}"
 
 
-def sync(home: Path, runtipi_root: Path, *, pointer_url=None, release_url=None, fixture=False, seen=None):
+def tester_builds_on(home) -> bool:
+    """Whether this box takes phone tester builds: switch `wizard/phone-tester-builds` on (only possible on For
+    testers; feature_switches.is_on is False on For everyone and whenever the switch can't be read)."""
+    try:
+        from . import feature_switches
+        return feature_switches.is_on(SWITCH, home, timeout=4)
+    except Exception:  # noqa: BLE001 - a switch read never breaks the public mirror
+        return False
+
+
+def tester_pointer_urls(opener, url, fixture, limit=TESTER_CANDIDATES):
+    """[(version, phone.json URL)] of the newest published (not draft) android-v<version> prereleases that carry a
+    phone.json, newest first, at most `limit`: when the newest tester APK fails its checks, the one before it is next."""
+    req = urllib.request.Request(url, headers={'Accept': 'application/vnd.github+json', 'Accept-Encoding': 'identity',
+                                               'X-GitHub-Api-Version': '2022-11-28'})
+    with opener.open(req, timeout=20) as response:
+        if response.status != 200:
+            raise ValueError('release list must return 200')
+        raw = response.read(MAX_RELEASES + 1)
+    if len(raw) > MAX_RELEASES:
+        raise ValueError('release list too large')
+    best = []
+    for r in json.loads(raw):
+        if not isinstance(r, dict):
+            continue
+        tag = r.get('tag_name')
+        if r.get('prerelease') is not True or r.get('draft') is not False or not (isinstance(tag, str) and tag.startswith('android-v')):
+            continue
+        version = tag.removeprefix('android-v')
+        try:
+            key = _version(version)
+        except ValueError:
+            continue
+        assets = [a for a in r.get('assets') or [] if isinstance(a, dict) and a.get('name') == 'phone.json']
+        if not assets:
+            continue
+        link = assets[0].get('browser_download_url')
+        parsed = urllib.parse.urlsplit(link if isinstance(link, str) else '')
+        local = fixture and parsed.scheme == 'http' and parsed.hostname == '127.0.0.1' and not parsed.username
+        if not (link == TESTER_ASSET.format(version=version) or local):
+            continue
+        best.append((key, version, link))
+    best.sort(key=lambda b: b[0], reverse=True)
+    return [(version, link) for _, version, link in best[:limit]]
+
+
+def sync(home: Path, runtipi_root: Path, *, pointer_url=None, release_url=None, fixture=False, seen=None,
+         tester=None, releases_url=None):
     """Return one outcome; caller logs one line. fixture permits loopback HTTP in hermetic tests only.
 
     Reads the mirror pointer and the newest wizard-ux release's phone.json and mirrors the highest valid
     versionCode the box admits. A test that passes only pointer_url reads only that pointer.
     `seen` (a dict, optional) gets `read` (a release source answered), `newest` (the newest valid release within the
     CI lead cap, also when this box's snapshot gate holds it back) and `rejected` (candidates whose APK failed),
-    which the feed watchdog (`run`) compares with what the feeds serve."""
+    which the feed watchdog (`run`) compares with what the feeds serve.
+    `tester` (default: the box switch, never read when a test passes pointer_url) also reads the newest phone tester
+    build (prerelease) as one more CI candidate: same validation, versionCode cap, snapshot gate, sha256/size and
+    real signer; `seen['tester']` names it. Without it the release list is never fetched."""
     directory = Path(runtipi_root) / 'app-data/wizard-os/phone'
     opener = urllib.request.build_opener(_Redirect(fixture))
     urls = [pointer_url or POINTER] + ([release_url] if release_url else [] if pointer_url else [RELEASE_POINTER])
+    if tester is None:
+        tester = pointer_url is None and tester_builds_on(home)
+    want = {}
+    if tester:
+        try:
+            got = tester_pointer_urls(opener, releases_url or RELEASES, fixture)
+        except _SKIP:
+            got = []   # no list (offline, GitHub's hourly limit): the public release still syncs
+        for version, link in got:
+            want[len(urls)] = version
+            urls.append(link)
     found, failures, reviewed = [], [], None
     for i, url in enumerate(urls):
         try:
             p = _pointer(opener, url, fixture)
+            if i in want and p['versionName'] != want[i]:
+                raise ValueError('tester phone.json names another version')
         except _SKIP as e:
             failures.append(_outcome(e, url))
             continue
         if i == 0:
             reviewed = p['versionCode']
+        if i in want and seen is not None and 'tester' not in seen:
+            seen['tester'] = p['versionName']   # the newest tester build read
         found.append((i == 0, p))
     if not found:
         return failures[0]
@@ -469,6 +545,8 @@ def run(home: Path, runtipi_root: Path, *, owners=None, now=None, notify=None, *
     mirror = Path(runtipi_root) / 'app-data/wizard-os/phone'
     why = outcome + (f"; newest not mirrored: {', '.join(seen['rejected'])}" if seen.get('rejected') else '')
     feeds, outcomes, parts = {'mirror': mirror}, {'mirror': why}, [outcome]
+    if seen.get('tester'):   # this box took part in tester builds (#799): name the one it read
+        parts.append(f"tester-newest:{seen['tester']}")
     for i, d in enumerate(owner_feed_dirs(home) if owners is None else owners):
         label = 'owner' if i == 0 else f'owner{i + 1}'
         try:
