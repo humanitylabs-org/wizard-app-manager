@@ -201,7 +201,7 @@ def stock_record(c: Config, ref: str) -> dict:
         return find()
     except stock_runtipi.NotInStore as e:
         raise index.IndexError_(f"{e}; this box installs only apps in the Wizard store "
-                                f"({stock_runtipi.box_store_url(getattr(c, "home", None))})") from None
+                                f"({stock_runtipi.box_store_url(getattr(c, 'home', None))})") from None
 
 
 def read_grants(c: Config, rt) -> list:
