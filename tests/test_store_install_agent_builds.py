@@ -253,7 +253,7 @@ def _serve(box, monkeypatch):
     monkeypatch.setattr(cli.alongside, "load", lambda home: {})
     monkeypatch.setattr(si, "peer_uid", lambda port: 0)
     monkeypatch.setattr(si, "owner_login", lambda: "owner@test")
-    monkeypatch.setattr(si, "own_ips", lambda: {"100.64.0.1"})
+    monkeypatch.setattr(si, "own_ips", lambda: {"192.0.2.1"})
     monkeypatch.setattr(si, "served_origins", lambda host: {"https://box.example.ts.net:8444"})
     monkeypatch.setattr(cli.StoreHandler, "cfg", box.c, raising=False)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), cli.StoreHandler)
@@ -261,7 +261,7 @@ def _serve(box, monkeypatch):
     return srv
 
 
-HEAD = {"X-Forwarded-For": "100.64.0.9", "Tailscale-User-Login": "owner@test", "Origin": "https://box.example.ts.net:8444",
+HEAD = {"X-Forwarded-For": "192.0.2.9", "Tailscale-User-Login": "owner@test", "Origin": "https://box.example.ts.net:8444",
         "X-Wizard-Store": "1", "Content-Type": "application/json"}
 
 
@@ -309,7 +309,7 @@ def test_route_installs_refuses_changed_links_and_answers_already_current(box, m
 def test_route_refuses_a_request_from_the_box_itself(box, monkeypatch):
     srv = _serve(box, monkeypatch)
     try:
-        for hop in ("100.64.0.1", "127.0.0.1"):   # an app container or the agent reaches Serve from the box
+        for hop in ("192.0.2.1", "127.0.0.1"):   # an app container or the agent reaches Serve from the box
             code, got = _call(srv, "POST", "/galaxy-calc", _sel(box), {"X-Forwarded-For": hop})
             assert code == 403 and got["error"] == si.FROM_BOX
         assert not box.calls
