@@ -231,8 +231,14 @@ def commit_of(sha256: str) -> str:
 def installed(c, app_id: str) -> dict | None:
     """The installed app's agent-build record, or None when it is not installed or not an agent build."""
     from . import cli
+    if not isinstance(app_id, str) or not ID.fullmatch(app_id):
+        return None
+    apps = (Path(c.runtipi_root) / "apps" / cli.STORE).resolve()
+    folder = (apps / app_id).resolve()
+    if folder.parent != apps:   # an app id names one folder in the store, nothing else
+        return None
     try:
-        src = json.loads((Path(c.runtipi_root) / "apps" / cli.STORE / app_id / ".wizard-source").read_text())
+        src = json.loads((folder / ".wizard-source").read_text())
     except (OSError, ValueError):
         return None
     return src if isinstance(src, dict) and src.get("source") == SOURCE else None
