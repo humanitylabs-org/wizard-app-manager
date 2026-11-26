@@ -227,8 +227,9 @@ def _ensure(home, on, run, which) -> dict:
         return {"state": "off", "switch": SWITCH}
     p = paths()
     base = {"switch": SWITCH, "release": TAG, "commit": COMMIT}
-    if not host_agent():
-        return _save(home, {**base, "state": "no-host-agent",
+    if not host_agent():                              # keep what an earlier run installed, so off still removes it
+        keep = {k: st[k] for k in ("installed_by_wam", "commit") if k in st}
+        return _save(home, {**base, **keep, "state": "no-host-agent",
                             "note": "this box's agent is the stock Hermes container; Human Handoff runs only next to "
                                     "a host Hermes, so Connected accounts' Google setup stays manual here"})
     if p["bin"].exists() and not st.get("installed_by_wam"):

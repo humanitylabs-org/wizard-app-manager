@@ -146,6 +146,14 @@ def test_fresh_box_container_agent_is_not_touched(box, monkeypatch):
     assert run.calls == []
 
 
+def test_losing_the_host_agent_never_orphans_the_install(box, monkeypatch):
+    hh.ensure(on=True, run=Fake(), which=all_there)
+    monkeypatch.setattr(hh, "host_agent", lambda: None)
+    assert hh.ensure(on=True, run=Fake(), which=all_there)["state"] == "no-host-agent"
+    res = hh.ensure(on=False, run=Fake(), which=all_there)
+    assert res["removed"] is True and not hh.paths()["bin"].exists()
+
+
 def test_switch_off_again_removes_what_it_installed(box):
     hh.ensure(on=True, run=Fake(), which=all_there)
     run = Fake()
