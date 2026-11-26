@@ -101,6 +101,17 @@ def _no_switch_feedback_sends(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_human_handoff(request, monkeypatch):
+    """Human Handoff (wizard-os#775) never installs anything or reads the box's switch in tests;
+    tests/test_human_handoff.py tests the module itself."""
+    if request.module.__name__.endswith("test_human_handoff"):
+        return
+    from wam import human_handoff
+    monkeypatch.setattr(human_handoff, "tick", lambda *a, **k: {"state": "off"})
+    monkeypatch.setattr(human_handoff, "spawn", lambda *a, **k: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_private_first_download(monkeypatch):
     """`wam private-first on` starts a detached `wam prefetch --private-first` (WAM#836); a test never does.
     tests/test_recommended.py keeps its own reference to the real function to test it with a fake Popen."""

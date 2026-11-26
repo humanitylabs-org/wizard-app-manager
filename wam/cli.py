@@ -23,6 +23,8 @@ Wizard additions:
     [--report-only|--act]       the guardian repairs broken links by itself; --report-only keeps it to reporting
                                 (saved, kept across updates); --act turns repairs back on
   wam agent-runtime [--json] [--dry-run]  install/update the agent runtime helper the Agent Service creates agents with
+  wam human-handoff [--ensure] [--json]  Human Handoff for the host agent (switch wizard/human-handoff): status, or
+                                install/remove it to match the switch (wizard-os#775)
   wam app-updates [--apply [ids]|--ask|--auto|--hold id]  new versions of installed apps (hourly when Automatic;
                                 checked and rolled back on failure)
   wam agent-restart [wait [--minutes N]|now|cancel]  a waiting Agent Service restart (it waits for running chats):
@@ -3556,6 +3558,9 @@ def main(argv: list[str] | None = None) -> int:
                      help="the guardian only reports what it would fix (saved; kept across updates)")
     trg.add_argument("--act", dest="guardian", action="store_true", default=None,
                      help="the guardian repairs broken links by itself (the default)")
+    hh = sub.add_parser("human-handoff", help="Human Handoff for the host agent (switch wizard/human-handoff)")
+    hh.add_argument("--json", action="store_true")
+    hh.add_argument("--ensure", action="store_true", help="install or remove it to match the switch")
     arp = sub.add_parser("agent-runtime", help="install/update the agent runtime helper (agents, private first) for this box")
     arp.add_argument("--json", action="store_true"); arp.add_argument("--dry-run", action="store_true")
     arp.add_argument("--no-restart", action="store_true", help="write the Agent Service's settings but don't restart it")
@@ -3677,11 +3682,18 @@ def main(argv: list[str] | None = None) -> int:
         res = quick_update.run(args.quick_apply, auto=args.quick_auto)
         print(json.dumps(res, indent=2))
         return 0 if res.get("done") or res.get("fallback") else 1
+    if args.cmd == "human-handoff":
+        from . import human_handoff as hh_
+        res = hh_.ensure() if args.ensure else hh_.status()
+        print(json.dumps(res, indent=2) if args.json else hh_.describe(res))
+        return 1 if res.get("state") in ("failed", "error") else 0
     if args.cmd == "app-updates":
         from . import app_updates as au_
         if args.apply_if_auto:              # the hourly tick also sends Try new features counts (off by default; #701)
             from . import switch_feedback
             switch_feedback.tick()
+            from . import human_handoff     # and keeps Human Handoff in line with its switch (wizard-os#775)
+            human_handoff.tick()
         res = (au_.set_mode("auto") if args.auto else au_.set_mode("ask") if args.ask
                else au_.hold(args.hold) if args.hold else au_.hold(args.unhold, False) if args.unhold
                else au_.ensure_timer() if args.ensure_timer else au_.apply_if_auto() if args.apply_if_auto
