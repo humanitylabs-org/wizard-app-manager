@@ -266,7 +266,8 @@ def gateway_path_ok(path: str) -> bool:
     p = path.strip("/")
     return (bool(ID.fullmatch(p)) or p in (*GATEWAY_CONTROL[:2], "_disk", "_feature-switches", "_switch-feedback", "_app-updates")
             or p == "_connections" or p.startswith("_connections/")
-            or (p.startswith("_start/") and bool(ID.fullmatch(p.removeprefix("_start/")))))
+            or (p.startswith("_start/") and bool(ID.fullmatch(p.removeprefix("_start/"))))
+            or (p.startswith("_builds/") and bool(ID.fullmatch(p.removeprefix("_builds/")))))   # #997, read-only
 
 
 def gateway_proof_ok(headers, home) -> bool:

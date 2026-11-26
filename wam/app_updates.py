@@ -210,6 +210,19 @@ def _release_managed_strict() -> set[str] | None:
     return {str(row["app"]) for row in (doc.get("default_apps") or {}).values() if isinstance(row, dict) and row.get("app")}
 
 
+BUILT_HERE = "Built on this Wizard"
+
+
+def _built_here(runtipi_root: Path, store: str, app_id: str) -> bool:
+    """The installed app is one the owner's agent built on this box (agent_builds.py, #997): it updates only when
+    the owner taps Update on the agent's new link, never from the App Index."""
+    try:
+        src = json.loads((Path(runtipi_root) / "apps" / store / app_id / ".wizard-source").read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(src, dict) and src.get("source") == "agent-build"
+
+
 def unpin_standard(runtipi_root: Path, store: str, app_id: str, managed: set[str] | None = None) -> bool:
     """Drop the pin a Standard Store Get/Update leaves behind (wizard-os#614).
 
@@ -340,6 +353,8 @@ def candidates(installed: list[dict], *, store: str, runtipi_root: Path, home: P
         skip = None
         if app_id in SYSTEM_APPS or app_id in managed:
             skip = "system"            # moves with the WizardOS release
+        elif _built_here(runtipi_root, store, app_id):
+            skip = "built-here"        # #997: the owner's agent built it on this box; nothing remote to check
         elif _selection_pinned(runtipi_root, store, app_id):
             skip = "pinned"            # an exact owner-local selection
         elif older(runtipi_root, store, app_id):
@@ -354,7 +369,8 @@ def candidates(installed: list[dict], *, store: str, runtipi_root: Path, home: P
         elif app.get("status") not in ("running", "stopped"):
             skip = f"busy:{app.get('status')}"
         out.append({"id": app_id, "name": display_name(runtipi_root, store, app_id), "from": have, "to": latest, "to_version": meta.get("latestDockerVersion"),
-                    "status": app.get("status"), "skip": skip})
+                    "status": app.get("status"), "skip": skip,
+                    **({"note": BUILT_HERE} if skip == "built-here" else {})})
     return sorted(out, key=lambda r: r["id"])
 
 

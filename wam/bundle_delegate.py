@@ -30,7 +30,8 @@ GUARD = 'WAM_FROM_BUILDER_BUNDLE'   # set on the exec'd box wam: never delegate 
 # box's registry, routes, apps, views state or
 # the builder bundle itself (`builder-skill` installs the bundle and `views` writes ~/.wizard-os/views, so both go to
 # the box's wam).
-BUILDER_COMMANDS = frozenset({'new', 'check', 'verify', 'install-local', 'update-local', 'publish', 'package-inline'})
+BUILDER_COMMANDS = frozenset({'new', 'check', 'verify', 'install-local', 'update-local', 'publish', 'package-inline',
+                              'build-link'})   # #997: the agent's install link for the owner
 # `builder-bundle` actions the bundle runs itself: they read or switch only ~/.wizard-os/builder, with this newer code.
 BUNDLE_LOCAL = frozenset({'doctor', 'rollback'})
 # What still runs inside an agent container with no box wam: builder commands, help, the read-only index search,
