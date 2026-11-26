@@ -30,6 +30,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -1494,6 +1495,7 @@ def reconcile(c, rt=None, apply: bool = True, restart: bool = True, extra=(), re
     `wam serve` watcher and the installer can all call it)."""
     if not apply:
         return _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh)
+    _stock_grants(c, rt)
     import fcntl
     c.home.mkdir(parents=True, exist_ok=True)
     with open(c.home / "networks.lock", "a") as lock:
@@ -1502,6 +1504,19 @@ def reconcile(c, rt=None, apply: bool = True, restart: bool = True, extra=(), re
             return _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh)
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _stock_grants(c, rt) -> None:
+    """Stock Runtipi (switch wizard-os#822 on): the grants the networks follow are reconciled first, as the fork did
+    before every app start (wam/stock_grants.py). Off: nothing. Never fails the network reconcile."""
+    from . import stock_runtipi
+    if not stock_runtipi.on(getattr(c, "home", None)):
+        return
+    from . import stock_grants
+    try:
+        stock_grants.tick(c.runtipi_root, rt or c.runtipi(), c.home)
+    except Exception as e:  # noqa: BLE001
+        print(f"note: app grants not reconciled ({str(e)[:200]})", file=sys.stderr)
 
 
 def _reconcile(c, rt, apply, restart, extra, restart_fn, on, fresh) -> dict:

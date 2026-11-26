@@ -354,7 +354,8 @@ fwd_env() {
     WIZARD_AGENT_SAFE="$AGENT_SAFE" WIZARD_RESTART_DELAY="${WIZARD_RESTART_DELAY:-}" \
     WIZARD_DETACHED="${WIZARD_DETACHED:-}" WIZARD_TAILSCALE_WAIT="${WIZARD_TAILSCALE_WAIT:-}" \
     WIZARD_INSTALL_RUNNER_PID="${WIZARD_INSTALL_RUNNER_PID:-}" WIZARD_PRIVATE_FIRST="${WIZARD_PRIVATE_FIRST:-}" \
-    WIZARD_BROWSER_BOUNDARY="${WIZARD_BROWSER_BOUNDARY:-}"
+    WIZARD_BROWSER_BOUNDARY="${WIZARD_BROWSER_BOUNDARY:-}" \
+    WIZARD_STOCK_RUNTIPI="${WIZARD_STOCK_RUNTIPI:-}" WIZARD_STOCK_STORE="${WIZARD_STOCK_STORE:-}"
 }
 # Cloud-init can race logind's D-Bus startup. Retry, but never hide exhaustion.
 enable_linger() {
@@ -1472,6 +1473,14 @@ python3 - "$PINS" "$DIR" "${WIZARD_MODE:-fresh}" "$RECORD" "${WIZARD_STRICT:-0}"
 import json, os, re, subprocess, sys, time
 pins_path, wam_dir, mode, out_path, strict, install_rc = sys.argv[1:7]
 rel = json.load(open(pins_path))
+# wizard-os#822: a stock-Runtipi box (installer switch WIZARD_STOCK_RUNTIPI, recorded in stock-runtipi.json) runs
+# Runtipi's own image, not the App Manager's, and installs apps at the commits its git store carries.
+try:
+    _stock = json.load(open(os.path.expanduser("~/.wizard-os/stock-runtipi.json"))).get("on") is True
+except (OSError, ValueError, AttributeError):
+    _stock = False
+_v = os.environ.get("WIZARD_STOCK_RUNTIPI", "").strip().lower()
+stock = _v in ("1", "true", "on", "yes") or (_stock and _v not in ("0", "false", "off", "no"))
 def write(rec):
     tmp = out_path + ".tmp"
     with open(tmp, "w") as f:
@@ -1505,7 +1514,11 @@ try:
   dirty = run("git", "-C", wam_dir, "status", "--porcelain", "--untracked-files=no")
   check("App Manager checkout clean", "clean", "clean" if not dirty else "modified: " + " ".join(dirty.split()[:6]), True)
   running_names = run(*docker, "ps", "--format", "{{.Names}}").split()
-  digest_check("wizard-app-manager", "runtipi" if "runtipi" in running_names else "", True)
+  if stock:   # Runtipi's own image runs: say which one, never compare it with the App Manager's
+      img = run(*docker, "inspect", "--format", "{{.Config.Image}}", "runtipi") if "runtipi" in running_names else ""
+      check("stock Runtipi", "ghcr.io/runtipi/runtipi", img.split(":", 1)[0] or "no running container runtipi", True)
+  else:
+      digest_check("wizard-app-manager", "runtipi" if "runtipi" in running_names else "", True)
   names = run(*docker, "ps", "--format", "{{.Names}}").split()
   def container_for(app):
       # Exact Runtipi project boundary, not a substring that can match another app/test stack.
@@ -1554,8 +1567,8 @@ try:
       a = apps.get(app_id)
       check(f"default app {slot}", f"{app_id} {d.get('index_version')}",
             f"{app_id} {a.get('version')}" if a else f"{app_id} not installed", False)
-      if d.get("commit"):
-          check(f"default app source {slot}", d["commit"], (a or {}).get("commit") or "not installed", True)
+      if d.get("commit"):   # stock: the store's commit may differ from the release's; shown as drift, not a failure
+          check(f"default app source {slot}", d["commit"], (a or {}).get("commit") or "not installed", not stock)
 except Exception as e:   # never leave a run without a record
     check("read-back", "completed", f"error: {type(e).__name__}: {e}"[:200], True)
 core_bad = [c for c in checks if c["core"] and not c["ok"]]

@@ -130,6 +130,9 @@ def store_ok(c: Config, s: dict | None) -> bool:
 
 def ensure_store(c: Config, rt: Runtipi) -> None:
     """The Wizard store is the index itself (no git catalog): it must exist and be enabled."""
+    from . import stock_runtipi
+    if stock_runtipi.on(getattr(c, "home", None)):
+        return ensure_stock_store(c, rt)
     s = {x.get("slug"): x for x in rt.stores()}.get(STORE)
     if store_ok(c, s):
         return
@@ -146,6 +149,59 @@ def ensure_store(c: Config, rt: Runtipi) -> None:
             rt.req("DELETE", "/marketplace/wizard-apps")
     rt.req("POST", "/marketplace/create", {"name": STORE, "url": c.index})
     rt.req("PATCH", f"/marketplace/{STORE}", {"name": STORE_NAME, "enabled": True})
+
+
+def ensure_stock_store(c: Config, rt: Runtipi) -> None:
+    """Stock Runtipi (wizard-os#822): `wizardapps` is a plain git store, the generated wizard-app-store branch
+    (stock_runtipi.box_store_url). Runtipi derives the slug from the name, so it is created as "wizardapps" and
+    renamed, as above. A `wizardapps` store pointing anywhere else (an App Index URL left by the fork) is refused
+    by name: stock Runtipi can't read an index, and changing a store's URL is the owner's call."""
+    from . import stock_runtipi
+    url = stock_runtipi.box_store_url(getattr(c, "home", None))
+    s = {x.get("slug"): x for x in rt.stores()}.get(STORE)
+    if s and str(s.get("url") or "").rstrip("/") != url.rstrip("/"):
+        raise SystemExit(f"the Wizard store ({STORE}) on this Runtipi reads {s.get('url')}, not the stock store {url}; "
+                         f"remove it in Runtipi's App Store settings (no apps may use it) or set {stock_runtipi.STORE_ENV}")
+    if s and s.get("enabled"):
+        return
+    if s:
+        rt.req("PATCH", f"/marketplace/{STORE}", {"name": s.get("name") or STORE_NAME, "enabled": True})
+        return
+    rt.req("POST", "/marketplace/create", {"name": STORE, "url": url})
+    rt.req("PATCH", f"/marketplace/{STORE}", {"name": STORE_NAME, "enabled": True})
+    rt.pull()
+
+
+def stock_record(c: Config, ref: str) -> dict:
+    """resolve_any on a stock box: the app's record comes from the git store Runtipi holds, never the App Index.
+    An app missing from the local copy gets one store pull (a newer store may list it) before it is refused."""
+    from . import stock_runtipi
+    rt = c.runtipi()
+    ensure_stock_store(c, rt)
+
+    def find() -> dict:
+        if "/" not in ref:
+            return stock_runtipi.record(c.runtipi_root, STORE, ref)
+        want = ref.strip("/").removeprefix("https://github.com/").lower()
+        apps = c.runtipi_root / "repos" / STORE / "apps"
+        for d in sorted(apps.iterdir()) if apps.is_dir() else []:
+            try:
+                if str(json.loads((d / ".wizard-source").read_text()).get("repo") or "").lower() == want:
+                    return stock_runtipi.record(c.runtipi_root, STORE, d.name)
+            except (OSError, ValueError, AttributeError):
+                continue
+        raise stock_runtipi.NotInStore(f"no app from {ref} in the Wizard store ({STORE})")
+
+    try:
+        return find()
+    except stock_runtipi.NotInStore:
+        pass
+    try:
+        rt.pull()
+        return find()
+    except stock_runtipi.NotInStore as e:
+        raise index.IndexError_(f"{e}; this box installs only apps in the Wizard store "
+                                f"({stock_runtipi.box_store_url(getattr(c, 'home', None))})") from None
 
 
 def read_grants(c: Config, rt) -> list:
@@ -1549,7 +1605,11 @@ def resolve_any(c: Config, ref: str, *, pin_repo: str | None = None) -> dict:
     inside prepare before any image load/pull or store mutation.
     `pin_repo`: fetch the release pin's commit from this repo instead (the repo's current name when the release
     still pins its old one, #1047), so the box keeps the name it already follows.
+    On a stock-Runtipi box (wizard-os#822) the git store is the only source: see stock_record.
     """
+    from . import stock_runtipi
+    if stock_runtipi.on(getattr(c, "home", None)):
+        return stock_record(c, ref)
     pinned = release_pins.resolve(ref)
     if pinned:
         if pin_repo:
@@ -1914,6 +1974,9 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
     Only apps installed from the release's own repo are moved; anything else the owner chose stays.
     `only` limits it to those apps (the quick shell update must never touch another default the owner moved).
     """
+    from . import stock_runtipi
+    if stock_runtipi.on(getattr(c, "home", None)):   # wizard-os#822: the stock store carries the release's commits
+        return stock_release_updates(c, rt, failed, only)
     doc = release_pins.load() or {}
     if not doc.get("default_apps"):
         return []
@@ -1996,6 +2059,69 @@ def release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None 
     return out
 
 
+def stock_release_updates(c: Config, rt: Runtipi, failed: dict, only: set[str] | None = None) -> list[str]:
+    """release_updates on a stock box (wizard-os#822). The generated store carries the For testers release's default
+    apps at the release's commits (wizard-app-store scripts/stock-store), so an installer run moves every installed
+    default whose store copy is newer (tipi_version) to it, through the same checked update path, and checks the
+    commit afterwards. The store is pulled first so a rerun sees the newest release."""
+    try:
+        rt.pull()
+    except Exception as e:  # noqa: BLE001 - an unreachable store still lets the installed apps run
+        print(f"note: the Wizard store could not be refreshed ({str(e)[:120]}); defaults stay as they are",
+              file=sys.stderr)
+    have = set(installed_ids(rt))
+    defaults = [d.get("app") for d in slots.load_defaults().values() if (d or {}).get("app")]
+
+    def tipi(p: Path) -> int:
+        try:
+            return int(json.loads((p / "config.json").read_text()).get("tipi_version") or 0)
+        except (OSError, ValueError, TypeError, AttributeError):
+            return 0
+    out = []
+    for app_id in dict.fromkeys(defaults):
+        if app_id not in have or (only is not None and app_id not in only):
+            continue
+        store_copy = c.runtipi_root / "repos" / STORE / "apps" / app_id
+        live = c.runtipi_root / "apps" / STORE / app_id
+        if tipi(store_copy) <= tipi(live):
+            continue
+        if app_id == "hermes-agent":
+            from .hermes_lock import authorize
+            try:
+                authorize()
+            except (ValueError, OSError):
+                continue   # independent Hermes pause
+        try:
+            want = (store_copy / ".wizard-commit").read_text().strip()
+            print(f"updating {app_id} to the Wizard store's {want[:12]}", file=sys.stderr)
+            rec = stock_record(c, app_id)
+            urn = f"{app_id}:{STORE}"
+            before = (rt.app(urn) or {}).get("app") or {}
+            info = json.loads((store_copy / "config.json").read_text())
+
+            def fill(rt_, urn_, info=info, uses=rec.get("uses") or []):
+                current = ((rt_.app(urn_) or {}).get("app") or {}).get("config") or {}
+                form, missing = build_form(c, app_id, info, current, uses=uses)
+                if missing:
+                    return missing
+                form = {**form, **current}
+                if form != current:
+                    rt_.req("PATCH", f"/app-lifecycle/{urn_}/update-config", form, timeout=120)
+                return []
+            res = app_update(c, app_id, settings=fill)
+            if res.get("error"):
+                raise RuntimeError(res["error"])
+            expected_status = 'running' if before.get('status') == 'running' or res.get('revived') else 'stopped'
+            if res.get('status') != expected_status:
+                raise RuntimeError("app update did not finish in its previous running/stopped state")
+            if (live / ".wizard-commit").read_text().strip() != want:
+                raise RuntimeError("installed app does not match the Wizard store (update may have rolled back)")
+            out.append(app_id)
+        except (SystemExit, RuntimeError, RuntipiError, OSError, ValueError, index.IndexError_) as e:
+            failed[app_id] = f"update to the Wizard store failed: {e}"[:200]
+    return out
+
+
 def _app_container_states(urn: str) -> list[str]:
     """Docker states of the containers Runtipi labelled for one app (empty when they are all gone)."""
     from .agent_link import _docker
@@ -2023,6 +2149,7 @@ def partly_running(urn: str, status: str | None) -> bool:
 # install runs recover right after bootstrap, while apps are still coming up on a busy box.
 RECOVER_LIST_TRIES = 5
 RECOVER_SETTLE_S = 90
+STOCK_STRANDED_STATES = ("starting", "restarting", "updating")   # recover(): stock statuses a reboot can strand
 STARTING_STATES = {"created", "restarting"}   # docker states of a container that is on its way up
 
 
@@ -2078,6 +2205,12 @@ def recover(c: Config, running: list[str] | tuple[str, ...] = ()) -> dict:
     from . import update_strand
     stranded = [u for u, st in installed.items() if u not in want and update_strand.stranded(c, u, st)]
     want += stranded
+    # wizard-os#822: stock Runtipi never settles a status its queue left mid-way (the fork's status sync did), so an
+    # app caught by a reboot while starting, restarting or updating keeps that status with its containers stopped.
+    # It was meant to run: start it like an app recorded running. Stopping/uninstalling ones stay as they are.
+    from . import stock_runtipi
+    if stock_runtipi.on(getattr(c, "home", None)):
+        want += [u for u, st in installed.items() if u not in want and st in STOCK_STRANDED_STATES]
     started, failed, skipped = [], {}, []
     for urn in dict.fromkeys(want):
         app_id = urn.split(":", 1)[0]

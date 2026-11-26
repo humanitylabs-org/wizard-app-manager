@@ -41,8 +41,11 @@ class RuntipiError(RuntimeError):
 
 
 class Runtipi:
-    def __init__(self, base: str, secret: str, fallback: str | None = None):
+    def __init__(self, base: str, secret: str, fallback: str | None = None, root: Path | None = None):
         self.base = base.rstrip("/")
+        # The Runtipi root this client belongs to: with the stock-Runtipi switch on, wam answers the fork-only
+        # grants and connections routes itself from the files there (wam/stock_grants.py, wizard-os#822).
+        self.root = Path(root) if root is not None else None
         self.secret = secret
         # JWT_SECRET when `secret` is Runtipi 4.12's CLI key (WAM#839): a 401 with the
         # key is retried once with it, so a key rotated since it was read never locks wam out while the fork accepts both.
@@ -57,7 +60,7 @@ class Runtipi:
             raise RuntipiError(f"JWT_SECRET missing in {root / '.env'}")
         from .runtipi_key import secret
         key = secret(root, env["JWT_SECRET"])
-        return cls(f"http://{host}:{port}/api", key, env["JWT_SECRET"])
+        return cls(f"http://{host}:{port}/api", key, env["JWT_SECRET"], root=root)
 
     def ensure_operator(self, cred_file: Path) -> bool:
         """A fresh Runtipi has no operator, so CLI tokens map to nobody (401). Create one, once.
@@ -157,6 +160,15 @@ class Runtipi:
             waited += self.STEP
 
     def req(self, method: str, path: str, body: dict | None = None, timeout: int = 60):
+        if self.root is not None:
+            from . import stock_grants
+            if stock_grants.handles(path):
+                g = stock_grants.for_runtipi(self)
+                if g is not None:
+                    try:
+                        return stock_grants.handle(g, method, path, body)
+                    except stock_grants.GrantError as e:
+                        raise RuntipiError(f"{method} {path} -> 400: {str(e)[:400]!r}") from None
         data = json.dumps(body).encode() if body is not None else None
         for secret in (self.secret, self.fallback):
             if secret is None:
