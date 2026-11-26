@@ -384,3 +384,9 @@ def test_feature_switch_read_says_the_box_supports_install_links(monkeypatch, tm
 def test_gateway_listener_allows_only_the_read(monkeypatch):
     assert si.gateway_path_ok("_builds/galaxy-calc") and not si.gateway_path_ok("_builds/../x")
     assert not si.gateway_path_ok("_builds/galaxy-calc/x")
+
+
+def test_build_link_runs_in_the_stock_agent_container():
+    # the agent's container has no box wam: bundle_delegate stops box commands there, never this one
+    from wam import bundle_delegate as bd
+    assert "build-link" in bd.BUILDER_COMMANDS and "build-link" in bd.CONTAINER_OK
