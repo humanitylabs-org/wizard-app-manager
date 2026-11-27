@@ -319,22 +319,20 @@ def overlay(p: dict, service: str, agent_home: Path | None = None) -> dict:
     return {"service": service, "environment": env, "volumes": vols}
 
 
-def _hand_roots(path: Path, service: str) -> bool:
-    """The override already sets WIZARD_AGENT_ARTIFACT_ROOTS outside this block (an owner's hand fix): keep it as
-    they set it rather than refuse the whole block over the clash."""
-    from .network import load_yaml
-    try:
-        doc = load_yaml(Path(path).read_text()) or {}
-        env = doc["services"][service]["environment"]
-        mark = doc.get(MARK) if isinstance(doc.get(MARK), dict) else {}
-        return isinstance(env, dict) and ARTIFACT_ROOTS in env and ARTIFACT_ROOTS not in (mark.get("environment") or [])
-    except Exception:   # noqa: BLE001 - no file or not readable: write_overlay reports a broken one
-        return False
-
-
 def _block(p: dict, runtipi_root, store: str, app_id: str) -> dict:
-    over = _bb.override_path(runtipi_root, store, app_id)
-    return overlay(p, app_id, None if _hand_roots(over, app_id) else agent_home(runtipi_root, store))
+    """The block with the agent's output folders. When the override already sets WIZARD_AGENT_ARTIFACT_ROOTS outside
+    this block (an owner's hand fix), write_overlay would refuse the whole block over the clash and leave the runtime
+    unwired: keep their setting as it is and write the block without the folders."""
+    block = overlay(p, app_id, agent_home(runtipi_root, store))
+    if ARTIFACT_ROOTS not in block["environment"]:
+        return block
+    try:
+        _bb.render(_bb.override_path(runtipi_root, store, app_id), block, MARK)
+    except ValueError as e:
+        if "hand-written" in str(e) and ARTIFACT_ROOTS in str(e):
+            return overlay(p, app_id)
+        raise
+    return block
 
 
 def sync_app(home, runtipi_root, store: str, app_id: str, wizard_home=None) -> bool:
