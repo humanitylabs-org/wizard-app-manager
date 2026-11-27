@@ -18,6 +18,9 @@ hand-provisioned boxes had it, so on a standard install every agent creation fai
 - writes its own marked block (`x-wizard-agent-runtime`) into the Agent Service's Runtipi user-config override:
   WIZARD_AGENT_RUNTIME_URL=unix:..., the token file (read-only), WIZARD_AGENT_UPSTREAM=network (agents are reached
   by their app name on the same network), and restarts the Agent Service when that block changed;
+- when the main agent runs in its own container (the hermes-agent app), mounts that agent's output folders
+  read-only at the paths the agent reports them (/opt/data/cache/...) and lists them in WIZARD_AGENT_ARTIFACT_ROOTS,
+  so pictures and files the agent sends with MEDIA:/opt/data/... show in chat instead of "[file: x unavailable]";
 - leaves alone a hand-installed helper (a unit this command did not write) and alongside boxes, whose Agent Service
   runs on the host network and keeps whatever its owner set up.
 
@@ -47,6 +50,10 @@ SOCKET_MOUNT = "/run/wizard-agent-runtime"
 TOKEN_MOUNT = "/run/wizard-agent-runtime-token"
 KEEP_RELEASES = 3
 _SAFE = re.compile(r"^/[A-Za-z0-9._/@+-]+$")
+AGENT_APP = "hermes-agent"       # the main agent's app; its home folder is mounted at /opt/data in its container
+AGENT_HOME_MOUNT = "/opt/data"
+ARTIFACT_ROOTS = "WIZARD_AGENT_ARTIFACT_ROOTS"
+RECIPE_ROOTS = ("/hermes/cache/images", "/media")   # the Agent Service recipe's own roots, always kept
 _HEX = re.compile(r"[0-9a-f]{64}")
 
 
@@ -267,16 +274,65 @@ def hand_installed(p: dict) -> bool:
         return True
 
 
-def overlay(p: dict, service: str) -> dict:
-    """The Agent Service's block: where the helper's socket and token are, and agents on the shared network."""
+def agent_home(runtipi_root: Path, store: str) -> Path:
+    """The containerised main agent's home on the host (its /opt/data), where it writes the files it sends."""
+    return Path(runtipi_root) / "app-data" / store / AGENT_APP / "data"
+
+
+def _agent_outputs(home: Path | None) -> list[tuple[str, str]]:
+    """(host folder, container path) for each agent output folder (alongside.AGENT_OUTPUT_DIRS) of a containerised
+    main agent. The agent reports MEDIA:/opt/data/cache/images/x.png, so the Agent Service gets each folder read-only
+    at that same path. Nothing when the agent's home is not there (no hermes-agent app). A missing folder is made
+    (empty) first: the agent makes cache/images only on its first picture, after the Agent Service started."""
+    from .alongside import AGENT_OUTPUT_DIRS
+    if home is None or not Path(home).is_dir():
+        return []
+    if not _SAFE.fullmatch(str(home)):
+        raise ValueError(f"path {str(home)!r} has characters a compose file can't carry safely")
+    out = []
+    for rel in AGENT_OUTPUT_DIRS:
+        d = Path(home) / rel
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        if d.is_dir():
+            out.append((str(d), f"{AGENT_HOME_MOUNT}/{rel}"))
+    return out
+
+
+def overlay(p: dict, service: str, agent_home: Path | None = None) -> dict:
+    """The Agent Service's block: where the helper's socket and token are, and agents on the shared network. With
+    the main agent's home (`agent_home()`, a containerised agent), also its output folders, read-only, and the
+    artifact roots naming them, so the files it sends in chat are found."""
     for v in (str(p["sock_dir"]), str(p["token"])):
         if not _SAFE.fullmatch(v):
             raise ValueError(f"path {v!r} has characters a compose file can't carry safely")
-    return {"service": service,
-            "environment": {"WIZARD_AGENT_RUNTIME_URL": f"unix:{SOCKET_MOUNT}/runtime.sock",
-                            "WIZARD_AGENT_RUNTIME_TOKEN_FILE": TOKEN_MOUNT,
-                            "WIZARD_AGENT_UPSTREAM": "network"},
-            "volumes": [f"{p['sock_dir']}:{SOCKET_MOUNT}:ro", f"{p['token']}:{TOKEN_MOUNT}:ro"]}
+    env = {"WIZARD_AGENT_RUNTIME_URL": f"unix:{SOCKET_MOUNT}/runtime.sock",
+           "WIZARD_AGENT_RUNTIME_TOKEN_FILE": TOKEN_MOUNT,
+           "WIZARD_AGENT_UPSTREAM": "network"}
+    vols = [f"{p['sock_dir']}:{SOCKET_MOUNT}:ro", f"{p['token']}:{TOKEN_MOUNT}:ro"]
+    outs = _agent_outputs(agent_home)
+    if outs:
+        vols += [f"{src}:{dst}:ro" for src, dst in outs]
+        env[ARTIFACT_ROOTS] = ":".join([RECIPE_ROOTS[0], *(dst for _, dst in outs), *RECIPE_ROOTS[1:]])
+    return {"service": service, "environment": env, "volumes": vols}
+
+
+def _block(p: dict, runtipi_root, store: str, app_id: str) -> dict:
+    """The block with the agent's output folders. When the override already sets WIZARD_AGENT_ARTIFACT_ROOTS outside
+    this block (an owner's hand fix), write_overlay would refuse the whole block over the clash and leave the runtime
+    unwired: keep their setting as it is and write the block without the folders."""
+    block = overlay(p, app_id, agent_home(runtipi_root, store))
+    if ARTIFACT_ROOTS not in block["environment"]:
+        return block
+    try:
+        _bb.render(_bb.override_path(runtipi_root, store, app_id), block, MARK)
+    except ValueError as e:
+        if "hand-written" in str(e) and ARTIFACT_ROOTS in str(e):
+            return overlay(p, app_id)
+        raise
+    return block
 
 
 def sync_app(home, runtipi_root, store: str, app_id: str, wizard_home=None) -> bool:
@@ -289,7 +345,7 @@ def sync_app(home, runtipi_root, store: str, app_id: str, wizard_home=None) -> b
         return False
     if st.get("state") != "ready" or st.get("app") != app_id:
         return False
-    return _bb.write_overlay(_bb.override_path(runtipi_root, store, app_id), overlay(p, app_id), MARK)
+    return _bb.write_overlay(_bb.override_path(runtipi_root, store, app_id), _block(p, runtipi_root, store, app_id), MARK)
 
 
 def healthy(p: dict, timeout: float = 3.0) -> bool:
@@ -409,7 +465,7 @@ def install(wizard_home: Path, runtipi_root: Path, app_ids, store: str = "wizard
         return done("failed", app=app_id, commit=commit,
                     reason=f"the helper did not answer on its socket (systemctl --user status {UNIT})")
     try:
-        changed = _bb.write_overlay(_bb.override_path(runtipi_root, store, app_id), overlay(p, app_id), MARK)
+        changed = _bb.write_overlay(_bb.override_path(runtipi_root, store, app_id), _block(p, runtipi_root, store, app_id), MARK)
     except ValueError as e:
         return done("failed", app=app_id, commit=commit, reason=str(e)[:300])
     # a new token reaches a running Agent Service only through a recreate (its bind mount still holds the old file)
