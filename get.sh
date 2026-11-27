@@ -1196,11 +1196,18 @@ if str(rel.get("version")) != want:
 lock = json.load(open(sys.argv[3]))
 if lock.get('schema') != 1 or lock.get('automatic_updates') != 'paused':
     sys.exit('invalid shared Hermes lock')
-if 'hermes' in rel and any((rel.get('hermes') or {}).get(k) != lock['hermes'].get(k) for k in ('tag', 'commit', 'image')):
-    sys.exit('release Hermes differs from the shared exact lock')
 agent = (rel.get('default_apps') or {}).get('agent') or {}
-if agent.get('app') == 'hermes-agent' and any(agent.get(k) != lock['agent_recipe'].get(k) for k in ('app', 'repo', 'commit')):
-    sys.exit('release agent recipe differs from the shared exact Hermes lock')
+def pinned(pin, recipe):
+    return not ('hermes' in rel and any((rel.get('hermes') or {}).get(k) != pin.get(k) for k in ('tag', 'commit', 'image')) or
+                agent.get('app') == 'hermes-agent' and any(agent.get(k) != recipe.get(k) for k in ('app', 'repo', 'commit')))
+# A promotion keeps the pin it replaced as `previous` while stable still runs it (wizard-app-manager#856): a release
+# pinning all of it stays installable, never a mix of the two.
+prev = lock.get('previous') if lock.get('state') == 'approved' and isinstance(lock.get('previous'), dict) else None
+if not (prev and pinned(prev.get('hermes') or {}, prev.get('agent_recipe') or {})):
+    if 'hermes' in rel and any((rel.get('hermes') or {}).get(k) != lock['hermes'].get(k) for k in ('tag', 'commit', 'image')):
+        sys.exit('release Hermes differs from the shared exact lock')
+    if agent.get('app') == 'hermes-agent' and any(agent.get(k) != lock['agent_recipe'].get(k) for k in ('app', 'repo', 'commit')):
+        sys.exit('release agent recipe differs from the shared exact Hermes lock')
 def image(name):
     im = (rel.get("images") or {}).get(name) or {}
     ref, dig = str(im.get("ref", "")), str(im.get("digest", ""))

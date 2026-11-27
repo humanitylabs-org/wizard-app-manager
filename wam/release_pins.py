@@ -97,6 +97,11 @@ def resolve(ref):
     doc = load()
     lock = hermes_lock.load()
     row = lock['agent_recipe']
+    # A release on the pin the promotion replaced (stable while the new one soaks, #856) installs that recipe.
+    prev = (lock.get('previous') or {}).get('agent_recipe')
+    agent = (doc.get('default_apps') or {}).get('agent') or {}
+    if prev and all(agent.get(k) == prev[k] for k in ('app', 'repo', 'commit')):
+        row = prev
     if ref in (row['app'], row['repo'], 'https://github.com/' + row['repo']):
         return {'id': row['app'], 'repo': row['repo'], 'commit': row['commit'], 'image': None}
     for row in doc.get("default_apps", {}).values():

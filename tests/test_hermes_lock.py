@@ -45,7 +45,7 @@ def test_app_update_is_paused_before_runtime_access(monkeypatch):
 def test_unpinned_fresh_install_resolves_exact_recipe(monkeypatch):
     monkeypatch.delenv('WIZARD_RELEASE_PINS', raising=False)
     pin = release_pins.resolve('hermes-agent')
-    assert pin['commit'] == 'e8ae558f26bf4b981e0cad60e387386a1ad7b869'
+    assert pin['commit'] == '8db4cc2aa51b9b91cd9369631b2aa47b4dc48c1d'
     assert pin['repo'] == 'oscarhenrycollins/hermes-agent'
     assert release_pins.resolve('unrelated') is None
 
@@ -182,3 +182,62 @@ def test_future_release_image_inputs_cover_workflow_and_policy():
 def test_public_lock_and_packaged_lock_are_identical():
     root = Path(__file__).resolve().parents[1]
     assert (root / 'releases/hermes-lock.json').read_bytes() == (root / 'wam/hermes-lock.json').read_bytes()
+
+
+def _pin_release(box, pin, recipe):
+    path = box['rel'] / '9.9.9.json'
+    release = json.loads(path.read_text())
+    release['hermes'] = copy.deepcopy(pin)
+    release['default_apps']['agent'] = {**release['default_apps']['agent'], **{k: recipe[k] for k in ('app', 'repo', 'commit')}}
+    path.write_text(json.dumps(release))
+
+
+def test_installer_takes_a_stable_release_on_the_replaced_pin(box):
+    # wizard-app-manager#856: the promoted lock goes to For testers first, so For everyone's stable snapshot still pins
+    # the replaced engine for 72h. A fresh install of it must not fail closed on the new shared lock.
+    lock = json.loads((box['rel'] / 'hermes-lock.json').read_text())
+    _pin_release(box, lock['previous']['hermes'], lock['previous']['agent_recipe'])
+    result, _ = box['run']()
+    assert 'shared exact' not in result.stderr, result.stderr
+    assert (box['home'] / 'install-env').exists(), result.stdout + result.stderr
+
+
+@pytest.mark.parametrize('mix', ['old-engine-new-recipe', 'new-engine-old-recipe'])
+def test_installer_refuses_a_mix_of_replaced_and_locked_pins(box, mix):
+    lock = json.loads((box['rel'] / 'hermes-lock.json').read_text())
+    old, new = lock['previous'], lock
+    pin, recipe = ((old['hermes'], new['agent_recipe']) if mix == 'old-engine-new-recipe'
+                   else (new['hermes'], old['agent_recipe']))
+    _pin_release(box, pin, recipe)
+    result, _ = box['run']()
+    assert result.returncode != 0 and 'shared exact' in result.stderr
+    assert not (box['home'] / 'install-env').exists()
+
+
+def test_release_pins_accept_the_replaced_pin_only_as_a_pair():
+    from wam import hermes_lock
+    lock = hermes_lock.load()
+    old = lock['previous']
+    rel = {'hermes': old['hermes'], 'default_apps': {'agent': old['agent_recipe']}}
+    hermes_lock.check_release(rel)
+    rel['default_apps']['agent'] = lock['agent_recipe']
+    with pytest.raises(ValueError, match='frozen'):
+        hermes_lock.check_release(rel)
+    with pytest.raises(ValueError, match='shared exact lock'):
+        hermes_lock.check_pin(old['hermes'])
+
+
+def test_a_release_on_the_replaced_pin_installs_its_recipe(tmp_path, monkeypatch):
+    from wam import hermes_lock
+    lock = hermes_lock.load()
+    old = lock['previous']
+    pins = tmp_path / 'pins.json'
+    release = {'images': {'wizard-app-manager': {'ref': 'ghcr.io/x/wam', 'digest': 'sha256:' + 'a' * 64},
+                          'wizard-shell': {'ref': 'ghcr.io/x/shell', 'digest': 'sha256:' + 'b' * 64}},
+               'hermes': old['hermes'], 'default_apps': {'agent': {**old['agent_recipe']}}}
+    pins.write_text(json.dumps(release))
+    monkeypatch.setenv('WIZARD_RELEASE_PINS', str(pins))
+    assert release_pins.resolve('hermes-agent')['commit'] == old['agent_recipe']['commit']
+    release['hermes'], release['default_apps']['agent'] = lock['hermes'], {**lock['agent_recipe']}
+    pins.write_text(json.dumps(release))
+    assert release_pins.resolve('hermes-agent')['commit'] == lock['agent_recipe']['commit']
