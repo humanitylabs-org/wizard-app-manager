@@ -45,7 +45,7 @@ def test_app_update_is_paused_before_runtime_access(monkeypatch):
 def test_unpinned_fresh_install_resolves_exact_recipe(monkeypatch):
     monkeypatch.delenv('WIZARD_RELEASE_PINS', raising=False)
     pin = release_pins.resolve('hermes-agent')
-    assert pin['commit'] == '5876502ead6abd5d242ad812a1f1fc57356e8155'
+    assert pin['commit'] == '63df40f03ebbb80040932328835be596f7974c6a'
     assert pin['repo'] == 'oscarhenrycollins/hermes-agent'
     assert release_pins.resolve('unrelated') is None
 
@@ -192,11 +192,18 @@ def _pin_release(box, pin, recipe):
     path.write_text(json.dumps(release))
 
 
-def test_installer_takes_a_stable_release_on_the_replaced_recipe(box):
-    # wizard-app-store#92: the lock moved the recipe (engine with DirectSDK plugin 0.4.1) For testers first, so For
-    # everyone's stable snapshot still pins the replaced recipe. A fresh install of it must not fail closed.
+def _prevs(lock):
+    rows = lock['previous']
+    return rows if isinstance(rows, list) else [rows]
+
+
+@pytest.mark.parametrize('which', [0, 1])
+def test_installer_takes_a_release_on_each_replaced_pin(box, which):
+    # wizard-app-store#92 / wizard-app-manager#856: the lock moved For testers first, so For everyone's stable snapshot
+    # (and For testers' latest until the cut) still pin a replaced pin each. A fresh install of either must not fail.
     lock = json.loads((box['rel'] / 'hermes-lock.json').read_text())
-    _pin_release(box, lock['previous']['hermes'], lock['previous']['agent_recipe'])
+    prev = _prevs(lock)[which]
+    _pin_release(box, prev['hermes'], prev['agent_recipe'])
     result, _ = box['run']()
     assert 'shared exact' not in result.stderr, result.stderr
     assert (box['home'] / 'install-env').exists(), result.stdout + result.stderr
@@ -210,27 +217,37 @@ def test_installer_takes_a_release_on_the_new_recipe(box):
     assert (box['home'] / 'install-env').exists(), result.stdout + result.stderr
 
 
-def test_installer_refuses_a_recipe_that_is_neither(box):
+@pytest.mark.parametrize('which', [0, 1])
+def test_installer_refuses_a_mix(box, which):
     lock = json.loads((box['rel'] / 'hermes-lock.json').read_text())
-    _pin_release(box, lock['previous']['hermes'], {**lock['agent_recipe'], 'commit': 'a' * 40})
+    _pin_release(box, _prevs(lock)[which]['hermes'], lock['agent_recipe'])
     result, _ = box['run']()
     assert result.returncode != 0 and 'shared exact' in result.stderr
     assert not (box['home'] / 'install-env').exists()
 
 
-def test_release_pins_accept_the_replaced_recipe_only_as_a_pair():
-    from wam import hermes_lock
-    lock = hermes_lock.load()
-    old = lock['previous']
-    hermes_lock.check_release({'hermes': old['hermes'], 'default_apps': {'agent': old['agent_recipe']}})
-    with pytest.raises(ValueError, match='frozen'):
-        hermes_lock.check_release({'hermes': old['hermes'], 'default_apps': {'agent': {**old['agent_recipe'], 'commit': 'a' * 40}}})
+def test_installer_refuses_a_recipe_that_is_neither(box):
+    lock = json.loads((box['rel'] / 'hermes-lock.json').read_text())
+    _pin_release(box, _prevs(lock)[0]['hermes'], {**lock['agent_recipe'], 'commit': 'a' * 40})
+    result, _ = box['run']()
+    assert result.returncode != 0 and 'shared exact' in result.stderr
+    assert not (box['home'] / 'install-env').exists()
 
 
-def test_a_release_on_the_replaced_recipe_installs_that_recipe(tmp_path, monkeypatch):
+def test_release_pins_accept_each_replaced_recipe_only_as_a_pair():
     from wam import hermes_lock
     lock = hermes_lock.load()
-    old = lock['previous']
+    for old in _prevs(lock):
+        hermes_lock.check_release({'hermes': old['hermes'], 'default_apps': {'agent': old['agent_recipe']}})
+        with pytest.raises(ValueError, match='frozen'):
+            hermes_lock.check_release({'hermes': old['hermes'], 'default_apps': {'agent': {**old['agent_recipe'], 'commit': 'a' * 40}}})
+
+
+@pytest.mark.parametrize('which', [0, 1])
+def test_a_release_on_a_replaced_recipe_installs_that_recipe(tmp_path, monkeypatch, which):
+    from wam import hermes_lock
+    lock = hermes_lock.load()
+    old = _prevs(lock)[which]
     pins = tmp_path / 'pins.json'
     release = {'images': {'wizard-app-manager': {'ref': 'ghcr.io/x/wam', 'digest': 'sha256:' + 'a' * 64},
                           'wizard-shell': {'ref': 'ghcr.io/x/shell', 'digest': 'sha256:' + 'b' * 64}},
