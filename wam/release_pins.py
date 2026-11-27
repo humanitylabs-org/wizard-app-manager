@@ -99,10 +99,12 @@ def resolve(ref):
     row = lock['agent_recipe']
     # A release on the recipe a lock move replaced (For everyone while the new one soaks, wizard-app-store#92)
     # installs that recipe.
-    prev = (lock.get('previous') or {}).get('agent_recipe')
+    # The lock may keep several replaced pins, one per channel (wizard-app-manager#856).
     agent = ((doc or {}).get('default_apps') or {}).get('agent') or {}
-    if prev and all(agent.get(k) == prev[k] for k in ('app', 'repo', 'commit')):
-        row = prev
+    for prev in hermes_lock._previous(lock):
+        if all(agent.get(k) == prev['agent_recipe'][k] for k in ('app', 'repo', 'commit')):
+            row = prev['agent_recipe']
+            break
     if ref in (row['app'], row['repo'], 'https://github.com/' + row['repo']):
         return {'id': row['app'], 'repo': row['repo'], 'commit': row['commit'], 'image': None}
     for row in doc.get("default_apps", {}).values():

@@ -1200,10 +1200,11 @@ agent = (rel.get('default_apps') or {}).get('agent') or {}
 def pinned(pin, recipe):
     return not ('hermes' in rel and any((rel.get('hermes') or {}).get(k) != pin.get(k) for k in ('tag', 'commit', 'image')) or
                 agent.get('app') == 'hermes-agent' and any(agent.get(k) != recipe.get(k) for k in ('app', 'repo', 'commit')))
-# A lock move keeps the pin it replaced as `previous` while For everyone still runs it (wizard-app-store#92): a release
-# pinning all of it stays installable, never a mix of the two.
-prev = lock.get('previous') if isinstance(lock.get('previous'), dict) else None
-if not (prev and pinned(prev.get('hermes') or {}, prev.get('agent_recipe') or {})):
+# A lock move keeps the pin(s) it replaced as `previous` while a channel still runs them (wizard-app-store#92; one per
+# channel, wizard-app-manager#856): a release pinning all of one stays installable, never a mix.
+prevs = lock.get('previous')
+prevs = [p for p in (prevs if isinstance(prevs, list) else [prevs]) if isinstance(p, dict)]
+if not any(pinned(p.get('hermes') or {}, p.get('agent_recipe') or {}) for p in prevs):
     if 'hermes' in rel and any((rel.get('hermes') or {}).get(k) != lock['hermes'].get(k) for k in ('tag', 'commit', 'image')):
         sys.exit('release Hermes differs from the shared exact lock')
     if agent.get('app') == 'hermes-agent' and any(agent.get(k) != lock['agent_recipe'].get(k) for k in ('app', 'repo', 'commit')):
