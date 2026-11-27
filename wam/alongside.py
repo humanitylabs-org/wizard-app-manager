@@ -409,6 +409,42 @@ def stale_session_mounts(override_text: str, hermes_home: str) -> list[str]:
     return []
 
 
+SESSION_DB = "/hermes/state.db"
+
+
+def session_db_mounted(override_text: str, app_id: str | None = None) -> bool:
+    """Does the override give the service (`app_id`, else any) the session database: WIZARD_HERMES_STATE_PATH set to
+    /hermes/state.db and a volume mounted there. Read from the parsed YAML, so it holds however a writer quoted the
+    value (browser_boundary.write_overlay re-dumps the whole file without the quotes, WAM#1115)."""
+    from .network import load_yaml, _plain
+    try:
+        doc = load_yaml(override_text or "") or {}
+    except Exception:   # noqa: BLE001 - unreadable override: nothing is mounted as far as we can tell
+        return False
+    svcs = doc.get("services") if isinstance(doc, dict) else None
+    if not isinstance(svcs, dict):
+        return False
+    for name, svc in svcs.items():
+        if app_id is not None and name != app_id or not isinstance(svc, dict):
+            continue
+        env = _plain(svc.get("environment"))
+        if isinstance(env, list):   # compose list form: ["KEY=value", ...]
+            env = {k: val for k, _, val in (str(e).partition("=") for e in env)}
+        if not isinstance(env, dict) or str(_plain(env.get("WIZARD_HERMES_STATE_PATH")) or "") != SESSION_DB:
+            continue
+        vols = _plain(svc.get("volumes")) or []
+        for v in vols if isinstance(vols, list) else []:
+            v = _plain(v)
+            if isinstance(v, dict):
+                target = v.get("target")
+            else:
+                parts = str(v).split(":")
+                target = parts[1] if len(parts) > 1 else None
+            if target == SESSION_DB:
+                return True
+    return False
+
+
 # Folders where the host Hermes writes files it sends back with MEDIA:<host path> (pictures, voice replies,
 # screenshots, videos). The Agent Service gets each one read-only at the SAME path, so the path the agent reports
 # is the path the service opens; under /hermes it would not match and every picture/voice reply was dropped.
