@@ -20,7 +20,7 @@ import type { AppJobContext } from '../app-lifecycle/services/app-job.service';
 
 export class BackupRecoveryError extends Error {}
 
-// Wizard (#1074, switch wizard/shorter-app-updates): `prestage` copies the app data while the app still runs, so the
+// Wizard (#1074): `prestage` copies the app data while the app still runs, so the
 // stopped copy only re-copies what changed; `restart` replaces starting the old version again after the stopped copy
 // (an update starts its new version there instead).
 export type BackupOptions = { prestage?: boolean; restart?: () => Promise<void> };

@@ -173,17 +173,17 @@ test('update-all leaves Hermes untouched and still updates unrelated apps', asyn
   expect(commandFactory.execute).toHaveBeenCalledWith(expect.objectContaining({ appUrn: 'files:wizardapps' }), expect.anything());
 });
 
-// wizard-app-manager#1074: the App Manager's wizardShortDowntime reaches the update command; without it nothing changes.
-test.each([
-  [{ performBackup: true, wizardShortDowntime: true }, true],
-  [{ performBackup: true }, undefined],
-  [{ performBackup: true, wizardShortDowntime: false }, undefined],
-])('the update request %o reaches the command with shortDowntime %s', async (body, expected) => {
-  const { handler, logger, commandFactory } = await createHandler();
-  const service = Object.assign(Object.create(AppLifecycleService.prototype), { updateAppHandler: handler, logger }) as AppLifecycleService;
-  await new AppLifecycleController(service, mock<AppJobService>()).updateApp('files:wizardapps', body);
-  await waitForQueueResult();
-  const [event] = commandFactory.execute.mock.calls[0] ?? [];
-  expect(event).toMatchObject({ command: 'update', performBackup: true });
-  expect((event as { shortDowntime?: boolean }).shortDowntime).toBe(expected);
-});
+// wizard-app-manager#1074: the short update is the only one now; an older App Manager that still sends
+// wizardShortDowntime gets the same update command as one that does not.
+test.each([[{ performBackup: true }], [{ performBackup: true, wizardShortDowntime: true }]])(
+  'the update request %o reaches the command as a plain update',
+  async (body) => {
+    const { handler, logger, commandFactory } = await createHandler();
+    const service = Object.assign(Object.create(AppLifecycleService.prototype), { updateAppHandler: handler, logger }) as AppLifecycleService;
+    await new AppLifecycleController(service, mock<AppJobService>()).updateApp('files:wizardapps', body as { performBackup: boolean });
+    await waitForQueueResult();
+    const [event] = commandFactory.execute.mock.calls[0] ?? [];
+    expect(event).toMatchObject({ command: 'update', performBackup: true });
+    expect(event).not.toHaveProperty('shortDowntime');
+  },
+);

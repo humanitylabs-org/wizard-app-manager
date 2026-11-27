@@ -26,8 +26,6 @@ const uninstallAppBodySchema = type({
 const updateAppBodySchema = type({
   performBackup: 'boolean',
   hermesPromotion: 'string?',
-  // Wizard (#1074): the App Manager's switch wizard/shorter-app-updates; one stop per update of a running app.
-  wizardShortDowntime: 'boolean?',
 });
 
 const lifecycleRequestSchema = type({

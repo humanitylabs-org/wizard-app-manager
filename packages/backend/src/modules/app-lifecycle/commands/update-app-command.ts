@@ -27,10 +27,6 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     private readonly performBackup: boolean = false,
     private readonly wasRunningBeforeUpdate: boolean = false,
     private readonly context?: AppJobContext,
-    // Wizard (wizard-app-manager#1074, switch wizard/shorter-app-updates): a running app with a backup is stopped once.
-    // Its data is copied while it runs, only what changed is copied again while it is stopped, and the update goes
-    // straight to the new version from there (no start of the old version in between).
-    private readonly shortDowntime: boolean = false,
   ) {
     super(moduleRef, docker);
   }
@@ -185,8 +181,9 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       };
 
       let switched = false;
-      if (!hasPendingMigrations && this.performBackup && this.shortDowntime && this.wasRunningBeforeUpdate) {
-        // #1074: the backup's stop is the update's only stop. The backup starts the new version instead of the old
+      if (!hasPendingMigrations && this.performBackup && this.wasRunningBeforeUpdate) {
+        // Wizard (wizard-app-manager#1074): a running app with a backup is stopped once. Its data is copied while it
+        // runs, only what changed is copied again while it is stopped, and the backup's stop is the update's only stop. The backup starts the new version instead of the old
         // one, then packs its archive while the new version runs; a backup that fails after that still rolls back.
         await backupManager.backupApp(appUrn, true, this.context, {
           prestage: true,
