@@ -372,7 +372,7 @@ def listing(home: Path | None = None, fetch=_get, pages: Pages | None = None, ap
             "note": ("Feature switches are for testers: choose For testers in Settings › About & updates."
                      if locked else ""), "switches": rows + list(apps), "apps": list(status),
             # What this App Manager can do, so the shell only offers what the box supports (#997: the Install
-            # sheet for an app the agent built, used while wizard/install-agent-builds is on)
+            # sheet for an app the agent built)
             "install_agent_builds": True}
 
 

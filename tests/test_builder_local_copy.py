@@ -446,9 +446,6 @@ def test_preserved_rule_coverage_in_canonical_source():
                  '--kind list', 'wam verify <source>', 'Five failed `wam verify` runs', 'Never write new test harnesses',
                  'openThread']:
         assert rule in text
-    # #997: the hand-over with install links off (`wam build-link` prints it) keeps the earlier step 5 word for word
-    from wam import builder
-    assert '?open=<app-id>' in builder.OFF_STEP and 'authenticated same-origin' in builder.OFF_STEP
     assert 'forum-ci-runner-add' not in text  # personal infrastructure, not app source
     assert len(text.split()) < 1500, 'the builder skill stays short; detail belongs in references'
     views = (bb.SOURCE / 'system-skills/wizard-builder/references/views.md').read_text()

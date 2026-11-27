@@ -2743,9 +2743,8 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._github(method, app_id.removeprefix('_github').lstrip('/'))
         if app_id.startswith('_host-access/'):   # the owner's own device accepts host access (host_access_gate.py)
             return self._host_access(method, app_id.removeprefix('_host-access/'))
-        if app_id.startswith('_builds/'):   # #997: the Install sheet's read of what the agent built (switch on only)
-            from . import agent_builds
-            if method == 'GET' and agent_builds.switch_on(c.home):
+        if app_id.startswith('_builds/'):   # #997: the Install sheet's read of what the agent built
+            if method == 'GET':
                 return self._builds(app_id.removeprefix('_builds/'))
         if app_id == '_recommended':
             from . import recommended
@@ -4107,7 +4106,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"note: gateway store install listener not started ({e})", file=sys.stderr)
             start_network_watch(c)
             start_connections_watch(c)
-            from . import agent_builds   # #997: tells the agents' `wam build-link` whether install links work
+            from . import agent_builds   # #997: tells the agents' `wam build-link` the shell origin
             agent_builds.start_watch(c)
             srv = ThreadingHTTPServer((c.bind, c.port), Handler)
             print(f"wizard-app-manager API on http://{c.bind}:{c.port} (index {c.index})", flush=True)

@@ -1,4 +1,4 @@
-"""Install what the owner's agent built on this Wizard, with one owner tap (#997, switch wizard/install-agent-builds).
+"""Install what the owner's agent built on this Wizard, with one owner tap (#997; on for everyone).
 
 The agent builds an app with `wam new` into its own `~/.wizard-os/dev/<id>`, which lives on this box at
 `<app-data>/<store>/<agent app>/data/home/.wizard-os/dev/<id>`. The agent can't install anything itself (no Docker in
@@ -17,8 +17,6 @@ then it is written into the Wizard store folder like a private GitHub app (priva
 The installed record `.wizard-source` says `{"source": "agent-build", "agent": <agent app>, "sha256": ...}`; it also
 carries `repo: local/<id>` + `local: true`, the identity Remove app already knows for apps with no GitHub repo.
 
-With the switch off nothing here runs: the Store route answers a `build` selection exactly as before (refused) and
-there is no `_builds/<id>` read.
 """
 from __future__ import annotations
 
@@ -33,7 +31,6 @@ import threading
 import time
 from pathlib import Path
 
-SWITCH = "wizard/install-agent-builds"
 SOURCE = "agent-build"
 SHA256 = re.compile(r"[a-f0-9]{64}")
 ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
@@ -49,12 +46,6 @@ class BuildError(ValueError):
     def __init__(self, msg: str, code: int = 400):
         super().__init__(msg)
         self.code = code
-
-
-def switch_on(home=None) -> bool:
-    """Whether the owner turned wizard/install-agent-builds on (tests monkeypatch this)."""
-    from . import feature_switches
-    return feature_switches.is_on(SWITCH, home, timeout=4)
 
 
 # --- where the agents keep their builds -------------------------------------------------------------------------
@@ -273,7 +264,7 @@ def describe(c, build: str) -> dict:
 # --- the selection ------------------------------------------------------------------------------------------------
 
 def resolve(c, app_id: str, body: dict) -> dict:
-    """The server-side selection for a `build` body (store_selection.resolve hands it here when the switch is on)."""
+    """The server-side selection for a `build` body (store_selection.resolve hands it here)."""
     if set(body) != {"source", "build", "sha256", "operation"}:
         raise ValueError("exact source, build, sha256 and operation required; ask your agent for a new link")
     build, sha, operation = body["build"], body["sha256"], body["operation"]
@@ -418,27 +409,23 @@ def shell_origin(c) -> str:
     return got[0] if got else ""
 
 
-def sync_markers(c, on: bool | None = None) -> list[str]:
-    """Write (switch on) or remove (off) `dev/.install-agent-builds.json` in every agent's dev folder, so the agent's
-    `wam build-link` knows install links work on this Wizard and which origin to print. Returns the folders changed.
-    A forged marker only makes the agent print a link the Store route then refuses."""
-    on = switch_on(c.home) if on is None else on
-    body = json.dumps({"on": True, "origin": shell_origin(c)}) + "\n" if on else ""
+def sync_markers(c) -> list[str]:
+    """Write `dev/.install-agent-builds.json` (`on` stays for agent bundles from before the switch was removed) in every agent's dev folder, so the agent's `wam build-link` knows which
+    origin to print. Returns the folders changed. A forged marker only changes the origin of a link the Store route
+    still checks."""
+    body = json.dumps({"on": True, "origin": shell_origin(c)}) + "\n"
     changed = []
-    for base in (b for a in agents(c) for b in dev_folders(c, a, create=on)):
+    for base in (b for a in agents(c) for b in dev_folders(c, a, create=True)):
         m = base / MARKER
         try:
             if os.path.islink(m):
                 m.unlink()
             have = m.read_text() if m.is_file() else None
-            if on and have != body:
+            if have != body:
                 tmp = base / f".{MARKER}.{os.getpid()}"
                 tmp.write_text(body)
                 tmp.chmod(0o644)
                 tmp.replace(m)
-                changed.append(str(base))
-            elif not on and have is not None:
-                m.unlink()
                 changed.append(str(base))
         except OSError:
             continue
@@ -446,7 +433,7 @@ def sync_markers(c, on: bool | None = None) -> list[str]:
 
 
 def start_watch(c, every: float = 60.0) -> None:
-    """`wam serve`: keep the agents' markers in step with the switch (the owner flips it in the shell or Tracker)."""
+    """`wam serve`: keep the agents' markers in step with the shell origin (links.json can change)."""
     def loop():
         while True:
             try:
