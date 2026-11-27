@@ -54,7 +54,6 @@ const updateAppCommandSchema = type({
   command: type.unit('update'),
   performBackup: type('boolean').default(true),
   wasRunningBeforeUpdate: type('boolean').default(false),
-  shortDowntime: 'boolean?',
 });
 
 export const appEventSchema = type.or(

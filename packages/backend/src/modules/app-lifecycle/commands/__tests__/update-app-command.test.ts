@@ -30,7 +30,6 @@ const createCommand = (
     stubEnsureAppDir?: boolean;
     initialSubnet?: string | null;
     context?: AppJobContext;
-    shortDowntime?: boolean;
   } = {},
 ) => {
   const logger = mock<LoggerService>();
@@ -115,14 +114,7 @@ const createCommand = (
   ]);
 
   const moduleRef = { get: (token: unknown) => services.get(token) } as ModuleRef;
-  const command = new UpdateAppCommand(
-    moduleRef,
-    docker,
-    options.performBackup ?? true,
-    options.wasRunningBeforeUpdate ?? false,
-    options.context,
-    options.shortDowntime ?? false,
-  );
+  const command = new UpdateAppCommand(moduleRef, docker, options.performBackup ?? true, options.wasRunningBeforeUpdate ?? false, options.context);
   const ensureAppDir =
     options.stubEnsureAppDir === false
       ? undefined
@@ -784,9 +776,9 @@ test.each(['unavailable', 'missing'] as const)('retains recovery resources when 
   ]);
 });
 
-// wizard-app-manager#1074 (switch wizard/shorter-app-updates): one stop per update of a running app with a backup.
-test('with short downtime the backup stop is the only stop: the new version starts from it, never the old one', async () => {
-  const { command, dockerService, backupManager } = createCommand({ wasRunningBeforeUpdate: true, shortDowntime: true });
+// wizard-app-manager#1074: one stop per update of a running app with a backup.
+test('the backup stop is the only stop: the new version starts from it, never the old one', async () => {
+  const { command, dockerService, backupManager } = createCommand({ wasRunningBeforeUpdate: true });
   const order: string[] = [];
   dockerService.composeApp.mockImplementation(async (_urn, step) => {
     order.push(step);
@@ -807,8 +799,8 @@ test('with short downtime the backup stop is the only stop: the new version star
   expect(backupManager.backupApp).toHaveBeenCalledWith(appUrn, true, undefined, expect.objectContaining({ prestage: true }));
 });
 
-test('with short downtime a backup that did not start the new version is followed by the usual update', async () => {
-  const { command, dockerService } = createCommand({ wasRunningBeforeUpdate: true, shortDowntime: true });
+test('a backup that did not start the new version is followed by the usual update', async () => {
+  const { command, dockerService } = createCommand({ wasRunningBeforeUpdate: true });
 
   const result = await command.execute(appUrn, {});
 
@@ -820,8 +812,8 @@ test('with short downtime a backup that did not start the new version is followe
   ]);
 });
 
-test('with short downtime a failed archive after the switch puts the previous version back', async () => {
-  const { command, dockerService, backupManager, filesystem } = createCommand({ wasRunningBeforeUpdate: true, shortDowntime: true });
+test('a failed archive after the switch puts the previous version back', async () => {
+  const { command, dockerService, backupManager, filesystem } = createCommand({ wasRunningBeforeUpdate: true });
   backupManager.backupApp.mockImplementation(async (_urn, _running, _context, options) => {
     await options?.restart?.();
     throw new Error('archive failed');
@@ -840,13 +832,11 @@ test('with short downtime a failed archive after the switch puts the previous ve
   expect(filesystem.copyDirectory).toHaveBeenLastCalledWith('/tmp/runtipi-update-abc/previous-app', '/data/apps/test');
 });
 
-test.each([
-  { shortDowntime: false, wasRunningBeforeUpdate: true },
-  { shortDowntime: true, wasRunningBeforeUpdate: false },
-])('without short downtime or for a stopped app the backup is taken as before (%o)', async (options) => {
-  const { command, backupManager } = createCommand(options);
+test('a stopped app is backed up as before and not started', async () => {
+  const { command, backupManager, dockerService } = createCommand({ wasRunningBeforeUpdate: false });
 
   await command.execute(appUrn, {});
 
-  expect(backupManager.backupApp).toHaveBeenCalledWith(appUrn, options.wasRunningBeforeUpdate, undefined);
+  expect(backupManager.backupApp).toHaveBeenCalledWith(appUrn, false, undefined);
+  expect(dockerService.composeApp.mock.calls.map(([, step]) => step)).toEqual(['pull', 'down --remove-orphans']);
 });

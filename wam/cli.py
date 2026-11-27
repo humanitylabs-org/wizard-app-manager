@@ -3415,12 +3415,8 @@ def _app_update(c: "Config", app_id: str, backup: bool = True, timeout: int | No
     started_ms = int(time.time() * 1000)
     if timeout is None:
         timeout = update_wait_s(c)
-    # #1074: with wizard/shorter-app-updates on, a running app with a backup is stopped once (data copied ahead, new
-    # version started straight from the backup's stop); off, the request is exactly as before
-    from . import short_updates
-    short = bool(backup and was_running and short_updates.on(getattr(c, "home", None)))
     try:
-        request = rt.update(urn, perform_backup=backup, **({"short_downtime": True} if short else {}))
+        request = rt.update(urn, perform_backup=backup)
         time.sleep(3)
         job = update_job(rt, urn, request, timeout)   # #971: the job's own end and reason, when Runtipi has jobs
         if job is not None and job.get("status") not in JOB_ENDED:   # still busy past the wait: never wait twice

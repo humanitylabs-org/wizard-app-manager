@@ -97,11 +97,10 @@ export class AppLifecycleService {
     return this.updateConfigHandler.execute(params.appUrn, { form: params.form });
   }
 
-  public async updateApp(params: { appUrn: AppUrn; performBackup: boolean; hermesPromotion?: string; shortDowntime?: boolean }) {
+  public async updateApp(params: { appUrn: AppUrn; performBackup: boolean; hermesPromotion?: string }) {
     return this.updateAppHandler.execute(params.appUrn, {
       performBackup: params.performBackup,
       hermesPromotion: params.hermesPromotion,
-      ...(params.shortDowntime ? { shortDowntime: true } : {}),
     });
   }
 
