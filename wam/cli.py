@@ -3828,7 +3828,7 @@ def main(argv: list[str] | None = None) -> int:
                                                          "repo); default: the old app's own source")
     args = ap.parse_args(argv)
     if args.cmd == "disk":
-        from . import disk, registry
+        from . import disk
         res = disk.status(registry.home())
         print(json.dumps(res, indent=2) if args.json else disk.describe(res))
         return 0
@@ -4089,7 +4089,6 @@ def main(argv: list[str] | None = None) -> int:
             Handler.cfg, Handler.token = c, c.api_token()
             StoreHandler.cfg = c
             try:
-                import threading
                 from . import store_install
                 ssrv = ThreadingHTTPServer(("127.0.0.1", store_install.PORT), StoreHandler)
                 threading.Thread(target=ssrv.serve_forever, daemon=True).start()
