@@ -629,19 +629,15 @@ def prepare_publish(root, repo):
                           'next': 'Human approves this exact source hash, repo/visibility/topic/catalog and signing separately. Release owner then patches source in an isolated copy, checks it, creates/pushes repo, relists and reads back.'}}
 
 
-OFF_STEP = ('Install through the installation\'s App Manager lifecycle with its authenticated same-origin route '
-            '(for a local proof, `wam install-local <source> --run`), open it in Wizard at `?open=<app-id>`, and give '
-            'the owner the link.')
 TAP = 'Tap Install to add it to your Apps.'
 
 
 def build_link(root, os_home=None, env=None):
     """`wam build-link <source>` (#997): the link the owner taps to install (or update) what the agent built here.
 
-    The box writes `<dev>/.install-agent-builds.json` into the agent's dev folder while the owner has switch
-    wizard/install-agent-builds on (agent_builds.sync_markers); without it, install links don't work on this Wizard
-    and the answer is the builder skill's earlier step 5, word for word. The link carries only the app id and the
-    source hash: the box finds the folder itself and refuses the link once a file changes."""
+    The box writes `<dev>/.install-agent-builds.json` into the agent's dev folder (agent_builds.sync_markers) with the
+    shell origin to print; without it the link is path-only. The link carries only the app id and the source hash:
+    the box finds the folder itself and refuses the link once a file changes."""
     env = os.environ if env is None else env
     root = Path(root).resolve()
     os_home = (Path(os_home) if os_home is not None else _home()).resolve()
@@ -650,8 +646,8 @@ def build_link(root, os_home=None, env=None):
         marker = json.loads((dev / '.install-agent-builds.json').read_text())
     except (OSError, ValueError):
         marker = {}
-    if not (isinstance(marker, dict) and marker.get('on') is True):
-        return {'state': 'install_links_off', 'do': OFF_STEP, 'note': 'install links are off on this Wizard'}
+    if not isinstance(marker, dict):
+        marker = {}
     doc = wizardmd.front_matter((root / 'wizard.md').read_text())
     app_id = _id(str(doc.get('id', '')))
     if root != (dev / app_id).resolve() or (dev / app_id).is_symlink():
@@ -687,7 +683,7 @@ def main(argv=None):
     up = sub.add_parser('update-local'); up.add_argument('source', type=Path); up.add_argument('--run', action='store_true')
     sk = sub.add_parser('builder-skill'); sk.add_argument('--hermes-home', type=Path)
     inline = sub.add_parser('package-inline'); inline.add_argument('source', type=Path)
-    bl = sub.add_parser('build-link', help='The install link for the owner (switch wizard/install-agent-builds).'); bl.add_argument('source', type=Path)
+    bl = sub.add_parser('build-link', help='The install link for the owner.'); bl.add_argument('source', type=Path)
     a = ap.parse_args(argv)
     try:
         if a.cmd == 'new':

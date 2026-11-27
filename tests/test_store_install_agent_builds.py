@@ -1,4 +1,4 @@
-"""#997: an app the owner's agent built on this box installs with one owner tap (switch wizard/install-agent-builds).
+"""#997: an app the owner's agent built on this box installs with one owner tap (on for everyone).
 
 The Store selection `{"source": "build", "build": <id>, "sha256": <hash>, "operation": "install"|"update"}` is resolved
 server-side from the agents' own dev folders, snapshotted and checked; tests here use a scratch Runtipi root with a
@@ -43,7 +43,6 @@ def box(tmp_path, monkeypatch):
     installed = set()
     calls = []
     c = SimpleNamespace(home=home, runtipi_root=root, index="https://index.test", runtipi=lambda: None)
-    monkeypatch.setattr(ab, "switch_on", lambda home=None: True)
     monkeypatch.setattr(ab, "_pullable", lambda compose: [])
     monkeypatch.setattr(cli, "installed_ids", lambda rt: set(installed))
 
@@ -181,10 +180,9 @@ def test_markers_make_the_dev_folder_of_a_fresh_agent(box):
     a.mkdir(parents=True)
     (a / "config.json").write_text(json.dumps({"wizard_type": "agent"}))
     box.c.home.joinpath("links.json").write_text("{}")
-    ab.sync_markers(box.c, on=True)
+    ab.sync_markers(box.c)
     assert json.loads((fresh / ".wizard-os/dev" / ab.MARKER).read_text())["on"] is True
-    ab.sync_markers(box.c, on=False)
-    assert not (fresh / ".wizard-os/dev" / ab.MARKER).exists()
+    assert ab.sync_markers(box.c) == []   # nothing changed: nothing rewritten
 
 
 def test_update_replaces_only_the_recipe_and_the_same_build_is_already_current(box):
@@ -317,53 +315,51 @@ def test_route_refuses_a_request_from_the_box_itself(box, monkeypatch):
         srv.shutdown()
 
 
-def test_switch_off_changes_nothing(box, monkeypatch):
+def test_no_switch_left(box, monkeypatch):
+    """#997 switch-default: the build selection and the _builds read work with no switch to read."""
+    from wam import feature_switches
+    assert not hasattr(ab, "switch_on") and not hasattr(ab, "SWITCH")
+    monkeypatch.setattr(feature_switches, "is_on", lambda *a, **k: pytest.fail("no switch is read"))
     srv = _serve(box, monkeypatch)
-    monkeypatch.setattr(ab, "switch_on", lambda home=None: False)
-    monkeypatch.setattr(ss, "execute", lambda *a: pytest.fail("never runs with the switch off"))
     try:
-        code, got = _call(srv, "POST", "/galaxy-calc", _sel(box))
-        assert (code, got["error"]) == (400, "exact source, repo, commit and operation required; refresh the Store")
         code, got = _call(srv, "GET", "/_builds/galaxy-calc")
-        assert code == 404 and "name" not in got
-        with pytest.raises(ValueError, match="exact source, repo, commit and operation"):
-            ss.resolve(box.c, "galaxy-calc", _sel(box))
+        assert code == 200 and got["name"] == "Galaxy Calc"
     finally:
         srv.shutdown()
-    assert not (box.root / "repos").exists()
+    assert ss.resolve(box.c, "galaxy-calc", _sel(box))
 
 
 # --- the agent's side: wam build-link ----------------------------------------------------------------------------
 
-def test_build_link_prints_the_install_link_only_while_the_box_says_links_work(box, monkeypatch):
+def test_build_link_prints_the_install_link(box, monkeypatch):
     os_home = box.dev.parent
-    off = builder.build_link(box.src, os_home, env={})
-    assert off["state"] == "install_links_off" and off["do"] == builder.OFF_STEP and "link" not in off and "say" not in off
-    # the box writes the marker while the switch is on (wam serve's watch), with the shell's origin
-    monkeypatch.setattr(ab, "shell_origin", lambda c: "https://box.example.ts.net:8444")
-    assert ab.sync_markers(box.c, on=True) == [str(box.dev)]
-    on = builder.build_link(box.src, os_home, env={})
     sha = builder.source_hash(box.src)
+    # before the box wrote its marker: still a link, path-only
+    assert not hasattr(builder, "OFF_STEP")
+    early = builder.build_link(box.src, os_home, env={})
+    assert early["link"] == f"/wizard-os-home/?view=install&build=galaxy-calc&sha256={sha}" and "do" not in early
+    # the box writes the marker (wam serve's watch) with the shell's origin
+    monkeypatch.setattr(ab, "shell_origin", lambda c: "https://box.example.ts.net:8444")
+    assert ab.sync_markers(box.c) == [str(box.dev)]
+    on = builder.build_link(box.src, os_home, env={})
     assert on["link"] == f"https://box.example.ts.net:8444/wizard-os-home/?view=install&build=galaxy-calc&sha256={sha}"
     assert on["say"].endswith("Tap Install to add it to your Apps.")
     assert builder.build_link(box.src, os_home, env={"WIZARD_SHELL_ORIGIN": "https://other.example.ts.net"})[
         "link"].startswith("https://other.example.ts.net/wizard-os-home/?view=install&build=galaxy-calc&sha256=")
     # the link's selection installs exactly that build
     ss.execute(box.c, "galaxy-calc", ss.resolve(box.c, "galaxy-calc", _sel(box, sha=sha)))
-    assert ab.sync_markers(box.c, on=False) == [str(box.dev)]
-    assert builder.build_link(box.src, os_home, env={})["state"] == "install_links_off"
 
 
 def test_build_link_without_a_known_origin_is_path_only(box, monkeypatch):
     monkeypatch.setattr(ab, "shell_origin", lambda c: "")
-    ab.sync_markers(box.c, on=True)
+    ab.sync_markers(box.c)
     assert builder.build_link(box.src, box.dev.parent, env={})["link"].startswith(
         "/wizard-os-home/?view=install&build=galaxy-calc&sha256=")
 
 
 def test_build_link_refuses_a_source_the_box_cannot_find(box, tmp_path, monkeypatch):
     monkeypatch.setattr(ab, "shell_origin", lambda c: "")
-    ab.sync_markers(box.c, on=True)
+    ab.sync_markers(box.c)
     elsewhere = tmp_path / "elsewhere" / "galaxy-calc"
     shutil.copytree(box.src, elsewhere)
     with pytest.raises(ValueError, match="finds builds only in"):
