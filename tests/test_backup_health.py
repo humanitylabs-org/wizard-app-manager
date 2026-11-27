@@ -1,4 +1,4 @@
-"""wizard-ux#1743: Home > Resources > Health shows the box's own backup (switch wizard/backup-health), and tells the
+"""wizard-ux#1743: Home > Resources > Health shows the box's own backup (on for everyone), and tells the
 owner once, with a safe Include it, when the main agent is left out (#885, #960)."""
 import io
 import json
@@ -188,31 +188,32 @@ def test_told_once_then_again_after_it_cleared(tmp_path):
     (h / "settings.json").write_text(json.dumps({"network": {"base_url": "https://box.example.ts.net"}}))
     sent = []
     note = lambda home, t, m, link: sent.append((t, m, link)) or True  # noqa: E731
-    on = lambda home: True  # noqa: E731
     left = {"ok": True, "warnings": [main_agent_warning("/home/o/.hermes")]}
-    assert bh.after_run(h, left, notify=note, on=on) == "told"
+    assert bh.after_run(h, left, notify=note) == "told"
     assert sent == [("Your main agent isn't in your backup", sent[0][1],
                      "https://box.example.ts.net/wizard-os-home/?view=backup-health")]
     assert "Home › Resources › Health" in sent[0][1] and "alongside" not in sent[0][1]
-    assert bh.after_run(h, left, notify=note, on=on) == "already told" and len(sent) == 1
-    assert bh.after_run(h, {"ok": True, "warnings": []}, notify=note, on=on) == "cleared"
-    assert bh.after_run(h, left, notify=note, on=on) == "told" and len(sent) == 2
+    assert bh.after_run(h, left, notify=note) == "already told" and len(sent) == 1
+    assert bh.after_run(h, {"ok": True, "warnings": []}, notify=note) == "cleared"
+    assert bh.after_run(h, left, notify=note) == "told" and len(sent) == 2
 
 
 def test_not_delivered_is_tried_after_the_next_run(tmp_path):
     h = _home(tmp_path)
     left = {"warnings": [main_agent_warning("/h/.hermes")]}
-    assert bh.after_run(h, left, notify=lambda *a: False, on=lambda h: True) == "not delivered"
-    assert bh.after_run(h, left, notify=lambda *a: True, on=lambda h: True) == "told"
+    assert bh.after_run(h, left, notify=lambda *a: False) == "not delivered"
+    assert bh.after_run(h, left, notify=lambda *a: True) == "told"
 
 
-def test_switch_off_tells_nobody_and_reads_no_switch_when_all_is_well(tmp_path):
+def test_nothing_to_tell_when_all_is_well(tmp_path):
     h = _home(tmp_path)
-    left = {"warnings": [main_agent_warning("/h/.hermes")]}
-    assert bh.after_run(h, left, notify=lambda *a: pytest.fail("sent"), on=lambda h: False) == "off"
+    assert bh.after_run(h, {"ok": True}, notify=lambda *a: pytest.fail("sent")) == "nothing"
     assert not (h / bh.STATE).exists()
-    assert bh.after_run(h, {"ok": True}, notify=lambda *a: pytest.fail("sent"),
-                        on=lambda h: pytest.fail("read the switch")) == "nothing"
+
+
+def test_the_switch_is_gone():
+    # wizard-ux#1743 switch-default: backup health is on for everyone, nothing reads wizard/backup-health any more
+    assert not hasattr(bh, "SWITCH") and not hasattr(bh, "switch_on")
 
 
 def test_every_backup_run_goes_through_after_run(tmp_path, monkeypatch):
@@ -228,12 +229,11 @@ def test_every_backup_run_goes_through_after_run(tmp_path, monkeypatch):
 
 # ---- the route -----------------------------------------------------------------------------------------------------
 
-def _route(tmp_path, monkeypatch, on=True):
+def _route(tmp_path, monkeypatch):
     from wam import store_install as si
     monkeypatch.setattr(si, "peer_uid", lambda *a, **k: 0)
     monkeypatch.setattr(si, "owner_login", lambda: "owner@example.com")
     monkeypatch.setattr(si, "served_origins", lambda host: {"https://box.example.ts.net:8444"})
-    monkeypatch.setattr(bh, "switch_on", lambda home=None: on)
     h = _home(tmp_path, _st(11))
     (h / "links.json").write_text(json.dumps({"host": "box.example.ts.net"}))
     c = SimpleNamespace(home=h, runtipi_root=tmp_path / "rt")
@@ -254,7 +254,7 @@ def _route(tmp_path, monkeypatch, on=True):
     return call, c
 
 
-def test_route_owner_only_and_switch_gated(tmp_path, monkeypatch):
+def test_route_owner_only(tmp_path, monkeypatch):
     call, c = _route(tmp_path, monkeypatch)
     code, b = call("GET")
     assert code == 200 and b["available"] and b["checks"][0]["key"] == "backups"
@@ -265,8 +265,6 @@ def test_route_owner_only_and_switch_gated(tmp_path, monkeypatch):
     monkeypatch.setattr(bh, "include", lambda c: {"ok": False, "state": "no_room", "reason": "needs 106 GB free"})
     assert call("POST", {"action": "include-main-agent"}) == (200, {"ok": False, "state": "no_room",
                                                                    "reason": "needs 106 GB free"})
-    call, c = _route(tmp_path, monkeypatch, on=False)
-    assert call("GET")[0] == 404 and call("POST", {"action": "include-main-agent"})[0] == 404
 
 
 def test_gateway_allows_the_route():

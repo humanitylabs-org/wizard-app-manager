@@ -1,4 +1,4 @@
-"""Backup health for Home > Resources > Health (wizard-ux#1743, switch wizard/backup-health).
+"""Backup health for Home > Resources > Health (wizard-ux#1743; on for everyone, its switch was removed).
 
 A stock box has no watchdog writing Health rows, so the shell never showed how the box's own backup is doing. This
 reads what `wam backup` already writes (<wizard home>/backup.json and backup-status.json) and gives the shell, at
@@ -12,7 +12,7 @@ tools/system-health.mjs: {key, label, status, value, detail}.
   runs the disk estimate `wam alongside` shows (#960) with the host Hermes counted in, and only when it fits turns
   alongside mode on (the same code as the CLI), so the next backup includes it; otherwise it says why, with numbers.
 
-After every backup run (switch on) the owner gets one Notifications message the first time the main agent is left
+After every backup run the owner gets one Notifications message the first time the main agent is left
 out; it is forgotten once a backup includes it again, so a later lapse is told again.
 """
 from __future__ import annotations
@@ -22,18 +22,11 @@ import os
 import time
 from pathlib import Path
 
-SWITCH = "wizard/backup-health"
 STORE_PATH = "_backup-health"     # under /wizard-os-home/store-install/ (StoreHandler)
 STATE = "backup-health.json"      # <wizard home>: which left-out main agent the owner was already told about
 AMBER_HOURS, RED_HOURS = 36, 48
 VIEW = "/wizard-os-home/?view=backup-health"   # wizard-ux opens Home > Resources > Health there
 NOTE_TITLE = "Your main agent isn't in your backup"
-
-
-def switch_on(home: Path | None = None) -> bool:
-    """Whether the owner turned wizard/backup-health on (tests monkeypatch this)."""
-    from . import feature_switches
-    return feature_switches.is_on(SWITCH, home, timeout=4)
 
 
 def _load(p: Path) -> dict:
@@ -229,16 +222,14 @@ def _notify(home: Path, title: str, message: str, link: str) -> bool:
     return app_updates._notify(SimpleNamespace(home=home), title, message, link=link, required=True)
 
 
-def after_run(home: Path, st: dict | None, notify=None, on=None) -> str:
+def after_run(home: Path, st: dict | None, notify=None) -> str:
     """Called after every backup run. Tells the owner once when the main agent is left out; forgets it when a backup
     includes it again. Returns what it did (for tests and the log)."""
     home = Path(home)
     told = _load(home / STATE)
     ma = main_agent(st)
     if not ma and not told.get("main_agent"):
-        return "nothing"                      # the common case reads no switch (no network)
-    if not (on or switch_on)(home):
-        return "off"
+        return "nothing"
     if not ma:
         _save(home, {k: v for k, v in told.items() if k != "main_agent"})
         return "cleared"

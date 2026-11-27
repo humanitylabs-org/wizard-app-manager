@@ -415,7 +415,7 @@ def run(box: Box, scheduled: bool = False, now: float | None = None) -> dict:
         if scheduled:
             _note_skipped(box, str(e))
         raise
-    try:   # Home > Resources: tell the owner once when the main agent is left out (wizard-ux#1743, switch-gated)
+    try:   # Home > Resources: tell the owner once when the main agent is left out (wizard-ux#1743)
         from .. import backup_health
         backup_health.after_run(box.home, st)
     except Exception as e:  # noqa: BLE001 - telling the owner never fails the backup
