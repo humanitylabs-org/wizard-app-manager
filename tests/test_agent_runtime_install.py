@@ -369,3 +369,74 @@ def test_the_health_probe_reads_the_whole_answer():
         assert ar.healthy({**p, "socket": Path("/nonexistent")}) is True
     t.join(5)
     assert got.get("ok") is True, got
+
+
+# A containerised main agent (the hermes-agent app) writes MEDIA:/opt/data/cache/images/x.png. The Agent Service
+# finds that file only when the folder is mounted at that path and named in WIZARD_AGENT_ARTIFACT_ROOTS; without
+# it every picture or file the agent sent showed in chat as "[file: x unavailable]".
+OUTPUTS = ("cache/images", "cache/audio", "cache/screenshots", "cache/videos")
+
+
+def _agent_home(b):
+    h = b["rt"] / "app-data" / STORE / "hermes-agent" / "data"
+    h.mkdir(parents=True)
+    return h
+
+
+def test_a_containerised_agents_output_folders_reach_the_agent_service(box, source):
+    home = _agent_home(box)
+    (home / "cache/images").mkdir(parents=True)   # the others are made, as the agent makes them only later
+    assert _install(box)["state"] == "ready"
+    svc = load_yaml(bb.override_path(box["rt"], STORE, AS).read_text())["services"][AS]
+    for rel in OUTPUTS:
+        assert f"{home}/{rel}:/opt/data/{rel}:ro" in svc["volumes"]
+        assert (home / rel).is_dir()
+    roots = svc["environment"]["WIZARD_AGENT_ARTIFACT_ROOTS"].split(":")
+    assert roots[0] == "/hermes/cache/images" and roots[-1] == "/media"
+    assert sorted(roots[1:-1]) == sorted(f"/opt/data/{rel}" for rel in OUTPUTS)
+    assert svc["environment"]["WIZARD_AGENT_UPSTREAM"] == "network"   # the runtime block is all still there
+    assert _install(box)["override_changed"] is False                 # a rerun changes nothing
+    # A reinstall of the Agent Service app keeps them too (sync_app on install).
+    bb.override_path(box["rt"], STORE, AS).unlink()
+    assert ar.sync_app(None, box["rt"], STORE, AS, wizard_home=box["wiz"]) is True
+    again = load_yaml(bb.override_path(box["rt"], STORE, AS).read_text())["services"][AS]
+    assert again == svc
+
+
+def test_without_a_containerised_agent_the_block_is_unchanged(box, source):
+    p = ar.paths(box["home"], box["wiz"])
+    assert ar.overlay(p, AS) == ar.overlay(p, AS, ar.agent_home(box["rt"], STORE))   # no hermes-agent home
+    assert _install(box)["state"] == "ready"
+    svc = load_yaml(bb.override_path(box["rt"], STORE, AS).read_text())["services"][AS]
+    assert "WIZARD_AGENT_ARTIFACT_ROOTS" not in svc["environment"]
+    assert not any("/opt/data" in v for v in svc["volumes"])
+    # The agent installed later: the next run adds its folders.
+    home = _agent_home(box)
+    res = _install(box)
+    assert res["override_changed"] is True
+    svc = load_yaml(bb.override_path(box["rt"], STORE, AS).read_text())["services"][AS]
+    assert f"{home}/cache/images:/opt/data/cache/images:ro" in svc["volumes"]
+
+
+def test_an_owners_hand_set_artifact_roots_are_kept(box, source):
+    home = _agent_home(box)
+    over = bb.override_path(box["rt"], STORE, AS)
+    over.parent.mkdir(parents=True)
+    hand = "/hermes/cache/images:/opt/data/cache/images:/media"
+    over.write_text(f"services:\n  {AS}:\n    environment:\n      WIZARD_AGENT_ARTIFACT_ROOTS: \"{hand}\"\n"
+                    f"    volumes:\n    - {home}/cache/images:/opt/data/cache/images:ro\n")
+    assert _install(box)["state"] == "ready"   # no clash refusal: the runtime block is still wired
+    doc = load_yaml(over.read_text())
+    svc = doc["services"][AS]
+    assert svc["environment"]["WIZARD_AGENT_ARTIFACT_ROOTS"] == hand
+    assert svc["environment"]["WIZARD_AGENT_UPSTREAM"] == "network"
+    assert "WIZARD_AGENT_ARTIFACT_ROOTS" not in doc[ar.MARK]["environment"]
+    assert not any("/opt/data" in v for v in doc[ar.MARK]["volumes"])
+
+
+def test_an_agent_home_a_compose_file_cant_carry_is_refused(tmp_path):
+    p = ar.paths(tmp_path, tmp_path / ".wizard-os")
+    bad = tmp_path / "a b"
+    bad.mkdir()
+    with pytest.raises(ValueError):
+        ar.overlay(p, AS, bad)
