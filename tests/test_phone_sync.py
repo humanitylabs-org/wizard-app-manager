@@ -701,7 +701,7 @@ def test_a_feed_held_back_by_the_box_snapshot_gate_is_reported(owner):
     assert ps.doctor_row(owner.home, now=1 * H)[1] is False
 
 
-# ---- Tester builds (#799): a box with wizard/phone-tester-builds on also mirrors the newest android-v* prerelease ----
+# ---- Tester builds (#799): a box on For testers also mirrors the newest android-v* prerelease ----
 
 def _tester(m, version='0.10.15', code=79, apk=None, prerelease=True, draft=False, extra=()):
     """The fixture serves a public release (m.pointer, 0.10.14) plus a GitHub-shaped release list with one tester build."""
@@ -732,22 +732,27 @@ def test_normal_box_never_reads_prereleases(mirror):
     assert '/releases' not in mirror.state['hits'] and '/tester.json' not in mirror.state['hits']
 
 
-def test_switch_off_by_default_reads_no_release_list(mirror, monkeypatch):
-    monkeypatch.setattr(ps, 'tester_builds_on', lambda home: False)
-    _tester(mirror)
+def test_for_everyone_box_reads_no_release_list(mirror, monkeypatch):
+    _tester(mirror)   # no updates.json: For everyone (stable) is the default
+    assert ps.tester_builds_on(mirror.home) is False
     monkeypatch.setattr(ps, 'POINTER', mirror.url)
     assert ps.sync(mirror.home, mirror.root, release_url=mirror.url, fixture=True,
                    releases_url=mirror.url.rsplit('/', 1)[0] + '/releases') == 'updated:versionCode=78'
     assert '/releases' not in mirror.state['hits']
 
 
-def test_switch_is_read_from_feature_switches(mirror, monkeypatch):
-    calls = []
-    from wam import feature_switches
-    monkeypatch.setattr(feature_switches, 'is_on', lambda tid, home=None, timeout=10: calls.append((tid, timeout)) or True)
+def test_for_testers_box_reads_tester_builds_without_a_switch(mirror, monkeypatch):
+    run = _tester(mirror)
+    monkeypatch.setattr(ps, 'POINTER', mirror.url)
+    (mirror.home / 'updates.json').write_text(json.dumps({'channel': 'latest'}))
     assert ps.tester_builds_on(mirror.home) is True
-    assert calls == [('wizard/phone-tester-builds', 4)]
-    monkeypatch.setattr(feature_switches, 'is_on', lambda *a, **k: (_ for _ in ()).throw(OSError('no pages')))
+    seen = {}
+    assert ps.sync(mirror.home, mirror.root, release_url=mirror.url, fixture=True, seen=seen,
+                   releases_url=mirror.url.rsplit('/', 1)[0] + '/releases') == 'updated:versionCode=79'
+    assert seen['tester'] == '0.10.15' and '/releases' in mirror.state['hits']
+    (mirror.home / 'updates.json').write_text(json.dumps({'channel': 'stable'}))
+    assert ps.tester_builds_on(mirror.home) is False
+    (mirror.home / 'updates.json').write_text('{not json')
     assert ps.tester_builds_on(mirror.home) is False
 
 

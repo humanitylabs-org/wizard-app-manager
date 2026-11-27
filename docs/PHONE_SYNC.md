@@ -11,12 +11,11 @@ other is used). So a CI phone release reaches boxes within the hour with no poin
 the verified public Android release onto this box. It never installs anything, restarts a container, or changes a
 maintenance/update setting. This is independent of DECISIONS #91's `check`/apply policy.
 
-## Tester builds (switch `wizard/phone-tester-builds`, off by default; #799)
+## Tester builds (For testers boxes; #799)
 
 With wizard-ux release lanes on (`WOS_RELEASE_LANES`, wizard-os#720) every phone merge is published as an
 `android-v<version>` GitHub **prerelease**, which `releases/latest` never names, so a normal box keeps offering
-the public build. A box on For testers whose owner turned the feature switch `wizard/phone-tester-builds` on
-(feature switches can only be on For testers) also reads
+the public build. A box on For testers (update channel `latest`, the owner's opt-in) also reads
 `https://api.github.com/repos/humanitylabs-org/wizard-ux/releases?per_page=30` (anonymous, once per hourly run),
 takes the three newest published (not draft) `android-v<version>` prereleases that have a `phone.json` asset at
 `https://github.com/humanitylabs-org/wizard-ux/releases/download/android-v<version>/phone.json`, and adds them as
@@ -26,8 +25,8 @@ and below: field validation (the signer field, the asset URL pinned to that tag'
 the reviewed pointer, the snapshot gate, size + sha256 while downloading, and the APK's real signing block
 (`apk_sig.verify` against `SIGNER`) before anything is published. The highest admitted `versionCode` wins, so once
 the public release passes the tester build the box follows the public one; when every tester APK fails the public release
-stays. The run line adds `tester-newest:<version>` when a tester build was read. Switch off (or For
-everyone): the release list is never fetched. A box that leaves testing keeps the tester build it has until the
+stays. The run line adds `tester-newest:<version>` when a tester build was read. On For
+everyone the release list is never fetched. A box that leaves testing keeps the tester build it has until the
 public release passes it (never a downgrade; Android can't install a lower versionCode anyway).
 
 ## Layout and timer

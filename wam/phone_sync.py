@@ -1,6 +1,6 @@
 """Mirror the public Android release onto this box. No installs, restarts, or maintain-mode decisions.
 
-A box on For testers with the feature switch `wizard/phone-tester-builds` on also mirrors the newest phone tester
+A box on For testers also mirrors the newest phone tester
 build (an `android-v<version>` GitHub prerelease, wizard-os#720), with the same checks (#799)."""
 from __future__ import annotations
 
@@ -33,9 +33,8 @@ SIGNER = "3bf74d0b597bc170761079909d3692428702ba057f753ee1ffd62da3c76ed1fd"
 # so one forged or mistaken huge versionCode can never freeze the feed above every real release.
 MAX_CI_LEAD = 20
 # Tester builds (#799): with release lanes on (wizard-ux WOS_RELEASE_LANES) every phone merge is published as a
-# GitHub prerelease, which `releases/latest` never names. A box whose owner turned this switch on (feature switches
-# are only on for boxes on For testers) also reads the newest android-v* prerelease's phone.json from this list.
-SWITCH = "wizard/phone-tester-builds"
+# GitHub prerelease, which `releases/latest` never names. A box on For testers (channel `latest`, the owner's opt-in)
+# also reads the newest android-v* prerelease's phone.json from this list.
 RELEASES = "https://api.github.com/repos/humanitylabs-org/wizard-ux/releases?per_page=30"
 TESTER_ASSET = "https://github.com/humanitylabs-org/wizard-ux/releases/download/android-v{version}/phone.json"
 MAX_RELEASES = 4 * 1024 * 1024
@@ -210,12 +209,11 @@ def _publish(directory, opener, p, ceiling=None):
 
 
 def tester_builds_on(home) -> bool:
-    """Whether this box takes phone tester builds: switch `wizard/phone-tester-builds` on (only possible on For
-    testers; feature_switches.is_on is False on For everyone and whenever the switch can't be read)."""
+    """Whether this box takes phone tester builds: it is on For testers (update channel `latest`). False on For
+    everyone and whenever the channel can't be read."""
     try:
-        from . import feature_switches
-        return feature_switches.is_on(SWITCH, home, timeout=4)
-    except Exception:  # noqa: BLE001 - a switch read never breaks the public mirror
+        return updates.channel(home) == "latest"
+    except Exception:  # noqa: BLE001 - a channel read never breaks the public mirror
         return False
 
 
@@ -264,7 +262,7 @@ def sync(home: Path, runtipi_root: Path, *, pointer_url=None, release_url=None, 
     `seen` (a dict, optional) gets `read` (a release source answered), `newest` (the newest valid release within the
     CI lead cap, also when this box's snapshot gate holds it back) and `rejected` (candidates whose APK failed),
     which the feed watchdog (`run`) compares with what the feeds serve.
-    `tester` (default: the box switch, never read when a test passes pointer_url) also reads the newest phone tester
+    `tester` (default: the box is on For testers, never read when a test passes pointer_url) also reads the newest phone tester
     build (prerelease) as one more CI candidate: same validation, versionCode cap, snapshot gate, sha256/size and
     real signer; `seen['tester']` names it. Without it the release list is never fetched."""
     directory = Path(runtipi_root) / 'app-data/wizard-os/phone'
