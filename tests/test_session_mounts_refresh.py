@@ -159,3 +159,59 @@ def test_a_flag_first_agent_service_update_puts_the_timer_in_place_too(box, tmp_
     assert not (units / "wizard-session-mounts.timer").exists()     # another app: nothing
     cli._backfill_owner_logins(c.runtipi_root, ["wizard-agent-service"])
     assert (units / "wizard-session-mounts.timer").is_file()
+
+
+# WAM#1115: browser_boundary.write_overlay re-dumps the whole override, which drops the quotes around
+# WIZARD_HERMES_STATE_PATH. The doctor row and the remount timer read the parsed YAML, so both keep working.
+
+def _session_row(c):
+    return next(r for r in cli.doctor(c) if r[0].startswith("alongside: session database"))
+
+
+def _boundary_rewrite(ovr, add=True):
+    from wam import browser_boundary as bb
+    block = {"service": "wizard-agent-service", "environment": {"WIZARD_BROWSER_BOUNDARY": "1"}, "volumes": []}
+    assert bb.write_overlay(ovr, block if add else None)
+
+
+def test_doctor_and_timer_still_see_the_mount_after_the_boundary_block_rewrites_the_override(box):
+    c, hh, ovr, restarts = box
+    assert _session_row(c)[1] is True
+    _boundary_rewrite(ovr)
+    assert 'WIZARD_HERMES_STATE_PATH: "/hermes/state.db"' not in ovr.read_text()   # unquoted now
+    assert _session_row(c)[1] is True
+    assert cli.refresh_session_mounts(c)["state"] == "fresh"
+    _boundary_rewrite(ovr, add=False)   # removing the block re-dumps it too
+    assert _session_row(c)[1] is True
+    _boundary_rewrite(ovr)
+    _hermes_restart(hh)    # the inode stamp in the header survives the rewrite: a Hermes restart is still noticed
+    assert _session_row(c)[1] is False
+    assert cli.refresh_session_mounts(c)["state"] == "refreshed" and restarts == ["wizard-agent-service"]
+    assert _session_row(c)[1] is True
+
+
+def test_doctor_still_fails_when_the_state_db_is_really_not_mounted(box):
+    c, hh, ovr, restarts = box
+    ovr.write_text("\n".join(l for l in ovr.read_text().splitlines() if ":/hermes/state.db:ro" not in l) + "\n")
+    assert _session_row(c)[1] is False and "not in the override yet" in _session_row(c)[2]
+    assert cli.refresh_session_mounts(c)["state"] == "skipped"
+
+
+@pytest.mark.parametrize("text,ok", [
+    ('services:\n  a:\n    environment:\n      WIZARD_HERMES_STATE_PATH: "/hermes/state.db"\n'
+     '    volumes:\n      - /h/state.db:/hermes/state.db:ro\n', True),
+    ("services:\n  a:\n    environment:\n      WIZARD_HERMES_STATE_PATH: /hermes/state.db\n"
+     "    volumes:\n      - /h/state.db:/hermes/state.db:ro\n", True),
+    ("services:\n  a:\n    environment:\n      - WIZARD_HERMES_STATE_PATH=/hermes/state.db\n"
+     "    volumes:\n      - {type: bind, source: /h/state.db, target: /hermes/state.db, read_only: true}\n", True),
+    ('services:\n  a:\n    environment:\n      WIZARD_HERMES_STATE_PATH: ""\n'
+     "    volumes:\n      - /h/state.db:/hermes/state.db:ro\n", False),
+    ("services:\n  a:\n    environment:\n      WIZARD_HERMES_STATE_PATH: /hermes/state.db\n"
+     "    volumes:\n      - /h/view:/hermes:ro\n", False),
+    ("services:\n  b:\n    environment:\n      WIZARD_HERMES_STATE_PATH: /hermes/state.db\n"
+     "    volumes:\n      - /h/state.db:/hermes/state.db:ro\n", False),   # another service
+    ("not: [valid", False),
+    ("", False),
+])
+def test_session_db_mounted_reads_the_yaml_not_the_text(text, ok):
+    assert alongside.session_db_mounted(text, "a") is ok

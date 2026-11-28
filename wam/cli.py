@@ -1354,7 +1354,7 @@ def refresh_session_mounts(c: Config) -> dict:
     app_id, role = _agent_side(c, st)
     ovr = c.runtipi_root / "user-config" / STORE / app_id / "docker-compose.yml"
     text = ovr.read_text() if ovr.is_file() else ""
-    if 'WIZARD_HERMES_STATE_PATH: "/hermes/state.db"' not in text:
+    if not alongside.session_db_mounted(text, app_id):
         return {"state": "skipped", "app": app_id, "reason": "no session mounts in the override yet"}
     out = {"app": app_id, **session_mounts.plan(text, st["agent"]["hermes_home"])}
     if out["state"] != "stale":
@@ -2397,7 +2397,7 @@ def doctor(c: Config, fix: bool = False) -> list[tuple[str, bool | None, str]]:
         elif st["shell"].get("share_sessions"):
             db = Path(a["hermes_home"]) / "state.db"
             text = ovr.read_text() if ovr.is_file() else ""
-            mounted = 'WIZARD_HERMES_STATE_PATH: "/hermes/state.db"' in text
+            mounted = alongside.session_db_mounted(text, agent_side)
             stale = alongside.stale_session_mounts(text, a["hermes_home"]) if mounted else []
             out.append(("alongside: session database shared read-only (no credentials)", mounted and db.is_file() and not stale,
                         f"{db} -> /hermes/state.db" if mounted and not stale else
