@@ -1,5 +1,6 @@
 """The five-choice first chat (humanitylabs-org/wizard-agent-service#650, on for everyone; the wizard/first-chat-goals
-switch was removed): it is the guide's only first chat, with no run-note condition."""
+switch was removed): it is the guide's only first chat
+(still titled "First chat: five choices", which the Service's run note names), with no run-note condition."""
 import json
 import re
 from pathlib import Path
@@ -17,23 +18,23 @@ def section(text, title):
 
 def test_five_choices_are_the_only_first_chat():
     text = GUIDE.read_text()
-    first = section(text, 'First chat')
+    assert '## First chat\n' not in text, 'one first chat section: the five choices'
+    first = section(text, 'First chat: five choices')
     for words in ('Build me an app that tracks my runs.', 'Change my skin so the background is dark green.',
                   'Remind me tomorrow morning to call the bank.', NOTE, 'Only when your run instructions'):
         assert words not in text
     assert first.startswith('When this is the owner\'s first conversation')
-    assert '## First chat: five choices' not in text
 
 
 def test_five_choices_are_one_reply_buttons_marker_in_the_issue_order():
-    five = section(GUIDE.read_text(), 'First chat')
+    five = section(GUIDE.read_text(), 'First chat: five choices')
     marks = re.findall(r'\[WIZARD_CHOICES_V1\](.*?)\[/WIZARD_CHOICES_V1\]', five)
     assert len(marks) == 1
     assert json.loads(marks[0]) == {'choices': CHOICES}
 
 
 def test_memory_first_win_closing_line_tips_and_goals_rules():
-    five = section(GUIDE.read_text(), 'First chat')
+    five = section(GUIDE.read_text(), 'First chat: five choices')
     assert 'About me (<YYYY-MM-DD>)' in five and 'memory tool' in five
     assert 'no goal method, predictions, check-ins or tracking' in five
     inbox = next(line for line in five.splitlines() if line.strip().startswith('- Get on top of my inbox'))
