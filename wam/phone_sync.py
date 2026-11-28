@@ -166,6 +166,20 @@ def _current(directory):
     return current, code
 
 
+def _trusted_mirror(directory):
+    """versionCode of the feed this box already serves, only when its APK is the exact signed WizardOS build it names."""
+    try:
+        current, code = _current(directory)
+        name = current.get('url')
+        if not code or not isinstance(name, str) or '/' in name or not name.endswith('.apk'):
+            return 0
+        if _verify(directory / name, current.get('bytes'), str(current.get('sha256', ''))) and _signed(directory / name):
+            return code
+    except _SKIP:
+        pass
+    return 0
+
+
 def _publish(directory, opener, p, ceiling=None):
     feed = directory / 'latest.json'
     current, code = _current(directory)
@@ -303,7 +317,12 @@ def sync(home: Path, runtipi_root: Path, *, pointer_url=None, release_url=None, 
         mirrored = 0
     # The reviewed pointer is the authority for big jumps (#789). Without it (pointer offline), the CI release may
     # still lead what this box already mirrors by the same margin; a fresh box with no pointer has no baseline.
-    base = reviewed if reviewed is not None else (mirrored or None)
+    # The cap also counts from what this box already mirrors when that feed's APK is real (its bytes match and it is
+    # signed by the WizardOS key): every such APK passed this cap once, so the next release may lead it by the same
+    # margin. Before this, a pointer nobody moved froze every phone MAX_CI_LEAD builds past it (0.10.51 + 20 =
+    # 0.10.71, Nov 2026) while newer real releases piled up. A forged or unsigned feed never counts.
+    trusted = _trusted_mirror(directory)
+    base = max(reviewed, trusted) if reviewed is not None else (mirrored or None)
     ceiling = None if base is None else base + MAX_CI_LEAD
     found = [p for is_pointer, p in found if is_pointer or ceiling is None or p['versionCode'] <= ceiling]
     if not found:
