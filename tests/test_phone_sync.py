@@ -494,6 +494,26 @@ def test_forged_versioncode_ci_release_is_ignored(mirror):
     assert run() == 'updated:versionCode=79'
 
 
+def test_stale_pointer_does_not_freeze_phones_past_the_cap(mirror):
+    # Nov 2026: the reviewed pointer sat at 0.10.51 while CI shipped on; every box stopped at pointer + MAX_CI_LEAD.
+    # A box that already serves a real signed release counts the cap from it, one cap-length at a time.
+    run = _release(mirror, 78 + ps.MAX_CI_LEAD, '0.10.34')
+    assert run() == f'updated:versionCode={78 + ps.MAX_CI_LEAD}'
+    mirror.state['release'].update(versionCode=78 + ps.MAX_CI_LEAD + 5, versionName='0.10.39')
+    assert run() == f'updated:versionCode={78 + ps.MAX_CI_LEAD + 5}'
+    # Still never more than one cap-length past what the box really serves.
+    mirror.state['release'].update(versionCode=78 + 3 * ps.MAX_CI_LEAD, versionName='0.10.99')
+    assert run() == 'skipped:no_downgrade'
+    assert _feed(mirror)['versionCode'] == 78 + ps.MAX_CI_LEAD + 5
+
+
+def test_a_mirror_with_bad_bytes_never_lifts_the_cap(mirror):
+    run = _release(mirror, 78 + ps.MAX_CI_LEAD, '0.10.34')
+    assert run() == f'updated:versionCode={78 + ps.MAX_CI_LEAD}'
+    (mirror.feed / 'wizard-os-0.10.34.apk').write_bytes(b'tampered')
+    assert ps._trusted_mirror(mirror.feed) == 0
+
+
 def test_ci_release_at_the_cap_is_mirrored(mirror):
     run = _release(mirror, 78 + ps.MAX_CI_LEAD, '0.10.34')
     assert run() == f'updated:versionCode={78 + ps.MAX_CI_LEAD}'

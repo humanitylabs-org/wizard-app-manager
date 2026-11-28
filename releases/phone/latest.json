@@ -1,12 +1,12 @@
 {
   "app": "ai.wizards.os",
-  "versionCode": 115,
-  "versionName": "0.10.51",
-  "sha256": "8f67e8b81a96766a74e1317bca4d372ee0ef64d58021c2a88e83af4f1ad85266",
-  "bytes": 29219224,
+  "versionCode": 147,
+  "versionName": "0.10.83",
+  "sha256": "a35026fb120957e1d06cb35c9ba261999bd9bb8d3addb23a3d425464ff986a96",
+  "bytes": 29370944,
   "signer": "3bf74d0b597bc170761079909d3692428702ba057f753ee1ffd62da3c76ed1fd",
-  "asset_url": "https://github.com/humanitylabs-org/wizard-ux/releases/download/android-v0.10.51/wizard-os-0.10.51.apk",
-  "notes": "Shared WizardOS phone release 0.10.51, built and signed from main; no owner address is built in.",
+  "asset_url": "https://github.com/humanitylabs-org/wizard-ux/releases/download/android-v0.10.83/wizard-os-0.10.83.apk",
+  "notes": "Shared WizardOS phone release 0.10.83, built and signed from main; no owner address is built in.",
   "min_box_snapshot": "0.3.40",
-  "source_commit": "e9d143a4a34a389adbaf841b037302948572501f"
+  "source_commit": "85097453fbd2c822d5941d82b75c177e94c6d594"
 }
