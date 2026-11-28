@@ -1,5 +1,6 @@
-"""The five-choice first chat (humanitylabs-org/wizard-agent-service#650, switch wizard/first-chat-goals): the guide
-holds the section the Agent Service's run note points at, and the old first chat stays as it was for boxes without it."""
+"""The five-choice first chat (humanitylabs-org/wizard-agent-service#650, on for everyone; the wizard/first-chat-goals
+switch was removed): it is the guide's only first chat
+(still titled "First chat: five choices", which the Service's run note names), with no run-note condition."""
 import json
 import re
 from pathlib import Path
@@ -15,17 +16,18 @@ def section(text, title):
     return text.split(f'## {title}\n', 1)[1].split('\n## ', 1)[0].strip()
 
 
-def test_old_first_chat_is_kept_and_hands_over_only_on_the_note():
-    old = section(GUIDE.read_text(), 'First chat')
+def test_five_choices_are_the_only_first_chat():
+    text = GUIDE.read_text()
+    assert '## First chat\n' not in text, 'one first chat section: the five choices'
+    first = section(text, 'First chat: five choices')
     for words in ('Build me an app that tracks my runs.', 'Change my skin so the background is dark green.',
-                  'Remind me tomorrow morning to call the bank.', 'wizard_tips'):
-        assert words in old
-    assert f'If your run instructions say "{NOTE}"' in old
+                  'Remind me tomorrow morning to call the bank.', NOTE, 'Only when your run instructions'):
+        assert words not in text
+    assert first.startswith('When this is the owner\'s first conversation')
 
 
 def test_five_choices_are_one_reply_buttons_marker_in_the_issue_order():
     five = section(GUIDE.read_text(), 'First chat: five choices')
-    assert five.startswith(f'Only when your run instructions say "{NOTE}"')
     marks = re.findall(r'\[WIZARD_CHOICES_V1\](.*?)\[/WIZARD_CHOICES_V1\]', five)
     assert len(marks) == 1
     assert json.loads(marks[0]) == {'choices': CHOICES}
