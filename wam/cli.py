@@ -2715,7 +2715,7 @@ class StoreHandler(BaseHTTPRequestHandler):
             return self._switch_feedback(method)
         if app_id == APP_UPDATES_PATH:   # Settings → About & updates → Apps (on for everyone, wizard-ux#1191)
             return self._app_updates(method)
-        if app_id == BACKUP_HEALTH_PATH:   # Home → Resources → Health: backup rows (switch wizard/backup-health)
+        if app_id == BACKUP_HEALTH_PATH:   # Home → Resources → Health: backup rows (wizard-ux#1743)
             return self._backup_health(method)
         if app_id == DISK_PATH:   # Settings → Network & security: one plain disk encryption line (disk.py)
             if method != "GET":
@@ -3102,14 +3102,11 @@ class StoreHandler(BaseHTTPRequestHandler):
                                          '{"action": "apply"} (optional "app": id or "apps": [ids])'})
 
     def _backup_health(self, method: str) -> None:
-        """Home > Resources > Health rows from this box's own backup (wizard-ux#1743): 404 while the switch
-        wizard/backup-health is off. GET: backup_health.status() ({available, checks: [rows]}). POST
+        """Home > Resources > Health rows from this box's own backup (wizard-ux#1743). GET: backup_health.status() ({available, checks: [rows]}). POST
         {"action": "include-main-agent"}: Include it (disk estimate first, then `wam alongside`); 200 either way, with
         ok + message or reason in plain words. _go already checked the owner (and Origin + X-Wizard-Store for POST)."""
         from . import backup_health as bh
         c = self.cfg
-        if not bh.switch_on(c.home):
-            return self._json(404, {"error": "not found"})
         if method == "GET":
             return self._json(200, bh.status(c.home))
         try:
