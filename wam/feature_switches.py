@@ -389,6 +389,13 @@ def is_on(tid: str, home: Path | None = None, pages: Pages | None = None, timeou
         return False
 
 
+def _after_switch(tid: str, home: Path | None) -> None:
+    """Box-side switches that install something act at once, not only on the hourly tick."""
+    if tid == "wizard/human-handoff":               # wizard-os#775
+        from . import human_handoff
+        human_handoff.spawn(home)
+
+
 def set_switch(tid: str, on: bool, home: Path | None = None, fetch=_get, pages: Pages | None = None,
                by: str = "owner", origin: str | None = None) -> dict:
     """Turn one feature switch on or off for this box (every device of the owner follows within ~30 s).
@@ -421,6 +428,7 @@ def set_switch(tid: str, on: bool, home: Path | None = None, fetch=_get, pages: 
         doc["tweaks"] = {**_tweaks(doc), tid: {"on": on, "at": _revision(doc) + 1}}
         ok, newer, version = p.put(doc, version)
         if ok:
+            _after_switch(tid, home)
             out = listing(home, fetch, p)
             return {**out, "changed": {"id": tid, "on": on, "by": by}}
         doc = newer or {"version": 1}
